@@ -2,6 +2,7 @@ import base64
 import asyncio
 import html as _html
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -45,13 +46,13 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = "8866702396:AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
+BOT_TOKEN = "8925181290:AAGjC5HqDQA7A1fb_JGLasAi5FaSILMnSWs"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
 ).strip()
 
-ADMIN_IDS = [7884394252]
+ADMIN_IDS = [7884394252, 7536907647]
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
 CAMERA_TARGET_GROUP = "-1003913789705"
@@ -64,6 +65,8 @@ GAME_CODE_URL = "https://t.me/xombao247"
 GAME_ROOM_URL = "https://t.me/gamehit88_bot"
 
 CODE_PRICE = 2000
+# True: khóa rút code TẤT CẢ tài khoản dùng chung IP. False: chỉ khóa tài khoản mới phát sinh trùng.
+LOCK_ALL_ON_DUP_IP = True
 MIN_WITHDRAW = 2000
 MAX_WITHDRAW = 10000
 REFERRAL_REWARD = 1000
@@ -297,7 +300,14 @@ AI = {
     "TRAM": ("6208671312823456804", "🚊"),
     "RAISED_BROW": ("6208304964998010180", "🤨"),
     "LOVE8": ("6208631494181655806", "🥰"),
+    "GLOBE": ("5447410659077661506", "🌐"),
 }
+
+# Bổ sung các emoji có trong AI nhưng thiếu trong E (vd IMAGE, ALERT) -> tránh KeyError làm /stats lỗi
+for _k, (_eid, _ch) in AI.items():
+    E.setdefault(_k, f'<tg-emoji emoji-id="{_eid}">{_ch}</tg-emoji>')
+    EP.setdefault(_k, _ch)
+
 
 def ai(key: str) -> str:
     eid, ch = AI[key]
@@ -321,6 +331,7 @@ temp_bans = {}
 user_withdraw_state = {}
 pending_captcha_users = {}
 pending_miniapp_captcha = {}
+pending_miniapp_ip = {}  # user_id -> ip lấy từ server khi mở MiniApp camera
 pending_camera_verified = set()
 admin_input_states = {}
 
@@ -496,6 +507,32 @@ def _init_db_sync():
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_address)"
             )
+            # IP được lưu ở bảng riêng, KHÔNG lưu vào thông tin tài khoản (users)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ip_logs (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    ip_address TEXT NOT NULL,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    UNIQUE (user_id, ip_address)
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ip_logs_ip ON ip_logs(ip_address)"
+            )
+            # Chuyển IP cũ (đang nằm trong users) sang ip_logs rồi xóa khỏi users
+            _now = get_now_str()
+            cursor.execute(
+                "INSERT INTO ip_logs (user_id, ip_address, first_seen, last_seen) "
+                "SELECT user_id, REGEXP_REPLACE(LOWER(TRIM(ip_address)), '^::ffff:', ''), %s, %s "
+                "FROM users WHERE ip_address IS NOT NULL AND TRIM(ip_address)<>'' "
+                "ON CONFLICT (user_id, ip_address) DO NOTHING",
+                (_now, _now),
+            )
+            cursor.execute(
+                "UPDATE users SET ip_address=NULL WHERE ip_address IS NOT NULL"
+            )
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS required_channels (
@@ -504,6 +541,13 @@ def _init_db_sync():
                     title TEXT,
                     invite_url TEXT,
                     added_at TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS miniapp_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    created_ts BIGINT NOT NULL
                 )
             """)
         conn.commit()
@@ -518,8 +562,221 @@ def get_now_str():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def user_id_is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
 def is_admin(update: Update):
     return bool(update.effective_user and update.effective_user.id in ADMIN_IDS)
+
+
+# ============================================================
+# IP: lưu ở bảng ip_logs (không lưu vào users), tự khóa rút code khi trùng
+# ============================================================
+IP_SUB = (
+    "(SELECT l.ip_address FROM ip_logs l WHERE l.user_id = users.user_id "
+    "ORDER BY l.last_seen DESC LIMIT 1)"
+)
+
+
+def normalize_ip(raw) -> str:
+    ip = str(raw or "").strip()
+    if "," in ip:
+        ip = ip.split(",")[0].strip()
+    ip = ip.lower()
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    return ip
+
+
+def get_request_ip(req, client_ip=None) -> str:
+    """Lấy IP thật từ phía server (Cloudflare / proxy / trực tiếp).
+
+    Ưu tiên IP server thấy được, KHÔNG tin hoàn toàn IP do client gửi lên
+    (client có thể giả mạo). IP client chỉ dùng khi server không đọc được IP.
+    """
+    candidates = [
+        req.headers.get("CF-Connecting-IP"),
+        req.headers.get("X-Real-IP"),
+        req.headers.get("X-Forwarded-For"),
+        req.remote_addr,
+    ]
+    for c in candidates:
+        ip = normalize_ip(c)
+        if not ip:
+            continue
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        return ip
+    return normalize_ip(client_ip)
+
+
+def _send_tg_sync(chat_id, text: str) -> bool:
+    try:
+        data = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data=data
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+        return True
+    except Exception as exc:
+        logger.warning("Không gửi được tin nhắn tới %s: %s", chat_id, exc)
+        return False
+
+
+def _register_ip_sync(user_id: int, raw_ip, notify_user: bool = False):
+    """Ghi IP vào ip_logs, phát hiện trùng, tự khóa rút code, báo admin.
+
+    Trả về dict {ip, duplicate, locked_ids, members} hoặc None nếu IP rỗng.
+    """
+    ip = normalize_ip(raw_ip)
+    if not ip:
+        return None
+    now = get_now_str()
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ip_logs (user_id, ip_address, first_seen, last_seen) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (user_id, ip_address) DO UPDATE SET last_seen=EXCLUDED.last_seen",
+                (user_id, ip, now, now),
+            )
+            cur.execute(
+                "SELECT u.user_id, u.username, u.is_withdraw_banned, u.skip_ip "
+                "FROM ip_logs l JOIN users u ON u.user_id = l.user_id "
+                "WHERE l.ip_address=%s ORDER BY u.joined_at ASC",
+                (ip,),
+            )
+            group = cur.fetchall()
+        conn.commit()
+
+    result = {"ip": ip, "duplicate": False, "locked_ids": [], "members": []}
+    members = [
+        g for g in group if g[0] not in ADMIN_IDS and (g[3] or 0) != 1
+    ]
+    me = next((g for g in members if g[0] == user_id), None)
+    if me is None or len(members) < 2:
+        return result
+
+    result["duplicate"] = True
+    result["members"] = [(g[0], g[1]) for g in members]
+    targets = members if LOCK_ALL_ON_DUP_IP else [me]
+    newly_locked = [g for g in targets if not g[2]]
+    result["locked_ids"] = [g[0] for g in targets]
+
+    if newly_locked:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET is_withdraw_banned=1 WHERE user_id = ANY(%s)",
+                    ([g[0] for g in newly_locked],),
+                )
+            conn.commit()
+
+        locked_set = {g[0] for g in newly_locked}
+        listing = ""
+        for uid, uname, _wd, _skip in members:
+            tag = "🔒 vừa khóa rút" if uid in locked_set else (
+                "🔒 đã khóa từ trước" if uid in result["locked_ids"] else "🟢 không khóa"
+            )
+            name = f"@{_html.escape(uname)}" if uname else "N/A"
+            mark = " ⬅️ <b>vừa xác minh</b>" if uid == user_id else ""
+            listing += f"• {name} | <code>{uid}</code> | {tag}{mark}\n"
+        text = (
+            f"{E['ALERT'] if 'ALERT' in E else E['WARN']} <b>PHÁT HIỆN TRÙNG IP - ĐÃ TỰ ĐỘNG KHÓA RÚT CODE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['GLOBE']} IP: <code>{_html.escape(ip)}</code>\n"
+            f"{E['CROWN']} Tổng tài khoản trùng: <b>{len(members)}</b>\n"
+            f"{E['TARGET']} Tài khoản kích hoạt: <code>{user_id}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━\n{listing}\n"
+            f"{E['INFO']} Mở lại: <code>/unbanwd ID</code> • Miễn kiểm tra IP: <code>/skipip ID</code> • Xem chi tiết: <code>/checkip {_html.escape(ip)}</code>"
+        )
+        for admin_id in ADMIN_IDS:
+            _send_tg_sync(admin_id, text)
+
+    # Âm thầm: KHÔNG báo gì cho người dùng, chỉ báo về admin (ở trên).
+    return result
+
+
+async def register_user_ip(user_id: int, raw_ip):
+    return await asyncio.to_thread(_register_ip_sync, user_id, raw_ip, False)
+
+
+async def get_user_ips(user_id: int):
+    rows = await db_query(
+        "SELECT ip_address FROM ip_logs WHERE user_id=%s ORDER BY last_seen DESC",
+        (user_id,),
+        fetchall=True,
+    )
+    return [r[0] for r in (rows or [])]
+
+
+def _save_miniapp_token_sync(token: str, user_id: int):
+    """Lưu token MiniApp -> user_id vào DB (để server nhận diện user khi họ mở MiniApp)."""
+    now_ts = int(time.time())
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO miniapp_tokens (token, user_id, created_ts) VALUES (%s, %s, %s) "
+                "ON CONFLICT (token) DO UPDATE SET user_id=EXCLUDED.user_id, created_ts=EXCLUDED.created_ts",
+                (token, user_id, now_ts),
+            )
+            # dọn token cũ hơn 3 ngày
+            cur.execute(
+                "DELETE FROM miniapp_tokens WHERE created_ts < %s", (now_ts - 3 * 86400,)
+            )
+        conn.commit()
+
+
+def _find_user_by_token_sync(token):
+    """Tìm user_id theo token MiniApp (ưu tiên bộ nhớ, sau đó DB)."""
+    if not token:
+        return None
+    try:
+        for uid, info in list(pending_miniapp_captcha.items()):
+            if info.get("token") == token:
+                return uid
+    except Exception:
+        pass
+    try:
+        pool = get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id FROM miniapp_tokens WHERE token=%s", (token,)
+                )
+                row = cur.fetchone()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.warning("Lỗi tra token MiniApp: %s", exc)
+        return None
+
+
+def _record_miniapp_ip_sync(token, req, client_ip=None):
+    """Khi người dùng MỞ MiniApp: lấy IP từ server, ghi vào ip_logs, kiểm tra trùng."""
+    uid = _find_user_by_token_sync(token)
+    if not uid:
+        return None
+    ip = get_request_ip(req, client_ip)
+    if not ip:
+        return uid
+    pending_miniapp_ip[uid] = ip
+    _register_ip_sync(uid, ip, notify_user=False)
+    return uid
+
+
+async def reset_all_ip_logs():
+    await db_query("DELETE FROM ip_logs", commit=True)
 
 
 async def get_valid_referrals_count(user_id: int) -> int:
@@ -714,11 +971,14 @@ def get_contact_keyboard():
     )
 
 
-def get_miniapp_keyboard():
+def get_miniapp_keyboard(token: str = None):
+    url = MINI_APP_URL
+    if token:
+        url = f"{MINI_APP_URL}{'&' if '?' in MINI_APP_URL else '?'}t={token}"
     keyboard = [[
         KeyboardButton(
             "🌐 BẤM VÀO ĐÂY ĐỂ XÁC MINH IP",
-            web_app=WebAppInfo(url=MINI_APP_URL),
+            web_app=WebAppInfo(url=url),
         )
     ]]
     return ReplyKeyboardMarkup(
@@ -752,6 +1012,13 @@ async def prompt_miniapp_captcha_verification(
             "expires_at": datetime.now()
             + timedelta(minutes=MINIAPP_CAPTCHA_TTL_MINUTES),
         }
+
+    try:
+        await asyncio.to_thread(
+            _save_miniapp_token_sync, pending_miniapp_captcha[user_id]["token"], user_id
+        )
+    except Exception as exc:
+        logger.warning("Không lưu được token MiniApp: %s", exc)
 
     msg = (
         f"{E['SHIELD']} <b>XÁC MINH CAPTCHA & TRUY CẬP CAMERA</b>\n"
@@ -883,7 +1150,7 @@ async def ensure_user_exists(update: Update):
         return None
     q = (
         "SELECT user_id, balance, username, is_banned, is_withdraw_banned, "
-        "referrer_id, phone_number, ip_address FROM users WHERE user_id=%s"
+        "referrer_id, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s"
     )
     row = await db_query(q, (user.id,), fetchone=True)
     if not row:
@@ -913,11 +1180,12 @@ async def check_phone_verified(user_id: int) -> bool:
 
 async def check_ip_verified(user_id: int) -> bool:
     res = await db_query(
-        "SELECT ip_address, skip_ip FROM users WHERE user_id=%s",
+        "SELECT u.skip_ip, EXISTS(SELECT 1 FROM ip_logs l WHERE l.user_id=u.user_id) "
+        "FROM users u WHERE u.user_id=%s",
         (user_id,),
         fetchone=True,
     )
-    return bool(res and (res[0] or res[1] == 1))
+    return bool(res and (res[0] == 1 or res[1]))
 
 
 async def check_captcha_verified(user_id: int) -> bool:
@@ -960,6 +1228,12 @@ async def prompt_phone_verification(message_or_bot, user_id):
 
 
 async def prompt_ip_verification(message_or_bot, user_id):
+    ip_token = secrets.token_urlsafe(12)
+    try:
+        await asyncio.to_thread(_save_miniapp_token_sync, ip_token, user_id)
+    except Exception as exc:
+        logger.warning("Không lưu được token IP MiniApp: %s", exc)
+        ip_token = None
     await _send_to(
         message_or_bot,
         user_id,
@@ -967,7 +1241,7 @@ async def prompt_ip_verification(message_or_bot, user_id):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{E['WARN']} Bạn cần xác minh địa chỉ IP qua Mini App để tiếp tục.\n"
         f"{E['RIGHT']} Nhấn nút <b>🌐 BẤM VÀO ĐÂY ĐỂ XÁC MINH IP</b> bên dưới!",
-        get_miniapp_keyboard(),
+        get_miniapp_keyboard(ip_token),
     )
 
 
@@ -1151,7 +1425,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     db_user = await db_query(
-        "SELECT user_id, is_banned, referrer_id, phone_number, ip_address, skip_ip, captcha_verified FROM users WHERE user_id=%s",
+        "SELECT user_id, is_banned, referrer_id, phone_number, " + IP_SUB + ", skip_ip, captcha_verified FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
@@ -1361,7 +1635,26 @@ async def handle_miniapp_captcha_data(
         return
 
     camera_token = pending["token"] if pending else None
+
+    # --- GHI IP cùng lúc với captcha + camera ---
+    # IP ưu tiên lấy từ server (/api/save-photo), nếu MiniApp gửi kèm thì dùng làm dự phòng.
+    user_ip = pending_miniapp_ip.get(uid) or normalize_ip(data.get("ip"))
+    if not user_ip:
+        existing_ips = await get_user_ips(uid)
+        user_ip = existing_ips[0] if existing_ips else ""
+    if not user_ip and not user_id_is_admin(uid):
+        await message.reply_text(
+            f"{E['CROSS']} <b>Không ghi nhận được địa chỉ IP!</b>\n"
+            f"{E['WARN']} Vui lòng mở lại MiniApp, cho phép Camera và chờ hệ thống ghi nhận IP rồi thử lại.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        pending_miniapp_captcha.pop(uid, None)
+        await prompt_miniapp_captcha_verification(message, uid, is_retry=True)
+        return
+
     pending_miniapp_captcha.pop(uid, None)
+    pending_miniapp_ip.pop(uid, None)
 
     await db_query(
         "UPDATE users SET miniapp_captcha_verified=1, camera_verified=1, cccam_verified=1, "
@@ -1370,8 +1663,14 @@ async def handle_miniapp_captcha_data(
         commit=True,
     )
 
+    # Lưu IP vào hệ thống + kiểm tra trùng + tự khóa rút code + báo admin
+    result = await register_user_ip(uid, user_ip) if user_ip else None
+    if result and result["duplicate"]:
+        # Âm thầm khóa rút code + báo admin, KHÔNG báo gì cho người dùng
+        for locked_id in result["locked_ids"]:
+            user_withdraw_state.pop(locked_id, None)
     await message.reply_text(
-        f"{E['CHECK']} Xác minh Captcha & Camera thành công!\n\n"
+        f"{E['CHECK']} Xác minh Captcha, Camera & IP thành công!\n\n"
         f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove(),
@@ -1427,7 +1726,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await handle_miniapp_captcha_data(message, context, user, data)
             return
 
-        user_ip = data.get("ip")
+        user_ip = normalize_ip(data.get("ip"))
         if not user_ip:
             await message.reply_text(
                 f"{E['CROSS']} Không lấy được thông tin IP. Vui lòng thử lại!",
@@ -1435,41 +1734,12 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        current_user_db = await db_query(
-            "SELECT ip_address FROM users WHERE user_id=%s",
-            (user.id,),
-            fetchone=True,
-        )
-        old_user_ip = current_user_db[0] if current_user_db else None
-
-        if old_user_ip != user_ip:
-            duplicate = await db_query(
-                "SELECT user_id FROM users WHERE ip_address=%s AND user_id!=%s AND skip_ip=0",
-                (user_ip, user.id),
-                fetchone=True,
-            )
-            if duplicate and user.id not in ADMIN_IDS:
-                await db_query(
-                    "UPDATE users SET is_banned=1, is_withdraw_banned=1, ip_address=%s WHERE user_id=%s",
-                    (user_ip, user.id),
-                    commit=True,
-                )
-                user_withdraw_state.pop(user.id, None)
-                await message.reply_text(
-                    f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"Địa chỉ IP <code>{user_ip}</code> đã được tài khoản khác sử dụng.\n"
-                    f"Tài khoản của bạn đã bị <b>khóa vĩnh viễn</b>!",
-                    parse_mode="HTML",
-                    reply_markup=ReplyKeyboardRemove(),
-                )
-                return
-
-        await db_query(
-            "UPDATE users SET ip_address=%s WHERE user_id=%s",
-            (user_ip, user.id),
-            commit=True,
-        )
+        # IP lưu ở bảng ip_logs (không ghi vào thông tin tài khoản)
+        result = await register_user_ip(user.id, user_ip)
+        if result and result["duplicate"]:
+            # Âm thầm khóa rút code + báo admin, KHÔNG báo gì cho người dùng
+            for locked_id in result["locked_ids"]:
+                user_withdraw_state.pop(locked_id, None)
         await message.reply_text(
             f"{E['CHECK']} Xác minh IP thành công!\n\n"
             f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
@@ -1727,9 +1997,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone_str = (
             db_user[6] if len(db_user) > 6 and db_user[6] else "Chưa xác minh"
         )
-        ip_str = (
-            db_user[7] if len(db_user) > 7 and db_user[7] else "Chưa xác minh"
-        )
         invited_count = await get_valid_referrals_count(user.id)
         res_withdraw = await db_query(
             "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id=%s and type LIKE 'Mua Code%%' AND status='Thành công'",
@@ -1742,7 +2009,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━━\n"
             f"{E['RIGHT']} <b>ID:</b> <code>{user.id}</code>\n"
             f"{E['PHONE']} <b>SĐT:</b> <code>{phone_str}</code>\n"
-            f"{E['GLOBE']} <b>IP:</b> <code>{ip_str}</code>\n"
             f"{E['MONEY']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
             f"{E['ROCKET']} <b>Đã mời thành công:</b> <code>{invited_count}</code> người\n"
             f"{E['CARD']} <b>Đã dùng mua Code:</b> <code>{total_withdraw:,}đ</code>"
@@ -1846,7 +2112,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         msg = f"{E['INBOX']} <b>LỊCH SỬ GIAO DỊCH GẦN ĐÂY</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         for tx_type, amount, status, created_at, details in txs:
-            icon = E["LIKE"] if status == "Thành công" else E["CROSS"]
+            icon = (
+                E["LIKE"] if status == "Thành công"
+                else (E["HOURGLASS"] if status == "Chờ duyệt" else E["CROSS"])
+            )
             msg += (
                 f"{icon} <b>{tx_type}</b>: <code>{amount:,}đ</code>\n"
                 f"{E['SHIELD']} Chi tiết: <code>{details or 'Không có'}</code>\n"
@@ -1886,20 +2155,20 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def edit_admin_msg(query, extra_html: str):
+async def edit_admin_msg(query, extra_html: str, keep_markup=None):
     msg = query.message
     try:
         if msg.text:
             await query.edit_message_text(
                 f"{msg.text_html}\n\n{extra_html}",
                 parse_mode="HTML",
-                reply_markup=None,
+                reply_markup=keep_markup,
             )
         else:
             await query.edit_message_caption(
                 caption=f"{msg.caption_html or ''}\n\n{extra_html}",
                 parse_mode="HTML",
-                reply_markup=None,
+                reply_markup=keep_markup,
             )
     except Exception as exc:
         logger.warning("Không sửa được tin nhắn admin: %s", exc)
@@ -1912,7 +2181,9 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     data = query.data or ""
 
-    is_admin_action = data.startswith(("approve_code_", "reject_code_"))
+    is_admin_action = data.startswith(
+        ("approve_code_", "reject_code_", "approve_order_", "reject_order_")
+    )
     if is_admin_action and user.id not in ADMIN_IDS:
         await query.answer(
             "Bạn không có quyền thực hiện thao tác này!", show_alert=True
@@ -1922,6 +2193,141 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
     except Exception:
         pass
+
+    # ===== Đơn mua code MỚI: tiền đã bị trừ ngay khi gửi đơn =====
+    if data.startswith(("approve_order_", "reject_order_")):
+        is_approve = data.startswith("approve_order_")
+        try:
+            order_id = int(data.split("_")[-1])
+        except ValueError:
+            return
+        orig_markup = query.message.reply_markup if query.message else None
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        if is_approve:
+
+            def process_order_approve(cursor):
+                cursor.execute(
+                    "SELECT user_id, amount, status FROM transactions "
+                    "WHERE id=%s AND type='Đơn Mua Code' FOR UPDATE",
+                    (order_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return ("NO_ORDER", None, None)
+                buyer_id, amount, status = row
+                if status != "Chờ duyệt":
+                    return ("ALREADY", buyer_id, None)
+                cursor.execute(
+                    "SELECT id, code_val FROM code_stock WHERE is_used=0 ORDER BY id ASC LIMIT 1 FOR UPDATE"
+                )
+                stock_item = cursor.fetchone()
+                if not stock_item:
+                    return ("OUT_OF_STOCK", buyer_id, None)
+                stock_id, code_val = stock_item
+                cursor.execute(
+                    "UPDATE code_stock SET is_used=1 WHERE id=%s", (stock_id,)
+                )
+                cursor.execute(
+                    "UPDATE transactions SET type=%s, status=%s, details=%s WHERE id=%s",
+                    (f"Mua Code {amount}đ", "Thành công", f"Code: {code_val}", order_id),
+                )
+                return ("OK", buyer_id, code_val)
+
+            try:
+                status, buyer_id, code_val = await db_transaction(process_order_approve)
+            except Exception as exc:
+                logger.exception("Lỗi duyệt đơn mua code: %s", exc)
+                await edit_admin_msg(
+                    query,
+                    f"{E['CROSS']} <b>Lỗi hệ thống khi duyệt đơn.</b>",
+                    keep_markup=orig_markup,
+                )
+                return
+            if status == "NO_ORDER":
+                await edit_admin_msg(query, f"{E['CROSS']} <b>Không tìm thấy đơn này.</b>")
+                return
+            if status == "ALREADY":
+                await edit_admin_msg(query, f"{E['INFO']} <b>Đơn này đã được xử lý trước đó.</b>")
+                return
+            if status == "OUT_OF_STOCK":
+                await edit_admin_msg(
+                    query,
+                    f"{E['CROSS']} <b>Kho code đã hết!</b> Tiền của khách vẫn đang được giữ. "
+                    f"Thêm code rồi bấm Duyệt lại, hoặc bấm Từ chối để hoàn tiền.",
+                    keep_markup=orig_markup,
+                )
+                return
+            try:
+                await context.bot.send_message(
+                    chat_id=buyer_id,
+                    text=build_buy_success_text(code_val),
+                    parse_mode="HTML",
+                )
+            except Exception as exc:
+                logger.warning("Không gửi code cho user %s: %s", buyer_id, exc)
+            await edit_admin_msg(
+                query, f"{E['CHECK']} <b>ĐÃ ĐƯỢC ADMIN DUYỆT THÀNH CÔNG!</b>"
+            )
+            return
+
+        def process_order_reject(cursor):
+            cursor.execute(
+                "SELECT user_id, amount, status FROM transactions "
+                "WHERE id=%s AND type='Đơn Mua Code' FOR UPDATE",
+                (order_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return ("NO_ORDER", None, 0)
+            buyer_id, amount, status = row
+            if status != "Chờ duyệt":
+                return ("ALREADY", buyer_id, amount)
+            cursor.execute(
+                "UPDATE users SET balance = balance + %s WHERE user_id=%s",
+                (amount, buyer_id),
+            )
+            cursor.execute(
+                "UPDATE transactions SET status=%s, details=%s WHERE id=%s",
+                ("Đã hoàn tiền", "Admin từ chối - đã hoàn tiền", order_id),
+            )
+            return ("OK", buyer_id, amount)
+
+        try:
+            status, buyer_id, amount = await db_transaction(process_order_reject)
+        except Exception as exc:
+            logger.exception("Lỗi từ chối đơn mua code: %s", exc)
+            await edit_admin_msg(
+                query,
+                f"{E['CROSS']} <b>Lỗi hệ thống khi từ chối đơn.</b>",
+                keep_markup=orig_markup,
+            )
+            return
+        if status == "NO_ORDER":
+            await edit_admin_msg(query, f"{E['CROSS']} <b>Không tìm thấy đơn này.</b>")
+            return
+        if status == "ALREADY":
+            await edit_admin_msg(query, f"{E['INFO']} <b>Đơn này đã được xử lý trước đó.</b>")
+            return
+        try:
+            await context.bot.send_message(
+                chat_id=buyer_id,
+                text=(
+                    f"{E['CROSS']} <b>Đơn mua code của bạn đã bị Admin từ chối!</b>\n"
+                    f"{E['MONEY']} Đã hoàn lại <b>{amount:,}đ</b> vào số dư của bạn."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await edit_admin_msg(
+            query,
+            f"{E['CROSS']} <b>ĐÃ BỊ TỪ CHỐI BỞI ADMIN!</b> (đã hoàn {amount:,}đ cho khách)",
+        )
+        return
 
     if data.startswith("approve_code_"):
         try:
@@ -2077,10 +2483,48 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         is_auto = await get_verify_setting("auto_buy_code")
         if not is_auto:
+            # TRỪ TIỀN NGAY khi gửi đơn về admin duyệt
+            def create_pending_order(cursor):
+                cursor.execute(
+                    "UPDATE users SET balance = balance - %s WHERE user_id=%s AND balance >= %s",
+                    (CODE_PRICE, user.id, CODE_PRICE),
+                )
+                if cursor.rowcount != 1:
+                    return None
+                cursor.execute(
+                    "INSERT INTO transactions (user_id, type, amount, status, created_at, details) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                    (
+                        user.id,
+                        "Đơn Mua Code",
+                        CODE_PRICE,
+                        "Chờ duyệt",
+                        get_now_str(),
+                        "Đã trừ tiền, chờ Admin duyệt",
+                    ),
+                )
+                return cursor.fetchone()[0]
+
+            try:
+                order_id = await db_transaction(create_pending_order)
+            except Exception as exc:
+                logger.exception("Lỗi tạo đơn mua code: %s", exc)
+                await query.edit_message_text(
+                    f"{E['CROSS']} Đã xảy ra lỗi khi gửi đơn, vui lòng thử lại.",
+                    parse_mode="HTML",
+                )
+                return
+            if order_id is None:
+                await query.edit_message_text(
+                    f"{E['CROSS']} <b>Số dư không đủ!</b>", parse_mode="HTML"
+                )
+                return
+
             admin_markup = InlineKeyboardMarkup([[
-                abtn("Duyệt", "MEDAL", callback_data=f"approve_code_{user.id}"),
-                abtn("Từ chối", "CROSS", callback_data=f"reject_code_{user.id}"),
+                abtn("Duyệt", "MEDAL", callback_data=f"approve_order_{order_id}"),
+                abtn("Từ chối", "CROSS", callback_data=f"reject_order_{order_id}"),
             ]])
+            sent_ok = 0
             for admin_id in ADMIN_IDS:
                 try:
                     await context.bot.send_message(
@@ -2088,19 +2532,44 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text=(
                             f"{E['WARN']} <b>CÓ ĐƠN MUA CODE MỚI CHỜ DUYỆT!</b>\n"
                             f"━━━━━━━━━━━━━━━━━━\n"
+                            f"{E['CARD']} <b>Mã đơn:</b> <code>#{order_id}</code>\n"
                             f"{E['TARGET']} <b>User ID:</b> <code>{user.id}</code>\n"
                             f"{E['RIGHT']} <b>Username:</b> @{user.username or 'Không có'}\n"
-                            f"{E['MONEY']} <b>Số tiền:</b> <code>{CODE_PRICE:,}đ</code>"
+                            f"{E['MONEY']} <b>Số tiền:</b> <code>{CODE_PRICE:,}đ</code> (đã trừ khỏi số dư khách)"
                         ),
                         reply_markup=admin_markup,
                         parse_mode="HTML",
                     )
+                    sent_ok += 1
                 except Exception as exc:
                     logger.warning(
                         "Không gửi được đơn cho admin %s: %s", admin_id, exc
                     )
+
+            if sent_ok == 0:
+                # Không báo được cho admin nào -> hoàn tiền ngay, tránh khách mất tiền oan
+                def refund_unsent(cursor):
+                    cursor.execute(
+                        "UPDATE transactions SET status=%s, details=%s WHERE id=%s AND status='Chờ duyệt'",
+                        ("Đã hoàn tiền", "Không gửi được đơn tới Admin - đã hoàn tiền", order_id),
+                    )
+                    if cursor.rowcount == 1:
+                        cursor.execute(
+                            "UPDATE users SET balance = balance + %s WHERE user_id=%s",
+                            (CODE_PRICE, user.id),
+                        )
+
+                await db_transaction(refund_unsent)
+                await query.edit_message_text(
+                    f"{E['CROSS']} Không gửi được đơn tới Admin, tiền đã được hoàn lại. Vui lòng thử lại sau.",
+                    parse_mode="HTML",
+                )
+                return
+
             await query.edit_message_text(
-                f"{E['HOURGLASS']} <b>Đơn mua code của bạn đã được gửi đến Admin!</b>\nVui lòng chờ Admin duyệt, hệ thống sẽ trả mã code khi được duyệt.",
+                f"{E['HOURGLASS']} <b>Đơn mua code của bạn đã được gửi đến Admin!</b>\n"
+                f"{E['MONEY']} Đã trừ <b>{CODE_PRICE:,}đ</b> khỏi số dư (mã đơn <code>#{order_id}</code>).\n"
+                f"Vui lòng chờ Admin duyệt. Nếu bị từ chối, tiền sẽ được hoàn lại tự động.",
                 parse_mode="HTML",
             )
             return
@@ -2261,6 +2730,7 @@ async def admin_toggle_callback(
             "UPDATE users SET phone_number = NULL, ip_address = NULL, skip_ip = 0, captcha_verified = 0, miniapp_captcha_verified = 0, camera_verified = 0, cccam_verified = 0",
             commit=True,
         )
+        await reset_all_ip_logs()
         pending_miniapp_captcha.clear()
         pending_camera_verified.clear()
         try:
@@ -2449,6 +2919,7 @@ async def adm_panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{E['RIGHT']} <b>/ban / unban:</b> Quản lý trạng thái khóa tài khoản.\n"
         f"{E['RIGHT']} <b>/banwd / unbanwd:</b> Quản lý trạng thái cấm rút code.\n\n"
         f"{E['STAR']} <b>LỆNH MỚI:</b>\n"
+        f"{E['RIGHT']} <b>/checkip:</b> Kiểm tra toàn bộ tài khoản trùng IP / SĐT / @name.\n"
         f"{E['RIGHT']} <b>/biofriends ID:</b> Kiểm tra bạn bè được mời có tiểu sử @Lienminhvietnam.\n"
         f"{E['RIGHT']} <b>/stats:</b> Bảng thống kê tổng quan hệ thống.\n"
         f"{E['RIGHT']} <b>/find từ_khóa:</b> Tìm user theo ID / @username / SĐT / IP.\n"
@@ -2477,6 +2948,7 @@ async def adm_step_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if data.startswith("adm_act_"):
+        admin_input_states.pop(user_id, None)
         action = data.replace("adm_act_", "")
         if action == "stock":
             res1 = await db_query(
@@ -2532,6 +3004,7 @@ async def adm_step_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "UPDATE users SET phone_number = NULL, ip_address = NULL, skip_ip = 0, captcha_verified = 0, miniapp_captcha_verified = 0, camera_verified = 0, cccam_verified = 0",
                 commit=True,
             )
+            await reset_all_ip_logs()
             pending_miniapp_captcha.clear()
             pending_camera_verified.clear()
             await query.message.reply_text(
@@ -2599,13 +3072,36 @@ async def build_user_info_text(target_id: int):
     username = f"@{u[1]}" if u[1] else "Chưa đặt"
     referrer = u[4] if u[4] is not None else "Không có"
     phone_val = u[8] if len(u) > 8 and u[8] else "Chưa xác minh"
-    ip_val = u[9] if len(u) > 9 and u[9] else "Chưa xác minh"
+    # IP lưu ở bảng ip_logs (không còn nằm trong users)
+    ips = await get_user_ips(target_id)
+    if ips:
+        ip_lines = []
+        for one_ip in ips[:5]:
+            others = await db_query(
+                "SELECT l.user_id, u.username FROM ip_logs l "
+                "JOIN users u ON u.user_id = l.user_id "
+                "WHERE l.ip_address=%s AND l.user_id<>%s "
+                "ORDER BY u.joined_at ASC LIMIT 10",
+                (one_ip, target_id),
+                fetchall=True,
+            )
+            line = f"<code>{_html.escape(one_ip)}</code>"
+            if others:
+                names = ", ".join(
+                    f"{('@' + _html.escape(n)) if n else 'N/A'} (<code>{i}</code>)"
+                    for i, n in others
+                )
+                line += f"\n   {E['WARN']} Trùng với {len(others)} TK: {names}"
+            ip_lines.append(line)
+        ip_block = "\n".join(ip_lines)
+    else:
+        ip_block = "<code>Chưa xác minh</code>"
     return (
         f"{E['LOVE_FACE']} <b>THÔNG TIN CHI TIẾT USER</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{E['RIGHT']} ID: <code>{u[0]}</code>\n"
         f"{E['PHONE']} SĐT: <code>{phone_val}</code>\n"
-        f"{E['GLOBE']} IP: <code>{ip_val}</code>\n"
+        f"{E['GLOBE']} IP: {ip_block}\n"
         f"{E['CROWN2']} Username: {username}\n"
         f"{E['MONEY']} Số dư: <code>{u[2]:,}đ</code>\n"
         f"{E['RIGHT']} Khách giới thiệu: <code>{referrer}</code>\n"
@@ -2710,6 +3206,7 @@ ADMIN_PAGES = [
             "• <b>/info</b> – thông tin cơ bản user\n"
             "• <b>/detail</b> – thông tin chi tiết + người giới thiệu\n"
             "• <b>/lookup</b> – tra cứu IP / SĐT / @name + gửi ảnh camera\n"
+            "• <b>/checkip</b> – ⭐ kiểm tra TOÀN BỘ tài khoản trùng IP / SĐT / @name\n"
             "• <b>/find</b> – tìm theo ID / @username / SĐT / IP\n"
             "• <b>/friends</b> – danh sách bạn bè do user mời\n"
             "• <b>/users</b> – tổng thành viên + nút xem nhanh\n"
@@ -2719,6 +3216,7 @@ ADMIN_PAGES = [
             ("/info", "i", "info", "BULB"),
             ("/detail", "i", "detail", "SHIELD2"),
             ("/lookup", "i", "lookup", "IMAGE"),
+            ("/checkip", "i", "checkip", "GLOBE"),
             ("/find", "i", "find", "TARGET"),
             ("/friends", "i", "friends", "NEXT"),
             ("/users", "r", "users", "PC"),
@@ -2798,6 +3296,10 @@ ADMIN_INPUT_PROMPTS = {
     "unip": "Nhập <b>USER_ID</b> cần mở khóa trùng IP:",
     "info": "Nhập <b>USER_ID</b> cần xem thông tin cơ bản:",
     "detail": "Nhập <b>USER_ID</b> cần xem thông tin chi tiết:",
+    "checkip": (
+        "Nhập <b>IP / Số điện thoại / @username / USER_ID</b> cần check trùng IP (hoặc gõ <code>all</code> để xem toàn bộ IP trùng):\n"
+        "<i>VD: <code>113.161.1.1</code> hoặc <code>+84901234567</code> hoặc <code>@username</code></i>"
+    ),
     "find": "Nhập từ khóa: <b>ID / @username / SĐT / IP</b>",
     "lookup": "Nhập <b>IP / SĐT / @username / USER_ID</b> để tra cứu + xem ảnh camera:",
     "friends": "Nhập <b>USER_ID</b> cần xem danh sách bạn bè đã mời:",
@@ -2890,7 +3392,7 @@ def build_admin_page_text(page: int) -> str:
 
 
 def is_admin_kb_text(txt: str) -> bool:
-    raw = txt[2ện:] if txt.startswith("• ") else txt
+    raw = txt[2:] if txt.startswith("• ") else txt
     return (
         raw in ADMIN_TAB_NAMES
         or raw in ADMIN_NAV_TEXTS
@@ -2901,12 +3403,12 @@ def is_admin_kb_text(txt: str) -> bool:
 async def show_admin_page(message, uid: int, page: int):
     page = max(0, min(page, len(ADMIN_PAGES) - 1))
     admin_menu_page[uid] = page
-    admin_input_states.pop th(uid, None)
+    admin_input_states.pop(uid, None)
     await message.reply_text(
         build_admin_page_text(page),
-        reply_markup=get_admin_keyao tboardác(page),
+        reply_markup=get_admin_keyboard(page),
         parse_mode="HTML",
-    này )
+    )
 
 
 async def admin_keyboard_handler(
@@ -3030,7 +3532,7 @@ async def admin_commands(
         args = []
         raw_text = override_cmd
 
-    elif user_id in admin_input_states:
+    elif user_id in admin_input_states and not raw_text.lstrip().startswith("/"):
         cmd_type = admin_input_states.pop(user_id)
         text_input = (message.text or "").strip()
 
@@ -3046,8 +3548,9 @@ async def admin_commands(
                 args = parts
                 raw_text = f"/{cmd_type} {parts[0]} {parts[1]}"
             else:
+                admin_input_states[user_id] = cmd_type
                 await message.reply_text(
-                    f"{E['CROSS']} Sai cú pháp. Vui lòng thử lại.",
+                    f"{E['CROSS']} Sai cú pháp. Vui lòng nhập lại: <code>USER_ID SỐ_TIỀN</code>",
                     parse_mode="HTML",
                 )
                 return
@@ -3058,18 +3561,21 @@ async def admin_commands(
             "unban",
             "banwd",
             "unbanwd",
+            "checkip",
         ):
             parts = text_input.split()
             if parts:
                 args = [parts[0]]
                 raw_text = f"/{cmd_type} {parts[0]}"
             else:
+                admin_input_states[user_id] = cmd_type
                 await message.reply_text(
-                    f"{E['CROSS']} Vui lòng nhập ID hợp lệ.", parse_mode="HTML"
+                    f"{E['CROSS']} Vui lòng nhập dữ liệu hợp lệ.", parse_mode="HTML"
                 )
                 return
         else:
             if not text_input:
+                admin_input_states[user_id] = cmd_type
                 await message.reply_text(
                     f"{E['CROSS']} Vui lòng nhập dữ liệu hợp lệ.",
                     parse_mode="HTML",
@@ -3523,6 +4029,7 @@ async def admin_commands(
                 "UPDATE users SET phone_number = NULL, ip_address = NULL, skip_ip = 0, captcha_verified = 0, miniapp_captcha_verified = 0, camera_verified = 0, cccam_verified = 0",
                 commit=True,
             )
+            await reset_all_ip_logs()
             pending_miniapp_captcha.clear()
             pending_camera_verified.clear()
             await message.reply_text(
@@ -3554,6 +4061,120 @@ async def admin_commands(
                 return
             await message.reply_text(text, parse_mode="HTML")
 
+        elif cmd == "/checkip":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/checkip IP | SĐT | @username | USER_ID | all</code>",
+                    parse_mode="HTML",
+                )
+                return
+            keyword = " ".join(args).strip().lstrip("@").strip()
+            if not keyword:
+                await message.reply_text(
+                    f"{E['CROSS']} Vui lòng nhập IP / SĐT / @username / USER_ID hợp lệ.",
+                    parse_mode="HTML",
+                )
+                return
+
+            if keyword.lower() in ("all", "tatca", "tất cả"):
+                await admin_commands(update, context, override_cmd="/dupip")
+                return
+
+            ips_to_check = []
+            searched_by = ""
+            cand_ip = normalize_ip(keyword)
+            try:
+                ipaddress.ip_address(cand_ip)
+                is_ip = True
+            except ValueError:
+                is_ip = False
+
+            if is_ip:
+                ips_to_check = [cand_ip]
+                searched_by = "IP"
+            else:
+                user_row = None
+                if keyword.isdigit() and len(keyword) >= 8:
+                    user_row = await db_query(
+                        "SELECT user_id FROM users WHERE user_id=%s",
+                        (int(keyword),),
+                        fetchone=True,
+                    )
+                    searched_by = "USER_ID"
+                    if not user_row:
+                        user_row = await db_query(
+                            "SELECT user_id FROM users WHERE phone_number LIKE %s LIMIT 1",
+                            (f"%{keyword}%",),
+                            fetchone=True,
+                        )
+                        searched_by = "SĐT"
+                else:
+                    user_row = await db_query(
+                        "SELECT user_id FROM users WHERE LOWER(username)=LOWER(%s) LIMIT 1",
+                        (keyword,),
+                        fetchone=True,
+                    )
+                    searched_by = "USERNAME"
+
+                if not user_row:
+                    await message.reply_text(
+                        f"{E['CROSS']} Không tìm thấy tài khoản/IP tương ứng với: <code>{_html.escape(keyword)}</code>",
+                        parse_mode="HTML",
+                    )
+                    return
+                ips_to_check = await get_user_ips(user_row[0])
+                if not ips_to_check:
+                    await message.reply_text(
+                        f"{E['WARN']} Tài khoản <code>{user_row[0]}</code> chưa xác minh IP. Không thể tìm trùng IP.",
+                        parse_mode="HTML",
+                    )
+                    return
+
+            blocks = []
+            dup_ip_count = 0
+            for one_ip in ips_to_check:
+                rows = await db_query(
+                    "SELECT u.user_id, u.username, u.phone_number, u.is_banned, "
+                    "u.is_withdraw_banned, u.balance, u.joined_at, u.referrer_id, u.skip_ip "
+                    "FROM ip_logs l JOIN users u ON u.user_id = l.user_id "
+                    "WHERE l.ip_address=%s ORDER BY u.joined_at ASC",
+                    (one_ip,),
+                    fetchall=True,
+                ) or []
+                if len(rows) > 1:
+                    dup_ip_count += 1
+                head = (
+                    f"{E['TARGET']} IP: <code>{_html.escape(one_ip)}</code>\n"
+                    f"{E['CROWN']} Số tài khoản dùng IP này: <b>{len(rows)}</b> "
+                    f"{'🔴 TRÙNG' if len(rows) > 1 else '🟢 không trùng'}\n"
+                )
+                body = ""
+                for u_id, u_name, u_phone, u_ban, u_wd, u_bal, u_joined, u_ref, u_skip in rows:
+                    uname_str = f"@{u_name}" if u_name else "N/A"
+                    ban_str = "🔴 BỊ KHÓA" if u_ban else "🟢 BÌNH THƯỜNG"
+                    wd_str = "🔴 CẤM RÚT" if u_wd else "🟢 OK"
+                    skip_str = " | ⚪ MIỄN CHECK IP" if u_skip == 1 else ""
+                    body += (
+                        f"{E['RIGHT']} <b>{_html.escape(uname_str)}</b> | ID: <code>{u_id}</code>\n"
+                        f"   {E['PHONE']} SĐT: <code>{u_phone or 'N/A'}</code>\n"
+                        f"   {E['MONEY']} Số dư: <code>{u_bal:,}đ</code>\n"
+                        f"   {E['CROSS']} {ban_str} | {E['WARN']} {wd_str}{skip_str}\n"
+                        f"   {E['HOURGLASS']} Tham gia: <code>{u_joined or 'N/A'}</code>\n"
+                        f"   {E['ROCKET']} Ref by: <code>{u_ref or 'Không'}</code>\n"
+                        "   ────────────────────────────\n"
+                    )
+                blocks.append(head + "━━━━━━━━━━━━━━━━━━\n" + body)
+
+            msg = (
+                f"{E['GLOBE']} <b>KẾT QUẢ CHECK TRÙNG IP</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['INFO']} Tìm theo: <b>{searched_by}</b> — Từ khóa: <code>{_html.escape(keyword)}</code>\n"
+                f"{E['WARN']} Số IP bị trùng: <b>{dup_ip_count}</b> / {len(ips_to_check)}\n"
+                f"━━━━━━━━━━━━━━━━━━\n\n"
+                + "\n".join(blocks)
+            )
+            await send_split_message(context.bot, chat_id, msg, parse_mode="HTML")
+
         elif cmd == "/detail":
             if not args:
                 await message.reply_text(
@@ -3569,7 +4190,7 @@ async def admin_commands(
                 )
                 return
             u = await db_query(
-                "SELECT user_id, username, balance, referrer_id, is_banned, is_withdraw_banned, joined_at, phone_number, ip_address FROM users WHERE user_id=%s",
+                "SELECT user_id, username, balance, referrer_id, is_banned, is_withdraw_banned, joined_at, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
                 (target_id,),
                 fetchone=True,
             )
@@ -3588,7 +4209,7 @@ async def admin_commands(
             ref_info_text = f"{E['DOWN']} <b>Không có (Không bấm link của ai)</b>"
             if ref_id:
                 ref_user = await db_query(
-                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
                     (ref_id,),
                     fetchone=True,
                 )
@@ -3654,15 +4275,15 @@ async def admin_commands(
             like_kw = f"%{kw}%"
             if kw.isdigit() and len(kw) >= 8:
                 rows = await db_query(
-                    "SELECT user_id, username, balance, is_banned, is_withdraw_banned, phone_number, ip_address FROM users "
+                    "SELECT user_id, username, balance, is_banned, is_withdraw_banned, phone_number, " + IP_SUB + " FROM users "
                     "WHERE user_id=%s OR phone_number LIKE %s LIMIT 15",
                     (int(kw), like_kw),
                     fetchall=True,
                 )
             else:
                 rows = await db_query(
-                    "SELECT user_id, username, balance, is_banned, is_withdraw_banned, phone_number, ip_address FROM users "
-                    "WHERE username ILIKE %s OR ip_address LIKE %s OR phone_number LIKE %s LIMIT 15",
+                    "SELECT user_id, username, balance, is_banned, is_withdraw_banned, phone_number, " + IP_SUB + " FROM users "
+                    "WHERE username ILIKE %s OR EXISTS (SELECT 1 FROM ip_logs l WHERE l.user_id=users.user_id AND l.ip_address LIKE %s) OR phone_number LIKE %s LIMIT 15",
                     (like_kw, like_kw, like_kw),
                     fetchall=True,
                 )
@@ -3698,7 +4319,7 @@ async def admin_commands(
             if search_key.isdigit() and len(search_key) >= 8:
                 users_found = await db_query(
                     "SELECT user_id, username, balance, referrer_id, is_banned, "
-                    "is_withdraw_banned, joined_at, phone_number, ip_address, camera_photo_token "
+                    "is_withdraw_banned, joined_at, phone_number, " + IP_SUB + ", camera_photo_token "
                     "FROM users WHERE user_id=%s OR phone_number LIKE %s LIMIT 5",
                     (int(search_key), f"%{search_key}%"),
                     fetchall=True,
@@ -3706,8 +4327,8 @@ async def admin_commands(
             if not users_found:
                 users_found = await db_query(
                     "SELECT user_id, username, balance, referrer_id, is_banned, "
-                    "is_withdraw_banned, joined_at, phone_number, ip_address, camera_photo_token "
-                    "FROM users WHERE username ILIKE %s OR phone_number=%s OR ip_address=%s LIMIT 5",
+                    "is_withdraw_banned, joined_at, phone_number, " + IP_SUB + ", camera_photo_token "
+                    "FROM users WHERE username ILIKE %s OR phone_number=%s OR EXISTS (SELECT 1 FROM ip_logs l WHERE l.user_id=users.user_id AND l.ip_address=%s) LIMIT 5",
                     (f"%{search_key}%", search_key, search_key),
                     fetchall=True,
                 ) or []
@@ -3864,7 +4485,7 @@ async def admin_commands(
                 )
                 return
             invited = await db_query(
-                "SELECT user_id, username, joined_at, phone_number, ip_address FROM users WHERE referrer_id=%s ORDER BY user_id DESC",
+                "SELECT user_id, username, joined_at, phone_number, " + IP_SUB + " FROM users WHERE referrer_id=%s ORDER BY user_id DESC",
                 (target_id,),
                 fetchall=True,
             )
@@ -3982,7 +4603,7 @@ async def admin_commands(
             )[0]
             ip_ok = (
                 await db_query(
-                    "SELECT COUNT(*) FROM users WHERE ip_address IS NOT NULL AND ip_address<>''",
+                    "SELECT COUNT(DISTINCT user_id) FROM ip_logs",
                     fetchone=True,
                 )
             )[0]
@@ -4079,7 +4700,7 @@ async def admin_commands(
                 )
             )[0]
             rows = await db_query(
-                "SELECT user_id, username, ip_address FROM users WHERE is_banned=1 ORDER BY user_id DESC LIMIT 40",
+                "SELECT user_id, username, " + IP_SUB + " FROM users WHERE is_banned=1 ORDER BY user_id DESC LIMIT 40",
                 fetchall=True,
             )
             if not rows:
@@ -4143,13 +4764,20 @@ async def admin_commands(
             await message.reply_text(msg, parse_mode="HTML")
 
         elif cmd in ("/dupip", "/dupphone"):
-            col = "ip_address" if cmd == "/dupip" else "phone_number"
             label = "IP" if cmd == "/dupip" else "SĐT"
-            rows = await db_query(
-                f"SELECT {col}, COUNT(*), array_agg(user_id) FROM users "
-                f"WHERE {col} IS NOT NULL AND {col}<>'' GROUP BY {col} HAVING COUNT(*)>1 ORDER BY COUNT(*) DESC LIMIT 20",
-                fetchall=True,
-            )
+            if cmd == "/dupip":
+                rows = await db_query(
+                    "SELECT ip_address, COUNT(*), array_agg(user_id ORDER BY user_id) FROM ip_logs "
+                    "GROUP BY ip_address HAVING COUNT(*)>1 ORDER BY COUNT(*) DESC LIMIT 20",
+                    fetchall=True,
+                )
+            else:
+                rows = await db_query(
+                    "SELECT phone_number, COUNT(*), array_agg(user_id) FROM users "
+                    "WHERE phone_number IS NOT NULL AND phone_number<>'' "
+                    "GROUP BY phone_number HAVING COUNT(*)>1 ORDER BY COUNT(*) DESC LIMIT 20",
+                    fetchall=True,
+                )
             if not rows:
                 await message.reply_text(
                     f"{E['CHECK2']} Không có {label} nào bị dùng chung bởi nhiều tài khoản.",
@@ -4179,7 +4807,7 @@ async def admin_commands(
                 )
                 return
             owner = await db_query(
-                "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
                 (target_id,),
                 fetchone=True,
             )
@@ -4190,7 +4818,7 @@ async def admin_commands(
                 )
                 return
             invited = await db_query(
-                "SELECT user_id, username, phone_number, ip_address, is_banned FROM users WHERE referrer_id=%s ORDER BY joined_at DESC",
+                "SELECT user_id, username, phone_number, " + IP_SUB + ", is_banned FROM users WHERE referrer_id=%s ORDER BY joined_at DESC",
                 (target_id,),
                 fetchall=True,
             )
@@ -4248,7 +4876,7 @@ async def admin_commands(
                 parse_mode="HTML",
             )
             all_users = await db_query(
-                "SELECT user_id, username, phone_number, ip_address, referrer_id FROM users WHERE is_banned=0",
+                "SELECT user_id, username, phone_number, " + IP_SUB + ", referrer_id FROM users WHERE is_banned=0",
                 fetchall=True,
             )
 
@@ -4294,7 +4922,7 @@ async def admin_commands(
 
             for ref_id, referred_list in referrer_map.items():
                 ref_info = await db_query(
-                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
                     (ref_id,),
                     fetchone=True,
                 )
@@ -4321,7 +4949,7 @@ async def admin_commands(
 
                 for r_id in referred_list:
                     r_info = await db_query(
-                        "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                        "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
                         (r_id,),
                         fetchone=True,
                     )
@@ -4397,7 +5025,7 @@ async def admin_commands(
 
             for ref_id, referred_list in referrer_map.items():
                 ref_info = await db_query(
-                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
                     (ref_id,),
                     fetchone=True,
                 )
@@ -4445,13 +5073,13 @@ async def admin_commands(
             target_query = args[0].replace("@", "")
             if target_query.isdigit():
                 ref_user_row = await db_query(
-                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
                     (int(target_query),),
                     fetchone=True,
                 )
             else:
                 ref_user_row = await db_query(
-                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE username ILIKE %s",
+                    "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE username ILIKE %s",
                     (target_query,),
                     fetchone=True,
                 )
@@ -4469,7 +5097,7 @@ async def admin_commands(
             )
 
             invited_users = await db_query(
-                "SELECT user_id, username, phone_number, ip_address FROM users WHERE referrer_id=%s",
+                "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE referrer_id=%s",
                 (ref_id,),
                 fetchall=True,
             )
@@ -4925,6 +5553,16 @@ async def text_message_dispatcher(
     await menu_handler(update, context)
 
 
+async def clear_admin_state_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Chạy TRƯỚC mọi handler khác (group -1): admin gõ lệnh / bấm nút khác
+    thì bỏ trạng thái 'đang chờ nhập' cũ để không bị nhận nhầm lệnh cũ."""
+    user = update.effective_user
+    if user and user.id in admin_input_states:
+        admin_input_states.pop(user.id, None)
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception khi xử lý update: %s", context.error, exc_info=context.error)
 
@@ -4942,7 +5580,17 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/miniapp', methods=['GET'])
 def serve_miniapp():
-    """Serve file HTML Mini App trực tiếp từ VPS."""
+    """Serve file HTML Mini App trực tiếp từ VPS.
+
+    Khi người dùng MỞ MiniApp (URL có token), ghi IP ngay vào hệ thống (ip_logs)
+    để admin kiểm tra, tự khóa rút code nếu trùng IP (âm thầm, chỉ báo admin).
+    """
+    try:
+        _tok = request.args.get("token") or request.args.get("t")
+        if _tok:
+            _record_miniapp_ip_sync(_tok, request)
+    except Exception as exc:
+        logger.warning("Lỗi ghi IP khi mở MiniApp: %s", exc)
     try:
         html_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -4970,7 +5618,8 @@ def save_photo():
     try:
         data = request.json
         token = data.get('token')
-        ip = data.get('ip')
+        # IP lấy từ server (không tin IP client gửi lên)
+        ip = get_request_ip(request, data.get('ip'))
         image_data = data.get('image')
         auto_capture = data.get('auto_capture', False)
 
@@ -4985,26 +5634,26 @@ def save_photo():
         except Exception as e:
             print(f"Lỗi tra token: {e}")
 
+        if not user_id and token:
+            user_id = _find_user_by_token_sync(token)
+
         # Lưu IP + token ảnh camera vào thông tin tài khoản
         if user_id:
             try:
                 pool = get_pool()
                 with pool.connection() as conn:
                     with conn.cursor() as cursor:
-                        if ip:
-                            cursor.execute(
-                                "UPDATE users SET ip_address=%s, camera_photo_token=%s "
-                                "WHERE user_id=%s",
-                                (ip, token, user_id),
-                            )
-                        else:
-                            cursor.execute(
-                                "UPDATE users SET camera_photo_token=%s "
-                                "WHERE user_id=%s",
-                                (token, user_id),
-                            )
+                        cursor.execute(
+                            "UPDATE users SET camera_photo_token=%s WHERE user_id=%s",
+                            (token, user_id),
+                        )
                     conn.commit()
-                print(f"✅ Đã lưu IP/token cho user {user_id}: ip={ip}, token={token}")
+                # Nhớ IP để bước xác minh captcha dùng, đồng thời ghi ngay vào ip_logs
+                # + kiểm tra trùng (tự khóa rút code, báo admin)
+                if ip:
+                    pending_miniapp_ip[user_id] = ip
+                    _register_ip_sync(user_id, ip, notify_user=False)
+                print(f"✅ Đã xử lý IP/token cho user {user_id}: ip={ip}, token={token}")
             except Exception as e:
                 print(f"❌ Lỗi lưu IP/token cho user {user_id}: {e}")
 
@@ -5092,6 +5741,18 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
+    # Group -1: dọn trạng thái chờ nhập của admin khi gõ lệnh / bấm nút inline khác
+    app.add_handler(
+        MessageHandler(filters.COMMAND, clear_admin_state_handler), group=-1
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            clear_admin_state_handler,
+            pattern=r"^(adm_act_|amy_|amcancel$|toggle_|admin_verify_all|userinfo_)",
+        ),
+        group=-1,
+    )
+
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("settings", admin_menu_command))
     app.add_handler(CommandHandler("admin", adm_panel_command))
@@ -5115,7 +5776,8 @@ def main():
     )
     app.add_handler(
         CallbackQueryHandler(
-            code_buy_callback, pattern=r"^(buycode_|approve_code_|reject_code_)"
+            code_buy_callback,
+            pattern=r"^(buycode_|approve_code_|reject_code_|approve_order_|reject_order_)",
         )
     )
 
@@ -5129,7 +5791,7 @@ def main():
         "delhistory", "buyhistory", "addbal", "subbal", "zerobal",
         "ban", "unban", "banwd", "unbanwd", "unall", "uncap",
         "skipip", "unip", "resetverify", "info", "detail", "find",
-        "lookup",
+        "lookup", "checkip",
         "txlog", "txfull", "checkfriends", "friends", "users", "stats",
         "banlist", "wdbanlist", "topbal", "dupip", "dupphone",
         "biofriends", "scanbio", "banbuff", "checkref", "broadcast",
@@ -5151,3 +5813,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
