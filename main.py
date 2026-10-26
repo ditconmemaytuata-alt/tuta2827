@@ -58,9 +58,9 @@ TRANSFER_PREFIX = os.getenv("TRANSFER_PREFIX", "lixisinhnhat")
 SEPAY_KEY = os.getenv("SEPAY_KEY", "")
 WEB_PORT = int(os.getenv("PORT", "8080"))
 
-MIN_DEPOSIT = 10_000
+MIN_DEPOSIT = 20_000
 MAX_DEPOSIT = 50_000_000
-QUICK_AMOUNTS = [10_000, 20_000, 50_000, 100_000, 200_000, 500_000]
+QUICK_AMOUNTS = [20_000, 50_000, 100_000, 200_000, 500_000, 1_000_000]
 THROTTLE = 0.5
 VN_TZ = timezone(timedelta(hours=7))
 EPOCH = datetime.fromtimestamp(0, timezone.utc)
@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS orders(
     price BIGINT NOT NULL, points TEXT, login TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     created TIMESTAMPTZ NOT NULL DEFAULT now());
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS reason TEXT;
 CREATE TABLE IF NOT EXISTS bank_tx(id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS products(
     gate TEXT PRIMARY KEY, price BIGINT NOT NULL, points TEXT,
@@ -224,6 +225,11 @@ def parse_amount(s: str):
     if s.endswith("k"):
         s, mult = s[:-1], 1000
     return int(s) * mult if s.isdigit() and int(s) * mult < 10**12 else None
+
+
+def quick_label(a: int) -> str:
+    """Nhãn nút nạp nhanh: 20K, 50K, ... 1M."""
+    return f"{a // 1_000_000}M" if a >= 1_000_000 and a % 1_000_000 == 0 else f"{a // 1000}K"
 
 
 def user_link(uid, name, username):
@@ -332,6 +338,10 @@ class Nap(StatesGroup):
     amount = State()
 
 
+class Reject(StatesGroup):
+    reason = State()
+
+
 async def safe_send(chat_id, text, **kw) -> bool:
     try:
         await bot.send_message(chat_id, text, **kw)
@@ -348,6 +358,41 @@ async def to_admins(text, **kw):
 async def send_long(chat_id, text):
     for i in range(0, len(text), 3800):
         await bot.send_message(chat_id, text[i:i + 3800])
+
+
+# ===================== FILE BIÊN NHẬN ĐƠN HÀNG =====================
+RECEIPT_STATUS = {
+    "pending": "ĐANG XỬ LÝ",
+    "done": "THÀNH CÔNG",
+    "rejected": "BỊ TỪ CHỐI",
+}
+
+
+def receipt_file(o, reason=None) -> BufferedInputFile:
+    """File .txt biên nhận: CỔNG | TRẠNG THÁI | SỐ TIỀN, số điểm, tên đăng nhập (theo tình trạng đơn)."""
+    status = RECEIPT_STATUS.get(o["status"], str(o["status"]).upper())
+    lines = [
+        f"{'CỔNG':<12}{'TRẠNG THÁI':<18}{'SỐ TIỀN'}",
+        f"{o['gate']:<12}{status:<18}{money(o['price'])}",
+        "",
+        f"SỐ ĐIỂM: {o['points']}",
+        f"TÊN ĐĂNG NHẬP: {o['login']}",
+        "",
+        f"MÃ ĐƠN: #{o['id']}",
+        f"THỜI GIAN ĐẶT: {fmt(o['created'])}",
+    ]
+    if reason:
+        lines += ["", f"LÝ DO TỪ CHỐI: {reason}", "(Đơn bị từ chối không được hoàn tiền)"]
+    return BufferedInputFile("\n".join(lines).encode("utf-8"), filename=f"don_{o['id']}.txt")
+
+
+async def send_receipt(chat_id, o, caption, reason=None) -> bool:
+    try:
+        await bot.send_document(chat_id, receipt_file(o, reason), caption=caption)
+        return True
+    except Exception as e:
+        logging.warning("Không gửi được file biên nhận cho %s: %s", chat_id, e)
+        return False
 
 
 # ===================== MIDDLEWARE: CHỐNG SPAM + KHÓA TÀI KHOẢN =====================
@@ -415,7 +460,7 @@ async def account(m: Message, state: FSMContext):
 
 # ===================== NẠP TIỀN (TỰ ĐỘNG TẠO QR) =====================
 def nap_keyboard() -> InlineKeyboardMarkup:
-    amounts = [btn(f"{a // 1000}K", f"nap:{a}", ID_CASH, "💵") for a in QUICK_AMOUNTS]
+    amounts = [btn(quick_label(a), f"nap:{a}", ID_CASH, "💵") for a in QUICK_AMOUNTS]
     rows = [amounts[i:i + 3] for i in range(0, len(amounts), 3)]
     rows.append([btn("NHẬP SỐ TIỀN KHÁC", "nap:custom", ID_NOTE, "✍️")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -425,7 +470,8 @@ NAP_HELP = (
     f"{E_CARD} <b>NẠP TIỀN TỰ ĐỘNG</b>\n"
     "━━━━━━━━━━━━━━━\n"
     "Chọn nhanh số tiền bên dưới, hoặc dùng lệnh <code>/nap số_tiền</code>\n"
-    "Ví dụ: <code>/nap 30000</code> hoặc <code>/nap 30k</code>\n\n"
+    "Ví dụ: <code>/nap 30000</code> hoặc <code>/nap 30k</code>\n"
+    f"Nạp tối thiểu: <b>{money(MIN_DEPOSIT)}</b>\n\n"
     "Bot sẽ tạo mã QR có sẵn số tiền, nội dung và thông tin người nhận. "
     "Bạn chỉ cần quét mã và chuyển khoản, số dư được cộng tự động sau ít phút.\n\n"
     f"{E_WARN} Vui lòng chuyển <b>đúng số tiền và nội dung</b> để hệ thống ghi nhận chính xác.\n"
@@ -629,10 +675,12 @@ async def buy_ok(c: CallbackQuery, state: FSMContext):
             f"Thiếu: <b>{money(d['price'] - bal)}</b>. Dùng <code>/nap số_tiền</code> để nạp thêm.")
         return await c.answer()
     await c.message.edit_text(
-        f"{E_OK} <b>ĐÃ MUA THÀNH CÔNG</b>\nMã đơn: <b>#{oid}</b>\n"
+        f"{E_WAIT} <b>ĐÃ TẠO ĐƠN — ĐANG XỬ LÝ</b>\nMã đơn: <b>#{oid}</b>\n"
         "Đơn hàng sẽ được xử lý trong vòng <b>24-72H</b>.\n"
         "Theo dõi trạng thái tại mục LỊCH SỬ.")
     await c.answer()
+    o = await pool.fetchrow("SELECT * FROM orders WHERE id=$1", oid)
+    await send_receipt(uid, o, f"{E_WAIT} Đơn #{oid} — <b>ĐANG XỬ LÝ</b>")
     await notify_admin_order(oid)
 
 
@@ -656,7 +704,7 @@ async def notify_admin_order(oid, chat_id=None):
 
 STATUS = {"pending": f"{E_WAIT} ĐANG XỬ LÝ",
           "done": f"{E_OK} MUA THÀNH CÔNG (ADMIN ĐÃ XỬ LÝ)",
-          "rejected": f"{E_NO} BỊ TỪ CHỐI (ĐÃ HOÀN TIỀN)"}
+          "rejected": f"{E_NO} BỊ TỪ CHỐI (KHÔNG HOÀN TIỀN)"}
 
 
 @dp.message(F.text == "LỊCH SỬ")
@@ -669,9 +717,15 @@ async def history(m: Message, state: FSMContext):
     t += "\n".join(f"{E_OK} Nạp thành công: <b>{money(d['amount'])}</b> — {fmt(d['created'])}"
                    for d in deps) if deps else "Chưa có giao dịch nạp tiền."
     t += f"\n\n{E_CART} <b>LỊCH SỬ MUA CODE</b> (10 gần nhất)\n━━━━━━━━━━━━━━━\n"
-    t += "\n\n".join(f"#{o['id']} • {o['gate']} • {money(o['price'])} [{o['points']}]\n"
-                     f"{STATUS[o['status']]} — {fmt(o['created'])}"
-                     for o in ords) if ords else "Chưa có đơn hàng."
+
+    def order_line(o):
+        s = (f"#{o['id']} • {o['gate']} • {money(o['price'])} [{o['points']}]\n"
+             f"{STATUS[o['status']]} — {fmt(o['created'])}")
+        if o["status"] == "rejected" and o["reason"]:
+            s += f"\nLý do: {esc(o['reason'])}"
+        return s
+
+    t += "\n\n".join(order_line(o) for o in ords) if ords else "Chưa có đơn hàng."
     await m.answer(t)
 
 
@@ -696,7 +750,9 @@ ADMIN_HELP = (
     "<code>/sanpham</code> — danh sách cổng và giá\n"
     "<code>/setgia CỔNG giá [điểm]</code> — đổi giá (VD: /setgia LLWIN 95000 188 ĐIỂM)\n"
     "<code>/themcong CỔNG giá điểm</code> — thêm cổng mới\n"
-    "<code>/tat CỔNG</code> | <code>/bat CỔNG</code> — tạm ngưng / mở bán")
+    "<code>/tat CỔNG</code> | <code>/bat CỔNG</code> — tạm ngưng / mở bán\n"
+    "<code>/huy</code> — hủy thao tác nhập lý do từ chối đang dở\n\n"
+    "<i>Bấm TỪ CHỐI ở đơn: bot sẽ hỏi lý do, đơn bị từ chối không hoàn tiền.</i>")
 
 
 @dp.message(Command("admin"), admin)
@@ -705,30 +761,47 @@ async def admin_help(m: Message):
 
 
 @dp.callback_query(F.data.regexp(r"^(ok|no):\d+$"))
-async def admin_decide(c: CallbackQuery):
+async def admin_decide(c: CallbackQuery, state: FSMContext):
     if c.from_user.id not in ADMIN_IDS:
         return await c.answer("Bạn không phải admin.", show_alert=True)
     act, oid = c.data.split(":")
     oid = int(oid)
-    new = "done" if act == "ok" else "rejected"
-    async with pool.acquire() as conn, conn.transaction():
-        o = await conn.fetchrow(
-            "UPDATE orders SET status=$2 WHERE id=$1 AND status='pending' RETURNING *", oid, new)
-        if o and new == "rejected":
-            await conn.execute("UPDATE users SET balance=balance+$2 WHERE id=$1", o["user_id"], o["price"])
+
+    # ----- TỪ CHỐI: hỏi admin nhập lý do trước -----
+    if act == "no":
+        status = await pool.fetchval("SELECT status FROM orders WHERE id=$1", oid)
+        if status != "pending":
+            return await c.answer("Đơn này đã được xử lý rồi.", show_alert=True)
+        await state.set_state(Reject.reason)
+        await state.update_data(oid=oid, chat_id=c.message.chat.id,
+                                msg_id=c.message.message_id, html=c.message.html_text)
+        await c.message.answer(
+            f"{E_EDIT} Nhập <b>LÝ DO TỪ CHỐI</b> đơn <b>#{oid}</b>.\n"
+            f"{E_WARN} Đơn bị từ chối sẽ <b>KHÔNG hoàn tiền</b> cho khách.\n"
+            "Lý do sẽ được gửi kèm thông báo cho khách.\n"
+            "<i>Gửi /huy để hủy thao tác.</i>")
+        return await c.answer()
+
+    # ----- DUYỆT -----
+    o = await pool.fetchrow(
+        "UPDATE orders SET status='done' WHERE id=$1 AND status='pending' RETURNING *", oid)
     if not o:
         return await c.answer("Đơn này đã được xử lý rồi.", show_alert=True)
-    if new == "done":
-        await safe_send(o["user_id"], f"{E_OK} <b>Đơn #{oid}</b> ({o['gate']} - {o['points']}) "
-                                      f"đã được admin xử lý thành công!\nCảm ơn bạn đã ủng hộ {E_HEART}")
-    else:
-        await safe_send(o["user_id"], f"{E_NO} <b>Đơn #{oid}</b> ({o['gate']}) bị từ chối. "
-                                      f"Đã hoàn <b>{money(o['price'])}</b> vào số dư.\n"
-                                      f"Cần hỗ trợ vui lòng liên hệ {SUPPORT}")
+    await send_receipt(
+        o["user_id"], o,
+        f"{E_OK} <b>Đơn #{oid}</b> ({o['gate']} - {o['points']}) đã được admin xử lý "
+        f"<b>THÀNH CÔNG</b>!\nCảm ơn bạn đã ủng hộ {E_HEART}")
     who = esc(c.from_user.full_name)
-    mark = f"{E_OK} ĐÃ DUYỆT" if new == "done" else f"{E_NO} ĐÃ TỪ CHỐI"
-    await c.message.edit_text(c.message.html_text + f"\n\n<b>{mark}</b> bởi {who}")
+    await c.message.edit_text(c.message.html_text + f"\n\n<b>{E_OK} ĐÃ DUYỆT</b> bởi {who}")
     await c.answer("Xong")
+
+
+@dp.message(Command("huy"), admin)
+async def cancel_reject(m: Message, state: FSMContext):
+    if await state.get_state() == Reject.reason.state:
+        await state.clear()
+        return await m.answer(f"{E_NO} Đã hủy thao tác từ chối. Đơn vẫn đang chờ xử lý.")
+    await m.answer("Không có thao tác nào đang chờ.")
 
 
 @dp.message(Command("tru"), admin)
@@ -1007,6 +1080,45 @@ async def get_login(m: Message, state: FSMContext):
         f"Số dư hiện tại: {money(bal)}\n\n"
         f"{E_WARN} Vui lòng kiểm tra lại thông tin trước khi xác nhận.",
         reply_markup=kb)
+
+
+@dp.message(Reject.reason, F.text, admin)
+async def reject_reason(m: Message, state: FSMContext):
+    """Admin nhập lý do từ chối -> từ chối đơn (KHÔNG hoàn tiền) và báo khách kèm lý do."""
+    reason = m.text.strip()[:500]
+    if not reason:
+        return await m.answer(f"{E_WARN} Lý do không được để trống. Vui lòng nhập lại hoặc /huy.")
+    d = await state.get_data()
+    await state.clear()
+    oid = d["oid"]
+    o = await pool.fetchrow(
+        "UPDATE orders SET status='rejected', reason=$2 WHERE id=$1 AND status='pending' RETURNING *",
+        oid, reason)
+    if not o:
+        return await m.answer(f"{E_WARN} Đơn #{oid} đã được xử lý rồi.")
+
+    sent = await send_receipt(
+        o["user_id"], o,
+        f"{E_NO} <b>Đơn #{oid}</b> ({o['gate']}) bị <b>TỪ CHỐI</b>.\n"
+        f"{E_NOTE} Lý do: {esc(reason)}\n"
+        f"{E_WARN} Đơn bị từ chối không được hoàn tiền.\n"
+        f"Cần hỗ trợ vui lòng liên hệ {SUPPORT}",
+        reason=reason)
+    if not sent:  # gửi file lỗi thì vẫn báo bằng tin nhắn thường
+        await safe_send(o["user_id"],
+                        f"{E_NO} <b>Đơn #{oid}</b> ({o['gate']}) bị <b>TỪ CHỐI</b>.\n"
+                        f"{E_NOTE} Lý do: {esc(reason)}\n"
+                        f"{E_WARN} Đơn bị từ chối không được hoàn tiền.\n"
+                        f"Cần hỗ trợ vui lòng liên hệ {SUPPORT}")
+
+    who = esc(m.from_user.full_name)
+    try:  # cập nhật tin đơn cũ, bỏ nút duyệt/từ chối
+        await bot.edit_message_text(
+            d["html"] + f"\n\n<b>{E_NO} ĐÃ TỪ CHỐI</b> bởi {who}\nLý do: {esc(reason)}",
+            chat_id=d["chat_id"], message_id=d["msg_id"])
+    except Exception:
+        pass
+    await m.answer(f"{E_OK} Đã từ chối đơn <b>#{oid}</b> (không hoàn tiền) và gửi lý do cho khách.")
 
 
 @dp.error()
