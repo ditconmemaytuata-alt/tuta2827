@@ -134,6 +134,7 @@ MENU_ICONS = {
     "NẠP TIỀN": "5427168083074628963",    # 💎
     "MUA HÀNG": "6102831593389299866",    # 🌟
     "LỊCH SỬ": "6280407793631498213",     # 🚗
+    "MỜI BẠN BÈ": "5402186569006210455",  # 💱 emoji do người dùng cung cấp
     "HỖ TRỢ": "5314504236132747481",      # ⁉️
 }
 BTN_INVITE = "MỜI BẠN BÈ"
@@ -367,25 +368,50 @@ async def register_referral(m: Message, args: str):
 
 
 async def check_referral(uid):
-    """Gọi sau mỗi lần nạp: nếu bạn được mời đủ điều kiện thì thông báo người mời + admin."""
+    """Đánh dấu lượt mời hợp lệ khi tổng giao dịch nạp được tính đạt ngưỡng.
+
+    UPDATE có điều kiện NOT qualified giúp tránh gửi thông báo/thưởng lặp lại.
+    Hàm này được gọi sau giao dịch nạp và khi người mời mở mục Mời bạn bè.
+    """
     try:
-        referrer = await pool.fetchval(
-            "UPDATE referrals SET qualified=TRUE, qualified_at=now() "
-            "WHERE referee_id=$1 AND NOT qualified AND "
-            "(SELECT COALESCE(SUM(amount),0) FROM deposits WHERE user_id=$1 AND counted) >= $2 "
-            "RETURNING referrer_id", uid, REF_MIN_DEPOSIT)
+        async with pool.acquire() as c, c.transaction():
+            referrer = await c.fetchval(
+                "UPDATE referrals AS r SET qualified=TRUE, qualified_at=now() "
+                "WHERE r.referee_id=$1 AND NOT r.qualified "
+                "AND (SELECT COALESCE(SUM(d.amount),0) FROM deposits AS d "
+                "     WHERE d.user_id=r.referee_id AND d.counted=TRUE) >= $2 "
+                "RETURNING r.referrer_id", uid, REF_MIN_DEPOSIT)
         if referrer is None:
-            return
-        await safe_send(referrer,
-                        f"{E_OK} <b>MỜI BẠN BÈ HỢP LỆ</b>\n"
-                        f"Bạn bè (ID <code>{uid}</code>) đã nạp đủ {money(REF_MIN_DEPOSIT)}.\n"
-                        f"Bạn được thưởng <b>{money(REF_REWARD)}</b>. "
-                        f"Vui lòng liên hệ CSKH {SUPPORT} để nhận thưởng.")
-        await to_admins(f"{E_GIFT} <b>MỜI BẠN HỢP LỆ</b>\n"
-                        f"Người mời: <code>{referrer}</code>\nNgười được mời: <code>{uid}</code>\n"
-                        f"Cần trả thưởng: <b>{money(REF_REWARD)}</b>")
-    except Exception as e:
-        logging.warning("check_referral lỗi: %s", e)
+            return False
+        sent = await safe_send(
+            referrer,
+            f"{E_OK} <b>MỜI BẠN BÈ HỢP LỆ</b>\n"
+            f"Bạn bè (ID <code>{uid}</code>) đã nạp tích lũy đủ {money(REF_MIN_DEPOSIT)}.\n"
+            f"Mức thưởng dự kiến: <b>{money(REF_REWARD)}</b>. "
+            f"Vui lòng liên hệ CSKH {SUPPORT} để xác nhận nhận thưởng.")
+        await to_admins(
+            f"{E_GIFT} <b>MỜI BẠN HỢP LỆ</b>\n"
+            f"Người mời: <code>{referrer}</code>\n"
+            f"Người được mời: <code>{uid}</code>\n"
+            f"Cần kiểm tra thưởng: <b>{money(REF_REWARD)}</b>")
+        if not sent:
+            logging.warning("Không gửi được thông báo lượt mời hợp lệ tới referrer=%s", referrer)
+        return True
+    except Exception:
+        logging.exception("check_referral lỗi với uid=%s", uid)
+        return False
+
+
+async def recheck_referrals(referrer_id):
+    """Đối soát lại các lượt mời của một người trước khi hiển thị thống kê."""
+    try:
+        referee_ids = await pool.fetch(
+            "SELECT referee_id FROM referrals WHERE referrer_id=$1 AND NOT qualified",
+            referrer_id)
+        for row in referee_ids:
+            await check_referral(row["referee_id"])
+    except Exception:
+        logging.exception("recheck_referrals lỗi với referrer_id=%s", referrer_id)
 
 
 async def get_gates(active_only=True):
@@ -636,6 +662,8 @@ async def invite(m: Message, state: FSMContext):
     await state.clear()
     uid = m.from_user.id
     link = await ref_link(uid)
+    # Đối soát các lượt chưa hợp lệ trước khi tính số liệu hiển thị.
+    await recheck_referrals(uid)
     total = await pool.fetchval("SELECT COUNT(*) FROM referrals WHERE referrer_id=$1", uid)
     ok = await pool.fetchval("SELECT COUNT(*) FROM referrals WHERE referrer_id=$1 AND qualified", uid)
     share = "https://t.me/share/url?" + urlencode(
