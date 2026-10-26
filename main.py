@@ -2,7 +2,7 @@
 BOT BÁN CODE TELEGRAM — PostgreSQL + Emoji Premium
 --------------------------------------------------
 Biến môi trường bắt buộc : BOT_TOKEN, DATABASE_URL
-Biến tùy chọn            : ADMIN_IDS, SUPPORT, BANK_CODE, BANK_NAME, ACCOUNT_NO,
+Biến tùy chọn            : ADMIN_IDS, SUPPORT, BANK_CODE, BANK_NAME, SEPAY_BANK, ACCOUNT_NO,
                            ACCOUNT_NAME, TRANSFER_PREFIX, SEPAY_KEY, PREMIUM_EMOJI=0
 Chạy                     : python main.py
 """
@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+import aiohttp
 import asyncpg
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -25,7 +26,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    BotCommand, BotCommandScopeChat, CallbackQuery, ErrorEvent,
+    BotCommand, BotCommandScopeChat, BufferedInputFile, CallbackQuery, ErrorEvent,
     InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message,
     ReplyKeyboardMarkup,
 )
@@ -46,8 +47,9 @@ if not BOT_TOKEN or not DATABASE_URL:
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7884394252").replace(" ", "").split(",") if x}
 SUPPORT = os.getenv("SUPPORT", "@dinhcong98")
 
-BANK_CODE = os.getenv("BANK_CODE", "MB")
-BANK_NAME = os.getenv("BANK_NAME", "MBBANK")
+BANK_CODE = os.getenv("BANK_CODE", "MB")          # mã ngân hàng cho VietQR
+BANK_NAME = os.getenv("BANK_NAME", "MBBANK")      # tên hiển thị
+SEPAY_BANK = os.getenv("SEPAY_BANK", "MBBank")    # tên ngân hàng cho mã QR dự phòng (qr.sepay.vn)
 ACCOUNT_NO = os.getenv("ACCOUNT_NO", "0003456712345")
 ACCOUNT_NAME = os.getenv("ACCOUNT_NAME", "LY THI CHAM")
 TRANSFER_PREFIX = os.getenv("TRANSFER_PREFIX", "lixisinhnhat")
@@ -60,6 +62,7 @@ MAX_DEPOSIT = 50_000_000
 QUICK_AMOUNTS = [10_000, 20_000, 50_000, 100_000, 200_000, 500_000]
 THROTTLE = 0.5
 VN_TZ = timezone(timedelta(hours=7))
+EPOCH = datetime.fromtimestamp(0, timezone.utc)
 
 DEFAULT_GATES = {
     "LLWIN": (90_000, "188 ĐIỂM"),
@@ -99,6 +102,7 @@ ID_ADMIN, ID_INFO, ID_USER = "5193177581888755275", "5334544901428229844", "5251
 ID_HI, ID_HEART, ID_PLUS = "5235701688014217208", "5197387964098813812", "5397916757333654639"
 ID_MEGA, ID_TARGET, ID_WELCOME = "5415655814079723871", "5256131095094652290", "6192771593001767805"
 ID_STAT, ID_DATE, ID_ON, ID_OFF = "5231200819986047254", "5472279086657199080", "5206607081334906820", "5411225014148014586"
+ID_RESET = "5375338737028841420"
 
 E_OK, E_NO, E_BAN = ce("✅", ID_OK), ce("❌", ID_NO), ce("🚫", ID_BAN)
 E_WARN, E_WAIT = ce("⚠️", ID_WARN), ce("⏳", ID_WAIT)
@@ -111,7 +115,7 @@ E_HI, E_HEART, E_PLUS = ce("👋", ID_HI), ce("💙", ID_HEART), ce("➕", ID_PL
 E_MEGA, E_TARGET, E_WELCOME = ce("📢", ID_MEGA), ce("🎯", ID_TARGET), ce("👅", ID_WELCOME)
 E_STAT, E_DATE = ce("📊", ID_STAT), ce("🗓️", ID_DATE)
 E_ON, E_OFF = ce("✔️", ID_ON), ce("🔴", ID_OFF)
-E_ID, E_USERS = ce("ℹ️", ID_INFO), ce("👤", ID_USER)
+E_ID, E_USERS, E_RESET = ce("ℹ️", ID_INFO), ce("👤", ID_USER), ce("🔄", ID_RESET)
 
 # Emoji premium cho 5 nút menu
 MENU_ICONS = {
@@ -179,6 +183,8 @@ CREATE TABLE IF NOT EXISTS bank_tx(id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS products(
     gate TEXT PRIMARY KEY, price BIGINT NOT NULL, points TEXT,
     active BOOLEAN NOT NULL DEFAULT TRUE, pos INT NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS stat_reset(
+    key TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
@@ -281,10 +287,30 @@ def transfer_note(uid):
     return f"{TRANSFER_PREFIX}{uid}"
 
 
-def qr_url(uid, amount):
-    """Link ảnh VietQR đã điền sẵn ngân hàng, số tài khoản, số tiền, nội dung, tên chủ tài khoản."""
-    q = urlencode({"amount": amount, "addInfo": transfer_note(uid), "accountName": ACCOUNT_NAME})
-    return f"https://img.vietqr.io/image/{BANK_CODE}-{ACCOUNT_NO}-compact2.png?{q}"
+def qr_urls(uid, amount):
+    """Các nguồn tạo mã QR (thử lần lượt): VietQR rồi SePay. Đều điền sẵn số tiền, nội dung, chủ tài khoản."""
+    note = transfer_note(uid)
+    vietqr = (f"https://img.vietqr.io/image/{BANK_CODE}-{ACCOUNT_NO}-compact2.png?"
+              + urlencode({"amount": amount, "addInfo": note, "accountName": ACCOUNT_NAME}))
+    sepay = "https://qr.sepay.vn/img?" + urlencode(
+        {"acc": ACCOUNT_NO, "bank": SEPAY_BANK, "amount": amount, "des": note})
+    return [vietqr, sepay]
+
+
+async def fetch_qr(uid, amount):
+    """Tự tải ảnh QR về rồi gửi lên Telegram (ổn định hơn để Telegram tự tải link)."""
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        for url in qr_urls(uid, amount):
+            try:
+                async with s.get(url) as r:
+                    data = await r.read()
+                    if r.status == 200 and r.content_type.startswith("image") and len(data) > 1000:
+                        return data
+                    logging.warning("QR lỗi %s: status=%s type=%s", url.split("?")[0], r.status, r.content_type)
+            except Exception as e:
+                logging.warning("QR lỗi %s: %s", url.split("?")[0], e)
+    return None
 
 
 # ===================== KHỞI TẠO BOT =====================
@@ -401,10 +427,11 @@ NAP_HELP = (
     f"Cần hỗ trợ, liên hệ {SUPPORT}")
 
 
-async def send_qr(m: Message, user, amount: int):
-    """Gửi mã QR đã điền sẵn thông tin cho người dùng."""
+def qr_caption(user, amount: int, has_qr: bool) -> str:
     uid = user.id
-    caption = (
+    hint = (f"{E_INFO} Quét mã QR bên trên, thông tin đã được điền sẵn.\n" if has_qr else
+            f"{E_INFO} Vui lòng chuyển khoản theo thông tin bên trên.\n")
+    return (
         f"{E_CARD} <b>THÔNG TIN NẠP TIỀN</b>\n"
         "━━━━━━━━━━━━━━━\n"
         f"{E_USER} Người nạp: <b>{esc(user.full_name)}</b> (ID <code>{uid}</code>)\n"
@@ -413,13 +440,28 @@ async def send_qr(m: Message, user, amount: int):
         f"{E_BANK} Ngân hàng: <b>{esc(BANK_NAME)}</b>\n"
         f"{E_CASH} Số tiền: <b>{money(amount)}</b>\n"
         f"{E_NOTE} Nội dung chuyển khoản: <code>{transfer_note(uid)}</code>\n\n"
-        f"{E_INFO} Quét mã QR bên trên, thông tin đã được điền sẵn.\n"
+        f"{hint}"
         f"{E_WARN} Chuyển <b>đúng số tiền và nội dung</b> để hệ thống tự động cộng tiền. "
         "Nội dung này là riêng của bạn, không dùng chung với người khác.")
-    try:
-        await m.answer_photo(qr_url(uid, amount), caption=caption)
-    except Exception:
-        await m.answer(caption)
+
+
+async def send_qr(m: Message, user, amount: int):
+    """Gửi mã QR đã điền sẵn thông tin cho người dùng (có phương án dự phòng)."""
+    data = await fetch_qr(user.id, amount)
+    if data:
+        try:
+            await m.answer_photo(BufferedInputFile(data, filename="qr.png"),
+                                 caption=qr_caption(user, amount, True))
+            return
+        except Exception as e:
+            logging.warning("Gửi ảnh QR lỗi: %s", e)
+    for url in qr_urls(user.id, amount):  # thử để Telegram tự tải link
+        try:
+            await m.answer_photo(url, caption=qr_caption(user, amount, True))
+            return
+        except Exception as e:
+            logging.warning("Telegram tải QR lỗi: %s", e)
+    await m.answer(qr_caption(user, amount, False))
 
 
 @dp.message(F.text == "NẠP TIỀN")
@@ -442,8 +484,29 @@ async def nap_pick(c: CallbackQuery, state: FSMContext):
     if not value.isdigit():
         return await c.answer()
     await state.clear()
+    await c.answer("Đang tạo mã QR...")
     await send_qr(c.message, c.from_user, int(value))
-    await c.answer()
+
+
+async def admin_deposit(m: Message, args):
+    """Admin nạp tiền thủ công: /naptay id số_tiền (hoặc /nap id số_tiền)."""
+    amount = parse_amount(args[1]) if len(args) == 2 else None
+    if len(args) != 2 or not args[0].isdigit() or not amount:
+        return await m.answer("Cú pháp: <code>/naptay id số_tiền</code>\n"
+                              "Ví dụ: <code>/naptay 123456789 50k</code>")
+    uid = int(args[0])
+    bal = await add_deposit(uid, amount, f"admin:{m.from_user.id}")
+    await m.answer(f"{E_OK} Đã nạp {money(amount)} cho ID <code>{uid}</code>. Số dư mới: {money(bal)}")
+    ok = await safe_send(uid, f"{E_OK} <b>NẠP TIỀN THÀNH CÔNG</b>\n"
+                              f"Số tiền: <b>{money(amount)}</b>\nSố dư hiện tại: {money(bal)}")
+    if not ok:
+        await m.answer(f"{E_WARN} Không gửi được thông báo cho người dùng (họ chưa /start hoặc đã chặn bot).")
+
+
+@dp.message(Command("naptay", "congtien"), admin)
+async def naptay_cmd(m: Message, command: CommandObject, state: FSMContext):
+    await state.clear()
+    await admin_deposit(m, (command.args or "").split())
 
 
 @dp.message(Command("nap"))
@@ -451,19 +514,9 @@ async def nap_cmd(m: Message, command: CommandObject, state: FSMContext):
     await state.clear()
     args = (command.args or "").split()
 
-    # Admin: /nap id số_tiền -> nạp thủ công
+    # Admin: /nap id số_tiền -> nạp thủ công (giữ lệnh cũ)
     if m.from_user.id in ADMIN_IDS and len(args) == 2:
-        amount = parse_amount(args[1])
-        if not args[0].isdigit() or not amount:
-            return await m.answer("Cú pháp: <code>/nap id số_tiền</code>")
-        uid = int(args[0])
-        bal = await add_deposit(uid, amount, f"admin:{m.from_user.id}")
-        await m.answer(f"{E_OK} Đã nạp {money(amount)} cho ID <code>{uid}</code>. Số dư mới: {money(bal)}")
-        ok = await safe_send(uid, f"{E_OK} <b>NẠP TIỀN THÀNH CÔNG</b>\n"
-                                  f"Số tiền: <b>{money(amount)}</b>\nSố dư hiện tại: {money(bal)}")
-        if not ok:
-            await m.answer(f"{E_WARN} Không gửi được thông báo cho người dùng (họ chưa /start hoặc đã chặn bot).")
-        return
+        return await admin_deposit(m, args)
 
     # Người dùng: /nap số_tiền -> tự tạo QR
     amount = parse_amount(args[0]) if args else None
@@ -621,11 +674,12 @@ async def support(m: Message, state: FSMContext):
 # ===================== ADMIN =====================
 ADMIN_HELP = (
     f"{E_ADMIN} <b>LỆNH ADMIN</b>\n━━━━━━━━━━━━━━━\n"
-    "<code>/nap id số_tiền</code> — nạp tiền thủ công (có báo khách)\n"
+    "<code>/naptay id số_tiền</code> — nạp tiền thủ công cho khách (có báo khách)\n"
     "<code>/tru id số_tiền</code> — trừ số dư\n"
     "<code>/donhang</code> — đơn đang chờ xử lý\n"
     "<code>/muatc</code> — đơn mua thành công\n"
-    "<code>/thongke</code> — thống kê\n"
+    "<code>/thongke</code> — thống kê (có nút reset từng mục)\n"
+    "<code>/reset</code> — reset từng mục thống kê\n"
     "<code>/user id</code> — xem thông tin khách\n"
     "<code>/ban id</code> | <code>/unban id</code> — khóa / mở khóa khách\n"
     "<code>/thongbao nội dung</code> — gửi thông báo cho tất cả khách\n"
@@ -703,23 +757,103 @@ async def muatc(m: Message):
         f"{esc(o['login'])} | {fmt(o['created'])}" for o in rows))
 
 
-@dp.message(Command("thongke"), admin)
-async def thongke(m: Message):
+# ---------- Thống kê + reset từng mục ----------
+# Reset chỉ đặt lại mốc tính thống kê, KHÔNG xóa số dư, đơn hàng hay lịch sử của khách.
+RESET_ITEMS = {
+    "deposit": "TIỀN NẠP",
+    "members": "THÀNH VIÊN",
+    "done": "ĐƠN THÀNH CÔNG",
+    "spent": "TIỀN MUA CODE",
+}
+
+
+async def reset_points() -> dict:
+    rows = await pool.fetch("SELECT key, at FROM stat_reset")
+    pts = {k: EPOCH for k in RESET_ITEMS}
+    pts.update({r["key"]: r["at"] for r in rows})
+    return pts
+
+
+def since_text(dt) -> str:
+    return "" if dt <= EPOCH else f" <i>(từ {dt.astimezone(VN_TZ).strftime('%d/%m/%Y %H:%M')})</i>"
+
+
+def reset_keyboard() -> InlineKeyboardMarkup:
+    rows = [[btn(f"RESET {name}", f"rs:{key}", ID_RESET, "🔄")] for key, name in RESET_ITEMS.items()]
+    rows.append([btn("RESET TẤT CẢ", "rs:all", ID_RESET, "🔄")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def build_stats() -> str:
     v = pool.fetchval
+    p = await reset_points()
     today = datetime.now(VN_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-    await m.answer(
+    dep = await v("SELECT COALESCE(SUM(amount),0) FROM deposits WHERE created >= $1", p["deposit"])
+    mem = await v("SELECT COUNT(*) FROM users WHERE joined >= $1", p["members"])
+    done = await v("SELECT COUNT(*) FROM orders WHERE status='done' AND created >= $1", p["done"])
+    spent = await v("SELECT COALESCE(SUM(price),0) FROM orders WHERE status='done' AND created >= $1", p["spent"])
+    return (
         f"{E_STAT} <b>THỐNG KÊ</b>\n━━━━━━━━━━━━━━━\n"
-        f"{E_MONEY} Tổng tiền nạp: <b>{money(await v('SELECT COALESCE(SUM(total_deposit),0) FROM users'))}</b>\n"
-        f"{E_USERS} Tổng thành viên: <b>{await v('SELECT COUNT(*) FROM users')}</b>\n"
+        f"{E_MONEY} Tổng tiền nạp: <b>{money(dep)}</b>{since_text(p['deposit'])}\n"
+        f"{E_USERS} Tổng thành viên: <b>{mem}</b>{since_text(p['members'])}\n"
         f"{E_WAIT} Đơn chờ xử lý: <b>{await v('SELECT COUNT(*) FROM orders WHERE status=$1', 'pending')}</b>\n"
-        f"{E_OK} Đơn mua thành công: <b>{await v('SELECT COUNT(*) FROM orders WHERE status=$1', 'done')}</b>\n"
-        f"{E_CART} Tổng tiền mua code thành công: "
-        f"<b>{money(await v('SELECT COALESCE(SUM(price),0) FROM orders WHERE status=$1', 'done'))}</b>\n"
+        f"{E_OK} Đơn mua thành công: <b>{done}</b>{since_text(p['done'])}\n"
+        f"{E_CART} Tổng tiền mua code thành công: <b>{money(spent)}</b>{since_text(p['spent'])}\n"
         f"{E_CASH} Tổng số dư khách đang giữ: {money(await v('SELECT COALESCE(SUM(balance),0) FROM users'))}\n\n"
         f"{E_DATE} <b>HÔM NAY</b>\n"
         f"• Khách mới: {await v('SELECT COUNT(*) FROM users WHERE joined >= $1', today)}\n"
         f"• Tiền nạp: {money(await v('SELECT COALESCE(SUM(amount),0) FROM deposits WHERE created >= $1', today))}\n"
-        f"• Đơn mới: {await v('SELECT COUNT(*) FROM orders WHERE created >= $1', today)}")
+        f"• Đơn mới: {await v('SELECT COUNT(*) FROM orders WHERE created >= $1', today)}\n\n"
+        f"{E_INFO} Đơn chờ xử lý và số dư khách là dữ liệu thật nên không reset được.")
+
+
+@dp.message(Command("thongke"), admin)
+async def thongke(m: Message):
+    await m.answer(await build_stats(), reply_markup=reset_keyboard())
+
+
+@dp.message(Command("reset"), admin)
+async def reset_cmd(m: Message):
+    await m.answer(
+        f"{E_RESET} <b>RESET THỐNG KÊ</b>\n━━━━━━━━━━━━━━━\n"
+        "Chọn mục muốn reset về 0. Chỉ đặt lại mốc tính thống kê, "
+        "<b>không xóa</b> số dư, đơn hàng hay lịch sử của khách.",
+        reply_markup=reset_keyboard())
+
+
+@dp.callback_query(F.data.regexp(r"^rs:(deposit|members|done|spent|all)$"))
+async def reset_ask(c: CallbackQuery):
+    if c.from_user.id not in ADMIN_IDS:
+        return await c.answer("Bạn không phải admin.", show_alert=True)
+    key = c.data.split(":")[1]
+    name = "TẤT CẢ CÁC MỤC" if key == "all" else RESET_ITEMS[key]
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        btn("XÁC NHẬN", f"rsy:{key}", ID_OK, "✅"),
+        btn("HỦY", "rsn", ID_NO, "❌")]])
+    await c.message.answer(f"{E_WARN} Xác nhận reset <b>{name}</b> về 0?", reply_markup=kb)
+    await c.answer()
+
+
+@dp.callback_query(F.data == "rsn")
+async def reset_cancel(c: CallbackQuery):
+    await c.message.edit_text(f"{E_NO} Đã hủy reset.")
+    await c.answer()
+
+
+@dp.callback_query(F.data.regexp(r"^rsy:(deposit|members|done|spent|all)$"))
+async def reset_do(c: CallbackQuery):
+    if c.from_user.id not in ADMIN_IDS:
+        return await c.answer("Bạn không phải admin.", show_alert=True)
+    key = c.data.split(":")[1]
+    keys = list(RESET_ITEMS) if key == "all" else [key]
+    for k in keys:
+        await pool.execute(
+            "INSERT INTO stat_reset(key, at) VALUES($1, now()) "
+            "ON CONFLICT (key) DO UPDATE SET at=now()", k)
+    name = "tất cả các mục" if key == "all" else RESET_ITEMS[key]
+    await c.message.edit_text(f"{E_OK} Đã reset <b>{name}</b> về 0.")
+    await c.message.answer(await build_stats(), reply_markup=reset_keyboard())
+    await c.answer("Đã reset")
 
 
 @dp.message(Command("user"), admin)
@@ -919,8 +1053,10 @@ async def main():
             await bot.set_my_commands(
                 [BotCommand(command="start", description="Mở menu"),
                  BotCommand(command="admin", description="Danh sách lệnh admin"),
+                 BotCommand(command="naptay", description="Nạp tiền thủ công: /naptay id số_tiền"),
                  BotCommand(command="donhang", description="Đơn đang chờ"),
-                 BotCommand(command="thongke", description="Thống kê")],
+                 BotCommand(command="thongke", description="Thống kê"),
+                 BotCommand(command="reset", description="Reset từng mục thống kê")],
                 scope=BotCommandScopeChat(chat_id=a))
     except Exception:
         logging.warning("Không đặt được danh sách lệnh (admin cần /start bot trước).")
