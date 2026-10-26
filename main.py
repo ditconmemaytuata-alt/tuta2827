@@ -65,6 +65,10 @@ THROTTLE = 0.5
 VN_TZ = timezone(timedelta(hours=7))
 EPOCH = datetime.fromtimestamp(0, timezone.utc)
 
+# ---- Mời bạn bè ----
+REF_MIN_DEPOSIT = 300_000   # bạn được mời phải nạp tích lũy tối thiểu mức này
+REF_REWARD = 50_000         # thưởng cho người mời
+
 MIN_PRICE = 1_000                                  # giá thấp nhất khi admin sửa giá
 PRICE_STEPS = [1_000, 5_000, 10_000, 50_000]       # các bước tăng/giảm trong menu /setgia
 
@@ -122,8 +126,9 @@ E_MEGA, E_TARGET, E_WELCOME = ce("📢", ID_MEGA), ce("🎯", ID_TARGET), ce("�
 E_STAT, E_DATE = ce("📊", ID_STAT), ce("🗓️", ID_DATE)
 E_ON, E_OFF = ce("✔️", ID_ON), ce("🔴", ID_OFF)
 E_ID, E_USERS, E_RESET = ce("ℹ️", ID_INFO), ce("👤", ID_USER), ce("🔄", ID_RESET)
+E_GIFT = "🎁"
 
-# Emoji premium cho 5 nút menu
+# Emoji premium cho các nút menu (nút nào không có ID thì hiện chữ thường)
 MENU_ICONS = {
     "TÀI KHOẢN": "5217822164362739968",   # 👑
     "NẠP TIỀN": "5427168083074628963",    # 💎
@@ -131,6 +136,7 @@ MENU_ICONS = {
     "LỊCH SỬ": "6280407793631498213",     # 🚗
     "HỖ TRỢ": "5314504236132747481",      # ⁉️
 }
+BTN_INVITE = "MỜI BẠN BÈ"
 
 
 def btn(text: str, data: str, eid: str, char: str) -> InlineKeyboardButton:
@@ -142,14 +148,15 @@ def btn(text: str, data: str, eid: str, char: str) -> InlineKeyboardButton:
 
 def make_menu(use_icons: bool) -> ReplyKeyboardMarkup:
     def b(text):
-        extra = {"icon_custom_emoji_id": MENU_ICONS[text]} if (use_icons and PREMIUM) else {}
+        eid = MENU_ICONS.get(text)
+        extra = {"icon_custom_emoji_id": eid} if (use_icons and PREMIUM and eid) else {}
         return KeyboardButton(text=text, **extra)
 
     return ReplyKeyboardMarkup(
         keyboard=[
             [b("TÀI KHOẢN"), b("NẠP TIỀN")],
             [b("MUA HÀNG"), b("LỊCH SỬ")],
-            [b("HỖ TRỢ")],
+            [b(BTN_INVITE), b("HỖ TRỢ")],
         ],
         resize_keyboard=True,
         input_field_placeholder="Chọn chức năng bên dưới",
@@ -177,9 +184,11 @@ CREATE TABLE IF NOT EXISTS users(
     joined TIMESTAMPTZ NOT NULL DEFAULT now(),
     name TEXT, username TEXT,
     banned BOOLEAN NOT NULL DEFAULT FALSE);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer BIGINT;
 CREATE TABLE IF NOT EXISTS deposits(
     id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, amount BIGINT NOT NULL,
     note TEXT, created TIMESTAMPTZ NOT NULL DEFAULT now());
+ALTER TABLE deposits ADD COLUMN IF NOT EXISTS counted BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE TABLE IF NOT EXISTS orders(
     id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, gate TEXT NOT NULL,
     price BIGINT NOT NULL, points TEXT, login TEXT,
@@ -197,6 +206,11 @@ CREATE TABLE IF NOT EXISTS packages(
 ALTER TABLE packages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
 CREATE TABLE IF NOT EXISTS stat_reset(
     key TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS referrals(
+    referee_id BIGINT PRIMARY KEY, referrer_id BIGINT NOT NULL,
+    qualified BOOLEAN NOT NULL DEFAULT FALSE,
+    created TIMESTAMPTZ NOT NULL DEFAULT now(), qualified_at TIMESTAMPTZ);
+CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
@@ -204,6 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
 # status (products và packages): 'ok' = đang bán | 'full' = FULL SLOT | 'maint' = BẢO TRÌ
 # products.status  = trạng thái CẢ CỔNG
 # packages.status  = trạng thái TỪNG MỆNH GIÁ (VD: chỉ bảo trì 90K, các giá khác vẫn mua được)
+# deposits.counted = TRUE: tính vào thống kê | FALSE: admin chọn "KHÔNG TÍNH"
 
 pool: asyncpg.Pool = None
 
@@ -280,13 +295,18 @@ async def balance_of(uid):
     return await pool.fetchval("SELECT balance FROM users WHERE id=$1", uid) or 0
 
 
-async def add_deposit(uid, amount, note):
+async def add_deposit(uid, amount, note, counted: bool = True):
+    """Cộng tiền thủ công. counted=False: chỉ cộng số dư, KHÔNG tính vào thống kê / tổng nạp."""
     async with pool.acquire() as c, c.transaction():
         await c.execute("INSERT INTO users(id) VALUES($1) ON CONFLICT DO NOTHING", uid)
         bal = await c.fetchval(
-            "UPDATE users SET balance=balance+$2, total_deposit=total_deposit+$2 "
-            "WHERE id=$1 RETURNING balance", uid, amount)
-        await c.execute("INSERT INTO deposits(user_id, amount, note) VALUES($1,$2,$3)", uid, amount, note)
+            "UPDATE users SET balance=balance+$2, "
+            "total_deposit=total_deposit+CASE WHEN $3 THEN $2 ELSE 0 END "
+            "WHERE id=$1 RETURNING balance", uid, amount, counted)
+        await c.execute("INSERT INTO deposits(user_id, amount, note, counted) VALUES($1,$2,$3,$4)",
+                        uid, amount, note, counted)
+    if counted:
+        await check_referral(uid)
     return bal
 
 
@@ -303,7 +323,69 @@ async def credit_bank(tx_id, uid, amount):
             return "nouser", None
         await c.execute("INSERT INTO deposits(user_id, amount, note) VALUES($1,$2,$3)",
                         uid, amount, f"bank:{tx_id}")
-        return "ok", bal
+    await check_referral(uid)
+    return "ok", bal
+
+
+# ---------- Mời bạn bè ----------
+_BOT_USERNAME = None
+
+
+async def bot_username() -> str:
+    global _BOT_USERNAME
+    if not _BOT_USERNAME:
+        _BOT_USERNAME = (await bot.get_me()).username
+    return _BOT_USERNAME
+
+
+async def ref_link(uid) -> str:
+    return f"https://t.me/{await bot_username()}?start=ref_{uid}"
+
+
+async def register_referral(m: Message, args: str):
+    """Ghi nhận người dùng MỚI vào bot qua link giới thiệu ref_<id>."""
+    mt = re.fullmatch(r"ref_(\d+)", (args or "").strip())
+    if not mt:
+        return
+    referrer, uid = int(mt.group(1)), m.from_user.id
+    if referrer == uid:
+        return
+    is_new = await pool.fetchval(
+        "SELECT 1 FROM users WHERE id=$1 AND joined > now() - interval '2 minutes'", uid)
+    if not is_new or not await pool.fetchval("SELECT 1 FROM users WHERE id=$1", referrer):
+        return
+    added = await pool.fetchval(
+        "INSERT INTO referrals(referee_id, referrer_id) VALUES($1,$2) "
+        "ON CONFLICT DO NOTHING RETURNING referee_id", uid, referrer)
+    if added is None:
+        return
+    await pool.execute("UPDATE users SET referrer=$2 WHERE id=$1", uid, referrer)
+    await safe_send(referrer,
+                    f"{E_GIFT} <b>{esc(m.from_user.full_name)}</b> vừa tham gia bot qua link giới thiệu của bạn.\n"
+                    f"Khi bạn bè nạp tích lũy từ <b>{money(REF_MIN_DEPOSIT)}</b>, bạn sẽ nhận thưởng "
+                    f"<b>{money(REF_REWARD)}</b>.")
+
+
+async def check_referral(uid):
+    """Gọi sau mỗi lần nạp: nếu bạn được mời đủ điều kiện thì thông báo người mời + admin."""
+    try:
+        referrer = await pool.fetchval(
+            "UPDATE referrals SET qualified=TRUE, qualified_at=now() "
+            "WHERE referee_id=$1 AND NOT qualified AND "
+            "(SELECT COALESCE(SUM(amount),0) FROM deposits WHERE user_id=$1 AND counted) >= $2 "
+            "RETURNING referrer_id", uid, REF_MIN_DEPOSIT)
+        if referrer is None:
+            return
+        await safe_send(referrer,
+                        f"{E_OK} <b>MỜI BẠN BÈ HỢP LỆ</b>\n"
+                        f"Bạn bè (ID <code>{uid}</code>) đã nạp đủ {money(REF_MIN_DEPOSIT)}.\n"
+                        f"Bạn được thưởng <b>{money(REF_REWARD)}</b>. "
+                        f"Vui lòng liên hệ CSKH {SUPPORT} để nhận thưởng.")
+        await to_admins(f"{E_GIFT} <b>MỜI BẠN HỢP LỆ</b>\n"
+                        f"Người mời: <code>{referrer}</code>\nNgười được mời: <code>{uid}</code>\n"
+                        f"Cần trả thưởng: <b>{money(REF_REWARD)}</b>")
+    except Exception as e:
+        logging.warning("check_referral lỗi: %s", e)
 
 
 async def get_gates(active_only=True):
@@ -518,8 +600,9 @@ dp.callback_query.outer_middleware(Guard())
 
 # ===================== NGƯỜI DÙNG: BẮT ĐẦU & TÀI KHOẢN =====================
 @dp.message(Command("start"))
-async def start(m: Message, state: FSMContext):
+async def start(m: Message, command: CommandObject, state: FSMContext):
     await state.clear()
+    await register_referral(m, command.args)
     await answer_menu(
         m,
         f"{E_HI} Xin chào <b>{esc(m.from_user.full_name)}</b>!\n\n"
@@ -545,6 +628,31 @@ async def account(m: Message, state: FSMContext):
         f"{E_CART} Tổng tiền mua code: {money(spent)}\n"
         f"{E_WAIT} Đơn đang xử lý: {pending}\n"
         f"{E_DATE} Ngày tham gia: {fmt(u['joined'])}")
+
+
+# ===================== MỜI BẠN BÈ =====================
+@dp.message(F.text == BTN_INVITE)
+async def invite(m: Message, state: FSMContext):
+    await state.clear()
+    uid = m.from_user.id
+    link = await ref_link(uid)
+    total = await pool.fetchval("SELECT COUNT(*) FROM referrals WHERE referrer_id=$1", uid)
+    ok = await pool.fetchval("SELECT COUNT(*) FROM referrals WHERE referrer_id=$1 AND qualified", uid)
+    share = "https://t.me/share/url?" + urlencode(
+        {"url": link, "text": "Hệ thống mua code tự động, uy tín - nhanh chóng!"})
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📤 CHIA SẺ LINK", url=share)]])
+    await m.answer(
+        f"{E_GIFT} <b>MỜI BẠN BÈ - NHẬN THƯỞNG</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"🔗 Link giới thiệu của bạn:\n<code>{link}</code>\n\n"
+        f"{E_NOTE} <b>QUY ĐỊNH NHẬN THƯỞNG</b>\n"
+        f"• Mời thành công 1 bạn bè nạp từ <b>{money(REF_MIN_DEPOSIT)}</b> trở lên, "
+        f"bạn nhận ngay <b>{money(REF_REWARD)}</b>.\n"
+        "• Khi lượt mời hợp lệ, bot sẽ thông báo cho bạn.\n"
+        f"• Sau đó vui lòng liên hệ CSKH {SUPPORT} để nhận thưởng.\n\n"
+        f"{E_STAT} Đã mời: <b>{total}</b> • Hợp lệ: <b>{ok}</b> "
+        f"• Thưởng: <b>{money(ok * REF_REWARD)}</b>",
+        reply_markup=kb)
 
 
 # ===================== NẠP TIỀN (TỰ ĐỘNG TẠO QR) =====================
@@ -633,19 +741,48 @@ async def nap_pick(c: CallbackQuery, state: FSMContext):
     await send_qr(c.message, c.from_user, int(value))
 
 
+# ---------- Admin nạp tay: hỏi TÍNH / KHÔNG TÍNH vào thống kê ----------
+NT_DONE = set()  # (chat_id, message_id) đã xử lý, chống bấm đúp
+
+
 async def admin_deposit(m: Message, args):
-    """Admin nạp tiền thủ công: /naptay id số_tiền (hoặc /nap id số_tiền)."""
+    """Admin nạp tiền thủ công: /naptay id số_tiền -> hiện 2 nút TÍNH / KHÔNG TÍNH."""
     amount = parse_amount(args[1]) if len(args) == 2 else None
     if len(args) != 2 or not args[0].isdigit() or not amount:
         return await m.answer("Cú pháp: <code>/naptay id số_tiền</code>\n"
                               "Ví dụ: <code>/naptay 123456789 50k</code>")
     uid = int(args[0])
-    bal = await add_deposit(uid, amount, f"admin:{m.from_user.id}")
-    await m.answer(f"{E_OK} Đã nạp {money(amount)} cho ID <code>{uid}</code>. Số dư mới: {money(bal)}")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        btn("TÍNH", f"nt:1:{uid}:{amount}", ID_OK, "✅"),
+        btn("KHÔNG TÍNH", f"nt:0:{uid}:{amount}", ID_NO, "❌")]])
+    await m.answer(
+        f"{E_CASH} <b>XÁC NHẬN NẠP TAY</b>\n━━━━━━━━━━━━━━━\n"
+        f"ID khách: <code>{uid}</code>\nSố tiền: <b>{money(amount)}</b>\n\n"
+        f"{E_TARGET} Có tính khoản nạp này vào <b>thống kê</b> không?\n"
+        "• <b>TÍNH</b>: cộng số dư + tính vào thống kê / tổng nạp\n"
+        "• <b>KHÔNG TÍNH</b>: chỉ cộng số dư, không tính vào thống kê",
+        reply_markup=kb)
+
+
+@dp.callback_query(F.data.regexp(r"^nt:[01]:\d+:\d+$"), admin)
+async def naptay_confirm(c: CallbackQuery):
+    _, flag, uid, amount = c.data.split(":")
+    key = (c.message.chat.id, c.message.message_id)
+    if key in NT_DONE:
+        return await c.answer("Thao tác này đã được xử lý rồi.", show_alert=True)
+    NT_DONE.add(key)
+    uid, amount, counted = int(uid), int(amount), flag == "1"
+    bal = await add_deposit(uid, amount, f"admin:{c.from_user.id}" + ("" if counted else ":uncounted"), counted)
+    tag = f"{E_OK} TÍNH vào thống kê" if counted else f"{E_NO} KHÔNG TÍNH vào thống kê"
+    await safe_edit(c.message,
+                    f"{E_OK} Đã nạp <b>{money(amount)}</b> cho ID <code>{uid}</code> ({tag}).\n"
+                    f"Số dư mới: {money(bal)}")
     ok = await safe_send(uid, f"{E_OK} <b>NẠP TIỀN THÀNH CÔNG</b>\n"
                               f"Số tiền: <b>{money(amount)}</b>\nSố dư hiện tại: {money(bal)}")
     if not ok:
-        await m.answer(f"{E_WARN} Không gửi được thông báo cho người dùng (họ chưa /start hoặc đã chặn bot).")
+        await c.message.answer(f"{E_WARN} Không gửi được thông báo cho người dùng "
+                               "(họ chưa /start hoặc đã chặn bot).")
+    await c.answer("Đã nạp")
 
 
 @dp.message(Command("naptay", "congtien"), admin)
@@ -865,7 +1002,8 @@ async def support(m: Message, state: FSMContext):
 # ===================== ADMIN =====================
 ADMIN_HELP = (
     f"{E_ADMIN} <b>LỆNH ADMIN</b>\n━━━━━━━━━━━━━━━\n"
-    "<code>/naptay id số_tiền</code> — nạp tiền thủ công cho khách (có báo khách)\n"
+    "<code>/naptay id số_tiền</code> — nạp tiền thủ công (có báo khách), "
+    "bot hỏi <b>TÍNH / KHÔNG TÍNH</b> vào thống kê\n"
     "<code>/tru id số_tiền</code> — trừ số dư\n"
     "<code>/donhang</code> — đơn đang chờ xử lý\n"
     "<code>/muatc</code> — đơn mua thành công\n"
@@ -1002,7 +1140,8 @@ async def build_stats() -> str:
     v = pool.fetchval
     p = await reset_points()
     today = datetime.now(VN_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-    dep = await v("SELECT COALESCE(SUM(amount),0) FROM deposits WHERE created >= $1", p["deposit"])
+    # Chỉ tính các khoản nạp có counted = TRUE (admin chọn "KHÔNG TÍNH" thì bị loại)
+    dep = await v("SELECT COALESCE(SUM(amount),0) FROM deposits WHERE counted AND created >= $1", p["deposit"])
     mem = await v("SELECT COUNT(*) FROM users WHERE joined >= $1", p["members"])
     done = await v("SELECT COUNT(*) FROM orders WHERE status='done' AND created >= $1", p["done"])
     spent = await v("SELECT COALESCE(SUM(price),0) FROM orders WHERE status='done' AND created >= $1", p["spent"])
@@ -1016,9 +1155,10 @@ async def build_stats() -> str:
         f"{E_CASH} Tổng số dư khách đang giữ: {money(await v('SELECT COALESCE(SUM(balance),0) FROM users'))}\n\n"
         f"{E_DATE} <b>HÔM NAY</b>\n"
         f"• Khách mới: {await v('SELECT COUNT(*) FROM users WHERE joined >= $1', today)}\n"
-        f"• Tiền nạp: {money(await v('SELECT COALESCE(SUM(amount),0) FROM deposits WHERE created >= $1', today))}\n"
+        f"• Tiền nạp: {money(await v('SELECT COALESCE(SUM(amount),0) FROM deposits WHERE counted AND created >= $1', today))}\n"
         f"• Đơn mới: {await v('SELECT COUNT(*) FROM orders WHERE created >= $1', today)}\n\n"
-        f"{E_INFO} Đơn chờ xử lý và số dư khách là dữ liệu thật nên không reset được.")
+        f"{E_INFO} Đơn chờ xử lý và số dư khách là dữ liệu thật nên không reset được.\n"
+        "Khoản nạp tay chọn KHÔNG TÍNH sẽ không nằm trong thống kê tiền nạp.")
 
 
 @dp.message(Command("thongke"), admin)
@@ -1082,11 +1222,16 @@ async def user_info(m: Message, command: CommandObject):
         "SELECT COALESCE(SUM(price),0) FROM orders WHERE user_id=$1 AND status='done'", u["id"])
     n_ord = await pool.fetchval("SELECT COUNT(*) FROM orders WHERE user_id=$1", u["id"])
     status = f"{E_BAN} Đang bị khóa" if u["banned"] else f"{E_ON} Bình thường"
+    inv = await pool.fetchrow(
+        "SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE qualified) AS ok FROM referrals WHERE referrer_id=$1",
+        u["id"])
+    ref_line = f"\nNgười giới thiệu: <code>{u['referrer']}</code>" if u["referrer"] else ""
     await m.answer(
         f"{E_USER} {user_link(u['id'], u['name'], u['username'])}\n"
         f"ID: <code>{u['id']}</code>\nSố dư: <b>{money(u['balance'])}</b>\n"
         f"Tổng nạp: {money(u['total_deposit'])}\nTổng mua thành công: {money(spent)}\n"
         f"Số đơn: {n_ord}\nTham gia: {fmt(u['joined'])}\n"
+        f"Đã mời: {inv['n']} (hợp lệ {inv['ok']}){ref_line}\n"
         f"Trạng thái: {status}")
 
 
@@ -1518,7 +1663,7 @@ async def sepay_hook(request: web.Request):
     if not mt or amount <= 0:
         return web.json_response({"success": True})
     uid = int(mt.group(1))
-    status, bal = await credit_bank(tx_id, uid, amount)
+    status, bal = await credit_bank(tx_id, uid, amount)  # credit_bank đã tự kiểm tra thưởng mời bạn
     if status == "ok":
         await safe_send(uid, f"{E_OK} <b>NẠP TIỀN THÀNH CÔNG</b>\nSố tiền: <b>{money(amount)}</b>\n"
                              f"Số dư hiện tại: {money(bal)}")
