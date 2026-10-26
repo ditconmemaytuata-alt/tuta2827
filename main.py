@@ -369,21 +369,33 @@ RECEIPT_STATUS = {
 
 
 def receipt_file(o, reason=None) -> BufferedInputFile:
-    """File .txt biên nhận: CỔNG | TRẠNG THÁI | SỐ TIỀN, số điểm, tên đăng nhập (theo tình trạng đơn)."""
+    """File .html biên nhận dạng bảng có đường kẻ: CỔNG | TRẠNG THÁI | SỐ TIỀN, số điểm, tên đăng nhập."""
     status = RECEIPT_STATUS.get(o["status"], str(o["status"]).upper())
-    lines = [
-        f"{'CỔNG':<12}{'TRẠNG THÁI':<18}{'SỐ TIỀN'}",
-        f"{o['gate']:<12}{status:<18}{money(o['price'])}",
-        "",
-        f"SỐ ĐIỂM: {o['points']}",
-        f"TÊN ĐĂNG NHẬP: {o['login']}",
-        "",
-        f"MÃ ĐƠN: #{o['id']}",
-        f"THỜI GIAN ĐẶT: {fmt(o['created'])}",
+    e = html.escape
+    head = "".join(f"<th>{t}</th>" for t in ("CỔNG", "TRẠNG THÁI", "SỐ TIỀN"))
+    vals = "".join(f"<td>{e(str(t))}</td>" for t in (o["gate"], status, money(o["price"])))
+    info = [
+        ("SỐ ĐIỂM:", o["points"]),
+        ("TÊN ĐĂNG NHẬP:", o["login"]),
+        ("MÃ ĐƠN:", f"#{o['id']}"),
+        ("THỜI GIAN ĐẶT:", fmt(o["created"])),
     ]
     if reason:
-        lines += ["", f"LÝ DO TỪ CHỐI: {reason}", "(Đơn bị từ chối không được hoàn tiền)"]
-    return BufferedInputFile("\n".join(lines).encode("utf-8"), filename=f"don_{o['id']}.txt")
+        info += [("LÝ DO TỪ CHỐI:", reason), ("", "(Đơn bị từ chối không được hoàn tiền)")]
+    rows = "".join(f"<tr><td class='k'>{e(k)}</td><td>{e(str(v))}</td></tr>" for k, v in info)
+    page = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>Đơn #{o['id']}</title><style>"
+        "body{font-family:'Times New Roman',serif;font-size:14px;margin:8px}"
+        "table{border-collapse:collapse;margin-bottom:10px;width:100%}"
+        "th,td{border:1px solid #b9b9d6;padding:4px 8px;text-align:left}"
+        "th{background:#e25c70;color:#fff;text-align:center}"
+        "td.k{font-weight:bold;white-space:nowrap;width:1%}"
+        f"</style></head><body><table><tr>{head}</tr><tr>{vals}</tr></table>"
+        f"<table>{rows}</table></body></html>"
+    )
+    return BufferedInputFile(page.encode("utf-8"), filename=f"don_{o['id']}.html")
 
 
 async def send_receipt(chat_id, o, caption, reason=None) -> bool:
