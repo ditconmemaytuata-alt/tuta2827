@@ -47,6 +47,7 @@ if not BOT_TOKEN or not DATABASE_URL:
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7884394252").replace(" ", "").split(",") if x}
 SUPPORT = os.getenv("SUPPORT", "@dinhcong98")
 
+# >>> ĐỔI THÔNG TIN NGÂN HÀNG THẬT Ở 5 DÒNG DƯỚI (chỉ sửa phần trong dấu ngoặc kép thứ hai) <<<
 BANK_CODE = os.getenv("BANK_CODE", "MB")          # mã ngân hàng cho VietQR
 BANK_NAME = os.getenv("BANK_NAME", "MBBANK")      # tên hiển thị
 SEPAY_BANK = os.getenv("SEPAY_BANK", "MBBank")    # tên ngân hàng cho mã QR dự phòng (qr.sepay.vn)
@@ -79,7 +80,7 @@ DEFAULT_GATES = {
     "OK9": (10_000, "RANDOM"),
 }
 EXTRA = [(140_000, "288 ĐIỂM"), (280_000, "588 ĐIỂM"), (450_000, "888 ĐIỂM")]
-SINGLE_PACKAGE_GATES = {"8KBET"}  # cổng chỉ bán đúng 1 mệnh giá, không có gói EXTRA
+SINGLE_PACKAGE_GATES = {"8KBET", "OK9"}  # cổng chỉ bán đúng 1 mệnh giá, không có gói EXTRA
 
 # ===================== EMOJI PREMIUM =====================
 # Đặt PREMIUM_EMOJI=0 trong Railway Variables để quay về emoji thường.
