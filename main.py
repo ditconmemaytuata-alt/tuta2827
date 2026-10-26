@@ -47,7 +47,7 @@ if not BOT_TOKEN or not DATABASE_URL:
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7884394252").replace(" ", "").split(",") if x}
 SUPPORT = os.getenv("SUPPORT", "@dinhcong98")
 
-# >>> ĐỔI THÔNG TIN NGÂN HÀNG THẬT Ở 5 DÒNG DƯỚI (chỉ sửa phần trong dấu ngoặc kép thứ hai) <<<
+# ---- Thông tin ngân hàng nhận tiền (MBBANK - 0003456712345 - LY THI CHAM) ----
 BANK_CODE = os.getenv("BANK_CODE", "MB")          # mã ngân hàng cho VietQR
 BANK_NAME = os.getenv("BANK_NAME", "MBBANK")      # tên hiển thị
 SEPAY_BANK = os.getenv("SEPAY_BANK", "MBBank")    # tên ngân hàng cho mã QR dự phòng (qr.sepay.vn)
@@ -300,18 +300,22 @@ def qr_urls(uid, amount):
 
 async def fetch_qr(uid, amount):
     """Tự tải ảnh QR về rồi gửi lên Telegram (ổn định hơn để Telegram tự tải link)."""
+    errs = []
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         for url in qr_urls(uid, amount):
+            host = url.split("?")[0].split("/")[2]
             try:
                 async with s.get(url) as r:
                     data = await r.read()
                     if r.status == 200 and r.content_type.startswith("image") and len(data) > 1000:
-                        return data
-                    logging.warning("QR lỗi %s: status=%s type=%s", url.split("?")[0], r.status, r.content_type)
+                        return data, errs
+                    errs.append(f"{host}: HTTP {r.status} ({r.content_type})")
             except Exception as e:
-                logging.warning("QR lỗi %s: %s", url.split("?")[0], e)
-    return None
+                errs.append(f"{host}: {type(e).__name__} {e}")
+    for e in errs:
+        logging.warning("QR lỗi %s", e)
+    return None, errs
 
 
 # ===================== KHỞI TẠO BOT =====================
@@ -448,21 +452,26 @@ def qr_caption(user, amount: int, has_qr: bool) -> str:
 
 async def send_qr(m: Message, user, amount: int):
     """Gửi mã QR đã điền sẵn thông tin cho người dùng (có phương án dự phòng)."""
-    data = await fetch_qr(user.id, amount)
+    data, errs = await fetch_qr(user.id, amount)
     if data:
         try:
             await m.answer_photo(BufferedInputFile(data, filename="qr.png"),
                                  caption=qr_caption(user, amount, True))
             return
         except Exception as e:
-            logging.warning("Gửi ảnh QR lỗi: %s", e)
+            errs.append(f"gửi ảnh lên Telegram: {type(e).__name__} {e}")
     for url in qr_urls(user.id, amount):  # thử để Telegram tự tải link
         try:
             await m.answer_photo(url, caption=qr_caption(user, amount, True))
             return
         except Exception as e:
-            logging.warning("Telegram tải QR lỗi: %s", e)
+            errs.append(f"Telegram tải link: {type(e).__name__} {e}")
+    for e in errs:
+        logging.warning("QR lỗi %s", e)
     await m.answer(qr_caption(user, amount, False))
+    # Báo lý do lỗi cho admin để dễ sửa (không hiện cho khách)
+    await to_admins(f"{E_WARN} <b>Không tạo được mã QR</b> cho ID <code>{user.id}</code>:\n"
+                    + "\n".join(f"• {esc(x)[:200]}" for x in errs[:5]))
 
 
 @dp.message(F.text == "NẠP TIỀN")
