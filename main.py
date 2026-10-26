@@ -194,13 +194,16 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
 CREATE TABLE IF NOT EXISTS packages(
     gate TEXT NOT NULL, idx INT NOT NULL, price BIGINT NOT NULL, points TEXT NOT NULL,
     PRIMARY KEY (gate, idx));
+ALTER TABLE packages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
 CREATE TABLE IF NOT EXISTS stat_reset(
     key TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
 """
-# products.status: 'ok' = đang bán | 'full' = FULL SLOT | 'maint' = BẢO TRÌ
+# status (products và packages): 'ok' = đang bán | 'full' = FULL SLOT | 'maint' = BẢO TRÌ
+# products.status  = trạng thái CẢ CỔNG
+# packages.status  = trạng thái TỪNG MỆNH GIÁ (VD: chỉ bảo trì 90K, các giá khác vẫn mua được)
 
 pool: asyncpg.Pool = None
 
@@ -325,21 +328,35 @@ async def packages_map() -> dict:
     return d
 
 
-def fmt_pkgs(pk) -> str:
-    """'90K [188 ĐIỂM] • 140K [288 ĐIỂM] • ...' — hiển thị đầy đủ mọi mệnh giá."""
-    return " • ".join(f"{kfmt(p['price'])} [{p['points']}]" for p in pk) or "(chưa có mệnh giá)"
-
-
 STATUS_LABEL = {"full": "FULL SLOT", "maint": "BẢO TRÌ"}
 
 
+def fmt_pkgs(pk) -> str:
+    """'90K [188 ĐIỂM] • 140K [288 ĐIỂM] (BẢO TRÌ) • ...' — hiển thị đủ mệnh giá và trạng thái từng giá."""
+    def one(p):
+        s = f"{kfmt(p['price'])} [{p['points']}]"
+        if p["status"] in STATUS_LABEL:
+            s += f" 🔴 <b>{STATUS_LABEL[p['status']]}</b>"
+        return s
+    return " • ".join(one(p) for p in pk) or "(chưa có mệnh giá)"
+
+
 def block_alert(g) -> str:
-    """Thông báo cho khách khi bấm vào cổng đang FULL SLOT / BẢO TRÌ (văn bản thường, ≤200 ký tự)."""
+    """Thông báo khi khách bấm vào CẢ CỔNG đang FULL SLOT / BẢO TRÌ (văn bản thường, ≤200 ký tự)."""
     if g["status"] == "full":
         return (f"🔴 {g['gate']} ĐÃ FULL SLOT.\n"
                 "Hiện chưa thể mua, vui lòng quay lại sau khi admin mở lại.")
     return (f"🛠 {g['gate']} ĐANG BẢO TRÌ.\n"
             "Hiện chưa thể mua, vui lòng quay lại sau khi admin mở lại.")
+
+
+def pkg_block_alert(gate: str, pkg) -> str:
+    """Thông báo khi khách bấm vào MỘT mệnh giá đang FULL SLOT / BẢO TRÌ."""
+    if pkg["status"] == "full":
+        return (f"🔴 {gate} {kfmt(pkg['price'])} ĐÃ FULL SLOT.\n"
+                "Mệnh giá này chưa thể mua, bạn có thể chọn mệnh giá khác hoặc quay lại sau.")
+    return (f"🛠 {gate} {kfmt(pkg['price'])} ĐANG BẢO TRÌ.\n"
+            "Mệnh giá này chưa thể mua, bạn có thể chọn mệnh giá khác hoặc quay lại sau.")
 
 
 def transfer_note(uid):
@@ -657,7 +674,7 @@ async def nap_cmd(m: Message, command: CommandObject, state: FSMContext):
 
 # ===================== MUA HÀNG =====================
 def gate_button(g) -> InlineKeyboardButton:
-    """Nút cổng; cổng FULL SLOT / BẢO TRÌ có thêm chữ trên nút."""
+    """Nút cổng; cổng FULL SLOT / BẢO TRÌ (cả cổng) có thêm chữ trên nút."""
     tag = f" • {STATUS_LABEL[g['status']]}" if g["status"] in STATUS_LABEL else ""
     return btn(f"{g['gate']}{tag}", f"gate:{g['gate']}", ID_GAME, "🎮")
 
@@ -696,16 +713,24 @@ async def pick_gate(c: CallbackQuery, state: FSMContext):
     g = await get_gate(c.data.split(":", 1)[1])
     if not g or not g["active"]:
         return await c.answer("Cổng này tạm ngưng bán.", show_alert=True)
-    if g["status"] != "ok":  # FULL SLOT / BẢO TRÌ -> không cho mua
+    if g["status"] != "ok":  # cả cổng FULL SLOT / BẢO TRÌ -> không cho mua
         return await c.answer(block_alert(g), show_alert=True)
     pk = await get_packages(g["gate"])
     if not pk:
         return await c.answer("Cổng này chưa có mệnh giá.", show_alert=True)
+    if all(p["status"] != "ok" for p in pk):  # mọi mệnh giá đều đang khóa
+        return await c.answer(pkg_block_alert(g["gate"], pk[0]) if len(pk) == 1 else
+                              f"🛠 {g['gate']}: tất cả mệnh giá đang FULL SLOT / BẢO TRÌ.\n"
+                              "Vui lòng quay lại sau khi admin mở lại.", show_alert=True)
     if len(pk) == 1:  # chỉ có 1 mệnh giá -> hỏi tên đăng nhập luôn
         await ask_login(c, state, g, pk[0])
         return await c.answer()
-    rows = [[btn(f"{kfmt(p['price'])} - {p['points']}", f"pkg:{g['gate']}:{p['idx']}", ID_CASH, "💵")]
-            for p in pk]
+
+    def pkg_label(p):
+        tag = f" • {STATUS_LABEL[p['status']]}" if p["status"] in STATUS_LABEL else ""
+        return f"{kfmt(p['price'])} - {p['points']}{tag}"
+
+    rows = [[btn(pkg_label(p), f"pkg:{g['gate']}:{p['idx']}", ID_CASH, "💵")] for p in pk]
     await c.message.answer(f"{E_GAME} Cổng <b>{g['gate']}</b> — chọn mệnh giá:",
                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await c.answer()
@@ -723,6 +748,8 @@ async def pick_pkg(c: CallbackQuery, state: FSMContext):
         if j.isdigit() else None
     if not pkg:
         return await c.answer("Mệnh giá không hợp lệ.", show_alert=True)
+    if pkg["status"] != "ok":  # riêng mệnh giá này đang FULL SLOT / BẢO TRÌ
+        return await c.answer(pkg_block_alert(name, pkg), show_alert=True)
     await ask_login(c, state, g, pkg)
     await c.answer()
 
@@ -751,6 +778,12 @@ async def buy_ok(c: CallbackQuery, state: FSMContext):
     pkg = await pool.fetchrow("SELECT * FROM packages WHERE gate=$1 AND idx=$2", d["gate"], d.get("idx", -1))
     if not pkg or pkg["price"] != d["price"]:  # admin vừa đổi giá
         await c.message.edit_text(f"{E_WARN} Giá vừa được cập nhật. Vui lòng vào MUA HÀNG và chọn lại.")
+        return await c.answer()
+    if pkg["status"] != "ok":  # admin vừa khóa riêng mệnh giá này
+        await c.message.edit_text(
+            f"{E_BAN} Mệnh giá <b>{g['gate']} {kfmt(pkg['price'])}</b> hiện đang "
+            f"<b>{STATUS_LABEL[pkg['status']]}</b>, chưa thể mua. "
+            "Vui lòng chọn mệnh giá khác hoặc quay lại sau.")
         return await c.answer()
     uid = c.from_user.id
     async with pool.acquire() as conn, conn.transaction():
@@ -845,7 +878,8 @@ ADMIN_HELP = (
     "<code>/setgia</code> — menu nút ➖/➕ tăng giảm giá từng mệnh giá\n"
     "<code>/set CỔNG giá_cũ giá_mới</code> — sửa trực tiếp giá "
     "(VD: /set LLWIN 450000 350000 = đổi 450K thành 350K)\n"
-    "<code>/baotri</code> — menu bật/tắt <b>FULL SLOT</b> và <b>BẢO TRÌ</b> từng cổng\n"
+    "<code>/baotri</code> — menu bật/tắt <b>FULL SLOT</b> và <b>BẢO TRÌ</b>: "
+    "chọn cổng rồi khóa <b>từng mệnh giá</b> (VD: chỉ bảo trì 90K) hoặc khóa cả cổng\n"
     "<code>/themcong CỔNG giá điểm</code> — thêm cổng mới\n"
     "<code>/tat CỔNG</code> | <code>/bat CỔNG</code> — ẩn / hiện cổng khỏi menu mua\n"
     "<code>/huy</code> — hủy thao tác nhập lý do từ chối đang dở\n\n"
@@ -1219,28 +1253,66 @@ async def noop(c: CallbackQuery):
     await c.answer()
 
 
-# ---------- Bảo trì / Full slot ----------
+# ---------- Bảo trì / Full slot (khóa cả cổng HOẶC từng mệnh giá) ----------
+# Màn 1 (/baotri): danh sách cổng + trạng thái từng mệnh giá, bấm tên cổng để vào chỉnh.
+# Màn 2: mỗi mệnh giá có 2 nút FULL SLOT / BẢO TRÌ riêng; ngoài ra có 2 nút khóa cả cổng.
+# Khóa 1 mệnh giá (VD 90K) thì khách vẫn mua được các mệnh giá khác của cổng đó.
 async def maint_view():
-    """Menu /baotri: mỗi cổng có 2 nút bật/tắt FULL SLOT và BẢO TRÌ, hiện đủ mệnh giá."""
+    """Màn hình tổng: mỗi cổng 1 nút để vào chỉnh từng mệnh giá."""
     gates = await get_gates(active_only=False)
     pmap = await packages_map()
-    lines, rows = [], []
+    lines, buttons = [], []
     for g in gates:
-        st, n = g["status"], g["gate"]
-        tag = f" — <b>{STATUS_LABEL[st]}</b>" if st in STATUS_LABEL else ""
-        lines.append(f"{E_ON if st == 'ok' else E_OFF} <b>{n}</b>{tag}\n    {fmt_pkgs(pmap.get(n, []))}")
-        rows.append([
-            InlineKeyboardButton(text=f"{'🔴' if st == 'full' else '⚪'} {n} FULL SLOT",
-                                 callback_data=f"bt:{n}:f"),
-            InlineKeyboardButton(text=f"{'🔴' if st == 'maint' else '⚪'} {n} BẢO TRÌ",
-                                 callback_data=f"bt:{n}:m"),
-        ])
+        n, st = g["gate"], g["status"]
+        pk = pmap.get(n, [])
+        locked = sum(1 for p in pk if p["status"] != "ok")
+        tag = f" — <b>{STATUS_LABEL[st]} (CẢ CỔNG)</b>" if st in STATUS_LABEL else ""
+        ok_all = st == "ok" and locked == 0
+        lines.append(f"{E_ON if ok_all else E_OFF} <b>{n}</b>{tag}\n    {fmt_pkgs(pk)}")
+        mark = "🔴" if (st != "ok" or locked) else "⚪"
+        buttons.append(InlineKeyboardButton(text=f"{mark} {n}", callback_data=f"bmv:{n}"))
+    rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     rows.append([InlineKeyboardButton(text="🛠 BẢO TRÌ TẤT CẢ", callback_data="bta:m"),
                  InlineKeyboardButton(text="✅ MỞ LẠI TẤT CẢ", callback_data="bta:o")])
     text = (f"{E_ADMIN} <b>BẢO TRÌ / FULL SLOT</b>\n━━━━━━━━━━━━━━━\n"
             + "\n".join(lines) +
-            "\n\n🔴 = đang BẬT (khách bấm vào sẽ thấy thông báo và không mua được)\n"
-            "⚪ = đang TẮT. Bấm lại nút để tắt/mở bán lại.")
+            "\n\n🔴 = có mệnh giá/cổng đang bị khóa • ⚪ = đang bán bình thường\n"
+            f"{E_TARGET} Bấm tên cổng bên dưới để khóa <b>từng mệnh giá</b> "
+            "(VD: chỉ bảo trì 90K, các giá khác vẫn mua được).")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def maint_gate_view(name: str):
+    """Màn hình chỉnh của 1 cổng: nút FULL SLOT / BẢO TRÌ cho từng mệnh giá và cho cả cổng."""
+    g = await get_gate(name)
+    pk = await get_packages(name)
+    st = g["status"]
+    lines = []
+    for p in pk:
+        label = f" — <b>{STATUS_LABEL[p['status']]}</b>" if p["status"] in STATUS_LABEL else ""
+        lines.append(f"{E_OFF if p['status'] != 'ok' else E_ON} {kfmt(p['price'])} [{p['points']}]{label}")
+    rows = []
+    for p in pk:
+        s, i, k = p["status"], p["idx"], kfmt(p["price"])
+        rows.append([
+            InlineKeyboardButton(text=f"{'🔴' if s == 'full' else '⚪'} {k} FULL SLOT",
+                                 callback_data=f"bp:{name}:{i}:f"),
+            InlineKeyboardButton(text=f"{'🔴' if s == 'maint' else '⚪'} {k} BẢO TRÌ",
+                                 callback_data=f"bp:{name}:{i}:m"),
+        ])
+    rows.append([
+        InlineKeyboardButton(text=f"{'🔴' if st == 'full' else '⚪'} CẢ CỔNG FULL SLOT",
+                             callback_data=f"bt:{name}:f"),
+        InlineKeyboardButton(text=f"{'🔴' if st == 'maint' else '⚪'} CẢ CỔNG BẢO TRÌ",
+                             callback_data=f"bt:{name}:m"),
+    ])
+    rows.append([InlineKeyboardButton(text="⬅️ QUAY LẠI DANH SÁCH", callback_data="bml")])
+    gate_tag = f"\nTrạng thái cả cổng: <b>{STATUS_LABEL[st]}</b>" if st in STATUS_LABEL else ""
+    text = (f"{E_ADMIN} <b>{name} — BẢO TRÌ / FULL SLOT</b>\n━━━━━━━━━━━━━━━\n"
+            + "\n".join(lines) + gate_tag +
+            "\n\n🔴 = đang BẬT (khách bấm vào sẽ thấy thông báo và không mua được mệnh giá đó)\n"
+            "⚪ = đang TẮT. Bấm lại nút để tắt/mở bán lại.\n"
+            "Nút <b>CẢ CỔNG</b> khóa toàn bộ mệnh giá của cổng này cùng lúc.")
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1251,8 +1323,41 @@ async def baotri_menu(m: Message, state: FSMContext):
     await m.answer(text, reply_markup=kb)
 
 
+@dp.callback_query(F.data == "bml", admin)
+async def maint_back(c: CallbackQuery):
+    text, kb = await maint_view()
+    await safe_edit(c.message, text, kb)
+    await c.answer()
+
+
+@dp.callback_query(F.data.regexp(r"^bmv:[A-Z0-9]+$"), admin)
+async def maint_open(c: CallbackQuery):
+    name = c.data.split(":")[1]
+    if not await get_gate(name):
+        return await c.answer("Không tìm thấy cổng.", show_alert=True)
+    text, kb = await maint_gate_view(name)
+    await safe_edit(c.message, text, kb)
+    await c.answer()
+
+
+@dp.callback_query(F.data.regexp(r"^bp:[A-Z0-9]+:\d+:[fm]$"), admin)
+async def maint_pkg_toggle(c: CallbackQuery):
+    """Bật/tắt FULL SLOT hoặc BẢO TRÌ cho RIÊNG MỘT mệnh giá."""
+    _, name, idx, kind = c.data.split(":")
+    target = "full" if kind == "f" else "maint"
+    pkg = await pool.fetchrow("SELECT * FROM packages WHERE gate=$1 AND idx=$2", name, int(idx))
+    if not pkg:
+        return await c.answer("Không tìm thấy mệnh giá.", show_alert=True)
+    new = "ok" if pkg["status"] == target else target  # bấm lần nữa để tắt
+    await pool.execute("UPDATE packages SET status=$3 WHERE gate=$1 AND idx=$2", name, int(idx), new)
+    text, kb = await maint_gate_view(name)
+    await safe_edit(c.message, text, kb)
+    await c.answer(f"{name} {kfmt(pkg['price'])}: {STATUS_LABEL.get(new, 'ĐÃ MỞ BÁN')}")
+
+
 @dp.callback_query(F.data.regexp(r"^bt:[A-Z0-9]+:[fm]$"), admin)
 async def maint_toggle(c: CallbackQuery):
+    """Bật/tắt FULL SLOT hoặc BẢO TRÌ cho CẢ CỔNG."""
     _, name, kind = c.data.split(":")
     target = "full" if kind == "f" else "maint"
     g = await get_gate(name)
@@ -1260,15 +1365,17 @@ async def maint_toggle(c: CallbackQuery):
         return await c.answer("Không tìm thấy cổng.", show_alert=True)
     new = "ok" if g["status"] == target else target  # bấm lần nữa để tắt
     await pool.execute("UPDATE products SET status=$2 WHERE gate=$1", name, new)
-    text, kb = await maint_view()
+    text, kb = await maint_gate_view(name)
     await safe_edit(c.message, text, kb)
-    await c.answer(f"{name}: {STATUS_LABEL.get(new, 'ĐÃ MỞ BÁN')}")
+    await c.answer(f"{name} (cả cổng): {STATUS_LABEL.get(new, 'ĐÃ MỞ BÁN')}")
 
 
 @dp.callback_query(F.data.regexp(r"^bta:[mo]$"), admin)
 async def maint_all(c: CallbackQuery):
     new = "maint" if c.data.endswith("m") else "ok"
     await pool.execute("UPDATE products SET status=$1", new)
+    if new == "ok":  # mở lại tất cả -> mở luôn từng mệnh giá đang bị khóa
+        await pool.execute("UPDATE packages SET status='ok'")
     text, kb = await maint_view()
     await safe_edit(c.message, text, kb)
     await c.answer("Đã bảo trì tất cả" if new == "maint" else "Đã mở bán tất cả")
@@ -1445,7 +1552,7 @@ async def main():
                  BotCommand(command="reset", description="Reset từng mục thống kê"),
                  BotCommand(command="setgia", description="Menu tăng/giảm giá code"),
                  BotCommand(command="set", description="Sửa giá: /set CỔNG giá_cũ giá_mới"),
-                 BotCommand(command="baotri", description="Bật/tắt Full slot - Bảo trì")],
+                 BotCommand(command="baotri", description="Bật/tắt Full slot - Bảo trì từng giá")],
                 scope=BotCommandScopeChat(chat_id=a))
     except Exception:
         logging.warning("Không đặt được danh sách lệnh (admin cần /start bot trước).")
