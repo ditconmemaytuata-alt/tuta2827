@@ -65,6 +65,9 @@ THROTTLE = 0.5
 VN_TZ = timezone(timedelta(hours=7))
 EPOCH = datetime.fromtimestamp(0, timezone.utc)
 
+MIN_PRICE = 1_000                                  # giá thấp nhất khi admin sửa giá
+PRICE_STEPS = [1_000, 5_000, 10_000, 50_000]       # các bước tăng/giảm trong menu /setgia
+
 DEFAULT_GATES = {
     "LLWIN": (90_000, "188 ĐIỂM"),
     "XX88": (80_000, "188 ĐIỂM"),
@@ -79,7 +82,9 @@ DEFAULT_GATES = {
     "SC88": (77_000, "188 ĐIỂM"),
     "OK9": (10_000, "RANDOM"),
 }
-EXTRA = [(140_000, "288 ĐIỂM"), (280_000, "588 ĐIỂM"), (450_000, "888 ĐIỂM")]
+# Giá các gói thêm (đã giảm: 450K -> 350K, 280K -> 230K). Chỉ dùng làm giá khởi tạo,
+# sau đó mỗi cổng có giá riêng trong DB và admin sửa bằng /set hoặc /setgia.
+EXTRA = [(140_000, "288 ĐIỂM"), (230_000, "588 ĐIỂM"), (350_000, "888 ĐIỂM")]
 SINGLE_PACKAGE_GATES = {"8KBET", "OK9"}  # cổng chỉ bán đúng 1 mệnh giá, không có gói EXTRA
 
 # ===================== EMOJI PREMIUM =====================
@@ -185,14 +190,27 @@ CREATE TABLE IF NOT EXISTS bank_tx(id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS products(
     gate TEXT PRIMARY KEY, price BIGINT NOT NULL, points TEXT,
     active BOOLEAN NOT NULL DEFAULT TRUE, pos INT NOT NULL DEFAULT 0);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
+CREATE TABLE IF NOT EXISTS packages(
+    gate TEXT NOT NULL, idx INT NOT NULL, price BIGINT NOT NULL, points TEXT NOT NULL,
+    PRIMARY KEY (gate, idx));
 CREATE TABLE IF NOT EXISTS stat_reset(
     key TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
 """
+# products.status: 'ok' = đang bán | 'full' = FULL SLOT | 'maint' = BẢO TRÌ
 
 pool: asyncpg.Pool = None
+
+
+async def seed_packages(c, gate: str, price: int, points: str):
+    """Tạo các mệnh giá cho một cổng: gói gốc + các gói EXTRA (trừ cổng chỉ bán 1 mệnh giá)."""
+    pk = [(price, points)] + ([] if gate in SINGLE_PACKAGE_GATES else EXTRA)
+    for i, (p, pt) in enumerate(pk):
+        await c.execute("INSERT INTO packages(gate, idx, price, points) VALUES($1,$2,$3,$4) "
+                        "ON CONFLICT DO NOTHING", gate, i, p, pt)
 
 
 async def init_db():
@@ -203,6 +221,10 @@ async def init_db():
         for pos, (g, (p, pt)) in enumerate(DEFAULT_GATES.items()):
             await c.execute("INSERT INTO products(gate, price, points, pos) VALUES($1,$2,$3,$4) "
                             "ON CONFLICT (gate) DO NOTHING", g, p, pt, pos)
+        # Cổng nào chưa có bảng mệnh giá thì tạo (giữ nguyên giá gốc đang có trong DB)
+        for g in await c.fetch("SELECT gate, price, points FROM products"):
+            if not await c.fetchval("SELECT 1 FROM packages WHERE gate=$1 LIMIT 1", g["gate"]):
+                await seed_packages(c, g["gate"], g["price"], g["points"])
 
 
 # ===================== TIỆN ÍCH =====================
@@ -212,6 +234,12 @@ def fmt(dt):
 
 def money(n):
     return f"{int(n):,}".replace(",", ".") + "đ"
+
+
+def kfmt(n):
+    """90000 -> 90K (nếu không tròn nghìn thì hiện đầy đủ)."""
+    n = int(n)
+    return f"{n // 1000}K" if n % 1000 == 0 else money(n)
 
 
 def esc(s):
@@ -284,10 +312,34 @@ async def get_gate(name):
     return await pool.fetchrow("SELECT * FROM products WHERE gate=$1", name)
 
 
-def packages(g):
-    """Danh sách mệnh giá của một cổng. Cổng trong SINGLE_PACKAGE_GATES chỉ có 1 mệnh giá."""
-    base = [(g["price"], g["points"])]
-    return base if g["gate"] in SINGLE_PACKAGE_GATES else base + EXTRA
+async def get_packages(gate):
+    """Các mệnh giá của một cổng (giá đang bán thật, admin sửa trực tiếp)."""
+    return await pool.fetch("SELECT * FROM packages WHERE gate=$1 ORDER BY idx", gate)
+
+
+async def packages_map() -> dict:
+    """{cổng: [các mệnh giá]} — lấy 1 lần cho cả bảng giá."""
+    d = {}
+    for r in await pool.fetch("SELECT * FROM packages ORDER BY gate, idx"):
+        d.setdefault(r["gate"], []).append(r)
+    return d
+
+
+def fmt_pkgs(pk) -> str:
+    """'90K [188 ĐIỂM] • 140K [288 ĐIỂM] • ...' — hiển thị đầy đủ mọi mệnh giá."""
+    return " • ".join(f"{kfmt(p['price'])} [{p['points']}]" for p in pk) or "(chưa có mệnh giá)"
+
+
+STATUS_LABEL = {"full": "FULL SLOT", "maint": "BẢO TRÌ"}
+
+
+def block_alert(g) -> str:
+    """Thông báo cho khách khi bấm vào cổng đang FULL SLOT / BẢO TRÌ (văn bản thường, ≤200 ký tự)."""
+    if g["status"] == "full":
+        return (f"🔴 {g['gate']} ĐÃ FULL SLOT.\n"
+                "Hiện chưa thể mua, vui lòng quay lại sau khi admin mở lại.")
+    return (f"🛠 {g['gate']} ĐANG BẢO TRÌ.\n"
+            "Hiện chưa thể mua, vui lòng quay lại sau khi admin mở lại.")
 
 
 def transfer_note(uid):
@@ -348,6 +400,14 @@ async def safe_send(chat_id, text, **kw) -> bool:
         return True
     except Exception:
         return False
+
+
+async def safe_edit(msg: Message, text: str, kb=None):
+    """Sửa tin nhắn tại chỗ; bỏ qua lỗi 'message is not modified'."""
+    try:
+        await msg.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        pass
 
 
 async def to_admins(text, **kw):
@@ -596,30 +656,35 @@ async def nap_cmd(m: Message, command: CommandObject, state: FSMContext):
 
 
 # ===================== MUA HÀNG =====================
+def gate_button(g) -> InlineKeyboardButton:
+    """Nút cổng; cổng FULL SLOT / BẢO TRÌ có thêm chữ trên nút."""
+    tag = f" • {STATUS_LABEL[g['status']]}" if g["status"] in STATUS_LABEL else ""
+    return btn(f"{g['gate']}{tag}", f"gate:{g['gate']}", ID_GAME, "🎮")
+
+
 @dp.message(F.text == "MUA HÀNG")
 async def shop(m: Message, state: FSMContext):
     await state.clear()
     gates = await get_gates()
     if not gates:
         return await m.answer("Hiện chưa có sản phẩm nào, vui lòng quay lại sau.")
-    rows = [[btn(g["gate"], f"gate:{g['gate']}", ID_GAME, "🎮") for g in gates[i:i + 2]]
-            for i in range(0, len(gates), 2)]
-    lines = "\n".join(f"• <b>{g['gate']}</b>: {g['price'] // 1000}K [ {g['points']} ]" for g in gates)
-    extra = "\n".join(f"• {p // 1000}K [ {pt} ]" for p, pt in EXTRA)
-    note = ""
-    if SINGLE_PACKAGE_GATES:
-        note = f"\n<i>(Riêng {', '.join(sorted(SINGLE_PACKAGE_GATES))} chỉ có 1 mệnh giá như bảng trên)</i>"
+    pmap = await packages_map()
+    rows = [[gate_button(g) for g in gates[i:i + 2]] for i in range(0, len(gates), 2)]
+    lines = []
+    for g in gates:
+        tag = f" — {E_OFF} <b>{STATUS_LABEL[g['status']]}</b>" if g["status"] in STATUS_LABEL else ""
+        lines.append(f"• <b>{g['gate']}</b>{tag}\n   {fmt_pkgs(pmap.get(g['gate'], []))}")
     await m.answer(
         f"{E_CART} <b>BẢNG GIÁ CODE</b>\n━━━━━━━━━━━━━━━\n"
-        f"{lines}\n\n{E_PLUS} Các cổng còn lại có thêm mệnh giá:\n{extra}{note}\n\n"
-        f"{E_TARGET} Chọn cổng game bạn muốn mua bên dưới:",
+        + "\n".join(lines) +
+        f"\n\n{E_TARGET} Chọn cổng game bạn muốn mua bên dưới:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-async def ask_login(c: CallbackQuery, state: FSMContext, g, index: int):
-    price, points = packages(g)[index]
+async def ask_login(c: CallbackQuery, state: FSMContext, g, pkg):
+    price, points = pkg["price"], pkg["points"]
     await state.set_state(Buy.login)
-    await state.update_data(gate=g["gate"], price=price, points=points, login=None)
+    await state.update_data(gate=g["gate"], idx=pkg["idx"], price=price, points=points, login=None)
     await c.message.answer(
         f"Bạn chọn <b>{g['gate']}</b> — {money(price)} [{points}]\n\n"
         f"{E_EDIT} Vui lòng gửi <b>TÊN ĐĂNG NHẬP</b> của bạn:\n"
@@ -631,12 +696,16 @@ async def pick_gate(c: CallbackQuery, state: FSMContext):
     g = await get_gate(c.data.split(":", 1)[1])
     if not g or not g["active"]:
         return await c.answer("Cổng này tạm ngưng bán.", show_alert=True)
-    pk = packages(g)
+    if g["status"] != "ok":  # FULL SLOT / BẢO TRÌ -> không cho mua
+        return await c.answer(block_alert(g), show_alert=True)
+    pk = await get_packages(g["gate"])
+    if not pk:
+        return await c.answer("Cổng này chưa có mệnh giá.", show_alert=True)
     if len(pk) == 1:  # chỉ có 1 mệnh giá -> hỏi tên đăng nhập luôn
-        await ask_login(c, state, g, 0)
+        await ask_login(c, state, g, pk[0])
         return await c.answer()
-    rows = [[btn(f"{p // 1000}K - {pt}", f"pkg:{g['gate']}:{j}", ID_CASH, "💵")]
-            for j, (p, pt) in enumerate(pk)]
+    rows = [[btn(f"{kfmt(p['price'])} - {p['points']}", f"pkg:{g['gate']}:{p['idx']}", ID_CASH, "💵")]
+            for p in pk]
     await c.message.answer(f"{E_GAME} Cổng <b>{g['gate']}</b> — chọn mệnh giá:",
                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await c.answer()
@@ -648,9 +717,13 @@ async def pick_pkg(c: CallbackQuery, state: FSMContext):
     g = await get_gate(name)
     if not g or not g["active"]:
         return await c.answer("Cổng này tạm ngưng bán.", show_alert=True)
-    if not j.isdigit() or int(j) >= len(packages(g)):
+    if g["status"] != "ok":
+        return await c.answer(block_alert(g), show_alert=True)
+    pkg = await pool.fetchrow("SELECT * FROM packages WHERE gate=$1 AND idx=$2", name, int(j)) \
+        if j.isdigit() else None
+    if not pkg:
         return await c.answer("Mệnh giá không hợp lệ.", show_alert=True)
-    await ask_login(c, state, g, int(j))
+    await ask_login(c, state, g, pkg)
     await c.answer()
 
 
@@ -670,6 +743,15 @@ async def buy_ok(c: CallbackQuery, state: FSMContext):
     g = await get_gate(d["gate"])
     if not g or not g["active"]:
         return await c.answer("Cổng này vừa tạm ngưng bán.", show_alert=True)
+    if g["status"] != "ok":  # admin vừa bật FULL SLOT / BẢO TRÌ trong lúc khách đang nhập
+        await c.message.edit_text(
+            f"{E_BAN} Cổng <b>{g['gate']}</b> hiện đang <b>{STATUS_LABEL[g['status']]}</b>, "
+            "chưa thể mua. Vui lòng quay lại sau.")
+        return await c.answer()
+    pkg = await pool.fetchrow("SELECT * FROM packages WHERE gate=$1 AND idx=$2", d["gate"], d.get("idx", -1))
+    if not pkg or pkg["price"] != d["price"]:  # admin vừa đổi giá
+        await c.message.edit_text(f"{E_WARN} Giá vừa được cập nhật. Vui lòng vào MUA HÀNG và chọn lại.")
+        return await c.answer()
     uid = c.from_user.id
     async with pool.acquire() as conn, conn.transaction():
         bal = await conn.fetchval(
@@ -759,10 +841,13 @@ ADMIN_HELP = (
     "<code>/user id</code> — xem thông tin khách\n"
     "<code>/ban id</code> | <code>/unban id</code> — khóa / mở khóa khách\n"
     "<code>/thongbao nội dung</code> — gửi thông báo cho tất cả khách\n"
-    "<code>/sanpham</code> — danh sách cổng và giá\n"
-    "<code>/setgia CỔNG giá [điểm]</code> — đổi giá (VD: /setgia LLWIN 95000 188 ĐIỂM)\n"
+    "<code>/sanpham</code> — danh sách cổng, đủ mệnh giá và trạng thái\n"
+    "<code>/setgia</code> — menu nút ➖/➕ tăng giảm giá từng mệnh giá\n"
+    "<code>/set CỔNG giá_cũ giá_mới</code> — sửa trực tiếp giá "
+    "(VD: /set LLWIN 450000 350000 = đổi 450K thành 350K)\n"
+    "<code>/baotri</code> — menu bật/tắt <b>FULL SLOT</b> và <b>BẢO TRÌ</b> từng cổng\n"
     "<code>/themcong CỔNG giá điểm</code> — thêm cổng mới\n"
-    "<code>/tat CỔNG</code> | <code>/bat CỔNG</code> — tạm ngưng / mở bán\n"
+    "<code>/tat CỔNG</code> | <code>/bat CỔNG</code> — ẩn / hiện cổng khỏi menu mua\n"
     "<code>/huy</code> — hủy thao tác nhập lý do từ chối đang dở\n\n"
     "<i>Bấm TỪ CHỐI ở đơn: bot sẽ hỏi lý do, đơn bị từ chối không hoàn tiền.</i>")
 
@@ -1002,27 +1087,191 @@ async def broadcast(m: Message, command: CommandObject):
     await m.answer(f"{E_OK} Gửi xong: {ok}/{len(ids)} người nhận được.")
 
 
+# ---------- Danh sách cổng ----------
 @dp.message(Command("sanpham"), admin)
 async def sanpham(m: Message):
     rows = await get_gates(active_only=False)
-    await m.answer(f"{E_CART} <b>DANH SÁCH CỔNG</b>\n\n" + "\n".join(
-        f"{E_ON if g['active'] else E_OFF} <b>{g['gate']}</b> — {money(g['price'])} [{g['points']}]"
-        for g in rows))
+    pmap = await packages_map()
+    lines = []
+    for g in rows:
+        tag = f" — <b>{STATUS_LABEL[g['status']]}</b>" if g["status"] in STATUS_LABEL else ""
+        if not g["active"]:
+            tag += " — <b>ĐANG ẨN</b>"
+        lines.append(f"{E_ON if g['active'] and g['status'] == 'ok' else E_OFF} <b>{g['gate']}</b>{tag}\n"
+                     f"    {fmt_pkgs(pmap.get(g['gate'], []))}")
+    await send_long(m.chat.id, f"{E_CART} <b>DANH SÁCH CỔNG</b>\n\n" + "\n".join(lines))
+
+
+# ---------- Sửa giá: /set (gõ nhanh) và /setgia (menu nút tăng giảm) ----------
+# Giá sửa trực tiếp vào bảng packages nên menu MUA HÀNG đổi ngay lập tức.
+@dp.message(Command("set"), admin)
+async def set_price(m: Message, command: CommandObject):
+    usage = ("Cú pháp: <code>/set CỔNG giá_cũ giá_mới</code>\n"
+             "VD: <code>/set LLWIN 450000 350000</code> (sửa giá 450K thành 350K)")
+    a = (command.args or "").split()
+    if len(a) != 3:
+        return await m.answer(usage)
+    name = a[0].upper()
+    old, new = parse_amount(a[1]), parse_amount(a[2])
+    if not old or not new:
+        return await m.answer(usage)
+    if not await get_gate(name):
+        return await m.answer(f"{E_NO} Không có cổng <b>{esc(name)}</b>.\n\n{usage}")
+    if new < MIN_PRICE:
+        return await m.answer(f"{E_WARN} Giá mới tối thiểu {money(MIN_PRICE)}.")
+    if new == old:
+        return await m.answer(f"{E_WARN} Giá mới trùng giá cũ, không có gì thay đổi.")
+    pk = await pool.fetchrow(
+        "SELECT * FROM packages WHERE gate=$1 AND price=$2 ORDER BY idx LIMIT 1", name, old)
+    if not pk:
+        cur = fmt_pkgs(await get_packages(name))
+        return await m.answer(f"{E_NO} Cổng <b>{name}</b> không có mệnh giá {money(old)}.\n"
+                              f"Hiện có: {cur}")
+    await pool.execute("UPDATE packages SET price=$3 WHERE gate=$1 AND idx=$2", name, pk["idx"], new)
+    if pk["idx"] == 0:  # giữ đồng bộ giá gốc trong bảng products
+        await pool.execute("UPDATE products SET price=$2 WHERE gate=$1", name, new)
+    await m.answer(
+        f"{E_OK} Đã sửa giá <b>{name}</b> [{pk['points']}]: {money(old)} ➜ <b>{money(new)}</b>\n"
+        "Giá mới đã áp dụng ngay trên menu MUA HÀNG.\n\n"
+        f"Hiện tại: {fmt_pkgs(await get_packages(name))}")
+
+
+async def price_list_view():
+    """Màn hình chọn cổng: hiện đủ mọi mệnh giá của mọi cổng."""
+    gates = await get_gates(active_only=False)
+    pmap = await packages_map()
+    lines = "\n".join(f"• <b>{g['gate']}</b>: {fmt_pkgs(pmap.get(g['gate'], []))}" for g in gates)
+    rows = [[InlineKeyboardButton(text=g["gate"], callback_data=f"pv:{g['gate']}:10000")
+             for g in gates[i:i + 3]] for i in range(0, len(gates), 3)]
+    text = (f"{E_CASH} <b>SỬA GIÁ CODE</b>\n━━━━━━━━━━━━━━━\n{lines}\n\n"
+            f"{E_TARGET} Chọn cổng bên dưới để tăng/giảm giá.\n"
+            "<i>Hoặc gõ nhanh: /set CỔNG giá_cũ giá_mới</i>")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def price_view(gate: str, step: int):
+    """Màn hình sửa giá của 1 cổng: mỗi mệnh giá có nút ➖ / ➕, đổi bước nhảy ở hàng dưới."""
+    pk = await get_packages(gate)
+    lines = "\n".join(f"• {money(p['price'])} [{p['points']}]" for p in pk)
+    text = (f"{E_CASH} <b>SỬA GIÁ {gate}</b>\n━━━━━━━━━━━━━━━\n{lines}\n\n"
+            f"Bước chỉnh: <b>{kfmt(step)}</b> — bấm ➖ để giảm, ➕ để tăng giá từng mệnh giá.\n"
+            "Giá đổi là áp dụng ngay trên menu MUA HÀNG.")
+    rows = []
+    for p in pk:
+        i = p["idx"]
+        rows.append([
+            InlineKeyboardButton(text=f"➖ {kfmt(step)}", callback_data=f"pp:{gate}:{i}:d:{step}"),
+            InlineKeyboardButton(text=f"{kfmt(p['price'])} [{p['points']}]", callback_data="noop"),
+            InlineKeyboardButton(text=f"➕ {kfmt(step)}", callback_data=f"pp:{gate}:{i}:u:{step}"),
+        ])
+    rows.append([InlineKeyboardButton(text=(f"✓ {kfmt(s)}" if s == step else kfmt(s)),
+                                      callback_data=f"pv:{gate}:{s}") for s in PRICE_STEPS])
+    rows.append([InlineKeyboardButton(text="⬅️ QUAY LẠI DANH SÁCH", callback_data="pl")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @dp.message(Command("setgia"), admin)
-async def setgia(m: Message, command: CommandObject):
-    a = (command.args or "").split(maxsplit=2)
-    price = parse_amount(a[1]) if len(a) >= 2 else None
-    name = a[0].upper() if a else ""
-    if not price or not await get_gate(name):
-        return await m.answer("Cú pháp: <code>/setgia CỔNG giá [điểm]</code>\n"
-                              "VD: <code>/setgia LLWIN 95000 188 ĐIỂM</code>")
-    if len(a) == 3:
-        await pool.execute("UPDATE products SET price=$2, points=$3 WHERE gate=$1", name, price, a[2].upper())
-    else:
-        await pool.execute("UPDATE products SET price=$2 WHERE gate=$1", name, price)
-    await m.answer(f"{E_OK} Đã cập nhật <b>{name}</b>: {money(price)}")
+async def setgia_menu(m: Message, state: FSMContext):
+    await state.clear()
+    text, kb = await price_list_view()
+    await m.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data == "pl", admin)
+async def price_back(c: CallbackQuery):
+    text, kb = await price_list_view()
+    await safe_edit(c.message, text, kb)
+    await c.answer()
+
+
+@dp.callback_query(F.data.regexp(r"^pv:[A-Z0-9]+:\d+$"), admin)
+async def price_open(c: CallbackQuery):
+    _, gate, step = c.data.split(":")
+    step = int(step)
+    if step not in PRICE_STEPS or not await get_gate(gate):
+        return await c.answer("Không hợp lệ.", show_alert=True)
+    text, kb = await price_view(gate, step)
+    await safe_edit(c.message, text, kb)
+    await c.answer()
+
+
+@dp.callback_query(F.data.regexp(r"^pp:[A-Z0-9]+:\d+:[ud]:\d+$"), admin)
+async def price_step(c: CallbackQuery):
+    _, gate, idx, sign, step = c.data.split(":")
+    step = int(step)
+    if step not in PRICE_STEPS:
+        return await c.answer("Không hợp lệ.", show_alert=True)
+    delta = step if sign == "u" else -step
+    new = await pool.fetchval(
+        "UPDATE packages SET price=GREATEST(price+$3::bigint, $4::bigint) "
+        "WHERE gate=$1 AND idx=$2 RETURNING price", gate, int(idx), delta, MIN_PRICE)
+    if new is None:
+        return await c.answer("Không tìm thấy mệnh giá này.", show_alert=True)
+    if int(idx) == 0:  # giữ đồng bộ giá gốc trong bảng products
+        await pool.execute("UPDATE products SET price=$2 WHERE gate=$1", gate, new)
+    text, kb = await price_view(gate, step)
+    await safe_edit(c.message, text, kb)
+    await c.answer(f"{gate}: {money(new)}")
+
+
+@dp.callback_query(F.data == "noop")
+async def noop(c: CallbackQuery):
+    await c.answer()
+
+
+# ---------- Bảo trì / Full slot ----------
+async def maint_view():
+    """Menu /baotri: mỗi cổng có 2 nút bật/tắt FULL SLOT và BẢO TRÌ, hiện đủ mệnh giá."""
+    gates = await get_gates(active_only=False)
+    pmap = await packages_map()
+    lines, rows = [], []
+    for g in gates:
+        st, n = g["status"], g["gate"]
+        tag = f" — <b>{STATUS_LABEL[st]}</b>" if st in STATUS_LABEL else ""
+        lines.append(f"{E_ON if st == 'ok' else E_OFF} <b>{n}</b>{tag}\n    {fmt_pkgs(pmap.get(n, []))}")
+        rows.append([
+            InlineKeyboardButton(text=f"{'🔴' if st == 'full' else '⚪'} {n} FULL SLOT",
+                                 callback_data=f"bt:{n}:f"),
+            InlineKeyboardButton(text=f"{'🔴' if st == 'maint' else '⚪'} {n} BẢO TRÌ",
+                                 callback_data=f"bt:{n}:m"),
+        ])
+    rows.append([InlineKeyboardButton(text="🛠 BẢO TRÌ TẤT CẢ", callback_data="bta:m"),
+                 InlineKeyboardButton(text="✅ MỞ LẠI TẤT CẢ", callback_data="bta:o")])
+    text = (f"{E_ADMIN} <b>BẢO TRÌ / FULL SLOT</b>\n━━━━━━━━━━━━━━━\n"
+            + "\n".join(lines) +
+            "\n\n🔴 = đang BẬT (khách bấm vào sẽ thấy thông báo và không mua được)\n"
+            "⚪ = đang TẮT. Bấm lại nút để tắt/mở bán lại.")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(Command("baotri"), admin)
+async def baotri_menu(m: Message, state: FSMContext):
+    await state.clear()
+    text, kb = await maint_view()
+    await m.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.regexp(r"^bt:[A-Z0-9]+:[fm]$"), admin)
+async def maint_toggle(c: CallbackQuery):
+    _, name, kind = c.data.split(":")
+    target = "full" if kind == "f" else "maint"
+    g = await get_gate(name)
+    if not g:
+        return await c.answer("Không tìm thấy cổng.", show_alert=True)
+    new = "ok" if g["status"] == target else target  # bấm lần nữa để tắt
+    await pool.execute("UPDATE products SET status=$2 WHERE gate=$1", name, new)
+    text, kb = await maint_view()
+    await safe_edit(c.message, text, kb)
+    await c.answer(f"{name}: {STATUS_LABEL.get(new, 'ĐÃ MỞ BÁN')}")
+
+
+@dp.callback_query(F.data.regexp(r"^bta:[mo]$"), admin)
+async def maint_all(c: CallbackQuery):
+    new = "maint" if c.data.endswith("m") else "ok"
+    await pool.execute("UPDATE products SET status=$1", new)
+    text, kb = await maint_view()
+    await safe_edit(c.message, text, kb)
+    await c.answer("Đã bảo trì tất cả" if new == "maint" else "Đã mở bán tất cả")
 
 
 @dp.message(Command("themcong"), admin)
@@ -1034,11 +1283,14 @@ async def themcong(m: Message, command: CommandObject):
         return await m.answer("Cú pháp: <code>/themcong CỔNG giá điểm</code>\n"
                               "VD: <code>/themcong ABC88 85000 188 ĐIỂM</code>")
     if await get_gate(name):
-        return await m.answer("Cổng này đã tồn tại, dùng /setgia để đổi giá.")
+        return await m.answer("Cổng này đã tồn tại, dùng /set hoặc /setgia để đổi giá.")
     pos = await pool.fetchval("SELECT COALESCE(MAX(pos),0)+1 FROM products")
+    pts = a[2].upper()
     await pool.execute("INSERT INTO products(gate, price, points, pos) VALUES($1,$2,$3,$4)",
-                       name, price, a[2].upper(), pos)
-    await m.answer(f"{E_OK} Đã thêm cổng <b>{name}</b>: {money(price)} [{a[2].upper()}]")
+                       name, price, pts, pos)
+    async with pool.acquire() as c:
+        await seed_packages(c, name, price, pts)
+    await m.answer(f"{E_OK} Đã thêm cổng <b>{name}</b>\n{fmt_pkgs(await get_packages(name))}")
 
 
 @dp.message(Command("tat", "bat"), admin)
@@ -1048,8 +1300,8 @@ async def toggle_gate(m: Message, command: CommandObject):
         return await m.answer(f"Cú pháp: <code>/{command.command} CỔNG</code>")
     flag = command.command == "bat"
     await pool.execute("UPDATE products SET active=$2 WHERE gate=$1", name, flag)
-    head = f"{E_OK} Đã mở bán" if flag else f"{E_NO} Đã tạm ngưng bán"
-    await m.answer(f"{head} <b>{name}</b>")
+    head = f"{E_OK} Đã hiện" if flag else f"{E_NO} Đã ẩn"
+    await m.answer(f"{head} <b>{name}</b> {'trên' if flag else 'khỏi'} menu mua hàng")
 
 
 # Đặt cuối cùng: lệnh không tồn tại
@@ -1190,7 +1442,10 @@ async def main():
                  BotCommand(command="naptay", description="Nạp tiền thủ công: /naptay id số_tiền"),
                  BotCommand(command="donhang", description="Đơn đang chờ"),
                  BotCommand(command="thongke", description="Thống kê"),
-                 BotCommand(command="reset", description="Reset từng mục thống kê")],
+                 BotCommand(command="reset", description="Reset từng mục thống kê"),
+                 BotCommand(command="setgia", description="Menu tăng/giảm giá code"),
+                 BotCommand(command="set", description="Sửa giá: /set CỔNG giá_cũ giá_mới"),
+                 BotCommand(command="baotri", description="Bật/tắt Full slot - Bảo trì")],
                 scope=BotCommandScopeChat(chat_id=a))
     except Exception:
         logging.warning("Không đặt được danh sách lệnh (admin cần /start bot trước).")
