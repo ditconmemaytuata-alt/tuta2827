@@ -1,7 +1,8 @@
 """
-BOT BÁN CODE TELEGRAM - BẢN POSTGRESQL
-Biến môi trường bắt buộc: BOT_TOKEN, DATABASE_URL  (xem .env.example)
-Chạy: python shop_bot.py
+BOT BÁN CODE TELEGRAM - BẢN POSTGRESQL + EMOJI PREMIUM
+Biến môi trường bắt buộc: BOT_TOKEN, DATABASE_URL
+Tùy chọn: PREMIUM_EMOJI=0 để tắt emoji premium (dùng emoji thường)
+Chạy: python bot.py
 """
 import asyncio
 import html
@@ -71,6 +72,85 @@ DEFAULT_GATES = {
     "OK9": (10_000, "RANDOM"),
 }
 EXTRA = [(140_000, "288 ĐIỂM"), (280_000, "588 ĐIỂM"), (450_000, "888 ĐIỂM")]
+
+# ===================== EMOJI PREMIUM =====================
+# Đặt PREMIUM_EMOJI=0 trong Railway Variables để quay về emoji thường.
+PREMIUM = os.getenv("PREMIUM_EMOJI", "1") != "0"
+
+
+def ce(char: str, eid: str) -> str:
+    """Emoji premium (tg-emoji). Nếu tắt hoặc bot không đủ quyền thì Telegram hiện emoji thường."""
+    return f'<tg-emoji emoji-id="{eid}">{char}</tg-emoji>' if PREMIUM else char
+
+
+def icon(eid: str) -> dict:
+    return {"icon_custom_emoji_id": eid} if PREMIUM else {}
+
+
+E_OK = ce("✅", "6165926565638051547")
+E_NO = ce("❌", "5238037944064811339")
+E_BAN = ce("🚫", "5238037944064811339")
+E_WARN = ce("⚠️", "5395695537687123235")
+E_WAIT = ce("⏳", "5386367538735104399")
+E_CARD = ce("💳", "5445353829304387411")
+E_MONEY = ce("💰", "5278467510604160626")
+E_CASH = ce("💵", "5231005931550030290")
+E_BANK = ce("🏦", "5332455502917949981")
+E_CART = ce("🛒", "5312361253610475399")
+E_IN = ce("📥", "5443127283898405358")
+E_NOTE = ce("📝", "5395444784611480792")
+E_EDIT = ce("✍️", "5395444784611480792")
+E_LIST = ce("📜", "5397782960512444700")
+E_HELP = ce("🆘", "5285238101344544669")
+E_GAME = ce("🎮", "5280816565657300091")
+E_NEW = ce("🛎", "5253742260054409879")
+E_ADMIN = ce("🛠", "5193177581888755275")
+E_INFO = ce("ℹ️", "5262844652964303985")
+E_USER = ce("👤", "5251203410396458957")
+E_HI = ce("👋", "6190629722876023613")
+E_HEART = ce("💙", "5197387964098813812")
+E_PLUS = ce("➕", "5397916757333654639")
+E_MEGA = ce("📢", "5415655814079723871")
+E_TARGET = ce("🎯", "5256131095094652290")
+E_WELCOME = ce("👅", "6192771593001767805")
+
+# 6 emoji premium cho menu: 5 nút + 1 ở lời chào (E_WELCOME)
+MENU_ICONS = {
+    "TÀI KHOẢN": "5217822164362739968",   # 👑
+    "NẠP TIỀN": "5427168083074628963",    # 💎
+    "MUA HÀNG": "6102831593389299866",    # 🌟
+    "LỊCH SỬ": "6280407793631498213",     # 🚗
+    "HỖ TRỢ": "5314504236132747481",      # ⁉️
+}
+
+
+def make_menu(use_icons: bool) -> ReplyKeyboardMarkup:
+    def b(text):
+        extra = icon(MENU_ICONS[text]) if use_icons else {}
+        return KeyboardButton(text=text, **extra)
+
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [b("TÀI KHOẢN"), b("NẠP TIỀN")],
+            [b("MUA HÀNG"), b("LỊCH SỬ")],
+            [b("HỖ TRỢ")],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Chọn chức năng bên dưới 👇",
+    )
+
+
+MENU = make_menu(True)
+MENU_PLAIN = make_menu(False)
+
+
+async def answer_menu(m: Message, text: str):
+    """Gửi kèm menu; nếu Telegram từ chối icon premium thì gửi menu thường."""
+    try:
+        await m.answer(text, reply_markup=MENU)
+    except TelegramBadRequest:
+        await m.answer(text, reply_markup=MENU_PLAIN)
+
 
 # ===================== DATABASE (PostgreSQL) =====================
 SCHEMA = """
@@ -193,16 +273,6 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 admin = F.from_user.id.in_(ADMIN_IDS)
 
-MENU = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="TÀI KHOẢN"), KeyboardButton(text="NẠP TIỀN")],
-        [KeyboardButton(text="MUA HÀNG"), KeyboardButton(text="LỊCH SỬ")],
-        [KeyboardButton(text="HỖ TRỢ")],
-    ],
-    resize_keyboard=True,
-    input_field_placeholder="Chọn chức năng bên dưới 👇",
-)
-
 
 class Buy(StatesGroup):
     login = State()
@@ -267,11 +337,11 @@ dp.callback_query.outer_middleware(Guard())
 @dp.message(Command("start"))
 async def start(m: Message, state: FSMContext):
     await state.clear()
-    await m.answer(
-        f"👋 Xin chào <b>{esc(m.from_user.full_name)}</b>!\n\n"
+    await answer_menu(
+        m,
+        f"{E_HI} Xin chào <b>{esc(m.from_user.full_name)}</b>!\n\n"
         "Chào mừng bạn đến với hệ thống mua code tự động.\n"
-        "Vui lòng chọn chức năng ở menu bên dưới.",
-        reply_markup=MENU)
+        f"{E_WELCOME} Vui lòng chọn chức năng ở menu bên dưới.")
 
 
 @dp.message(F.text == "TÀI KHOẢN")
@@ -284,18 +354,18 @@ async def account(m: Message, state: FSMContext):
     pending = await pool.fetchval(
         "SELECT COUNT(*) FROM orders WHERE user_id=$1 AND status='pending'", uid)
     await m.answer(
-        "👤 <b>THÔNG TIN TÀI KHOẢN</b>\n"
+        f"{E_USER} <b>THÔNG TIN TÀI KHOẢN</b>\n"
         "━━━━━━━━━━━━━━━\n"
         f"🆔 ID: <code>{uid}</code>\n"
-        f"💰 SỐ DƯ: <b>{money(u['balance'])}</b>\n"
-        f"📥 TỔNG NẠP: {money(u['total_deposit'])}\n"
-        f"🛒 TỔNG SỐ TIỀN MUA CODE: {money(spent)}\n"
-        f"⏳ ĐƠN ĐANG XỬ LÝ: {pending}\n"
+        f"{E_MONEY} SỐ DƯ: <b>{money(u['balance'])}</b>\n"
+        f"{E_IN} TỔNG NẠP: {money(u['total_deposit'])}\n"
+        f"{E_CART} TỔNG SỐ TIỀN MUA CODE: {money(spent)}\n"
+        f"{E_WAIT} ĐƠN ĐANG XỬ LÝ: {pending}\n"
         f"🕒 NGÀY THAM GIA: {fmt(u['joined'])}")
 
 
 NAP_HELP = (
-    "💳 <b>NẠP TIỀN</b>\n"
+    f"{E_CARD} <b>NẠP TIỀN</b>\n"
     "━━━━━━━━━━━━━━━\n"
     "Vui lòng dùng lệnh <code>/nap số tiền</code>\n"
     "Ví dụ: <code>/nap 30000</code> hoặc <code>/nap 30k</code>\n\n"
@@ -323,11 +393,11 @@ async def nap_cmd(m: Message, command: CommandObject, state: FSMContext):
             return await m.answer("Cú pháp: <code>/nap id số_tiền</code>")
         uid = int(args[0])
         bal = await add_deposit(uid, amount, f"admin:{m.from_user.id}")
-        await m.answer(f"✅ Đã nạp {money(amount)} cho ID <code>{uid}</code>. Số dư mới: {money(bal)}")
-        ok = await safe_send(uid, "✅ <b>NẠP TIỀN THÀNH CÔNG</b>\n"
+        await m.answer(f"{E_OK} Đã nạp {money(amount)} cho ID <code>{uid}</code>. Số dư mới: {money(bal)}")
+        ok = await safe_send(uid, f"{E_OK} <b>NẠP TIỀN THÀNH CÔNG</b>\n"
                                   f"Số tiền: <b>{money(amount)}</b>\nSố dư hiện tại: {money(bal)}")
         if not ok:
-            await m.answer("⚠️ Không gửi được thông báo cho người dùng (họ chưa /start hoặc đã chặn bot).")
+            await m.answer(f"{E_WARN} Không gửi được thông báo cho người dùng (họ chưa /start hoặc đã chặn bot).")
         return
 
     # Người dùng: /nap số_tiền
@@ -335,17 +405,17 @@ async def nap_cmd(m: Message, command: CommandObject, state: FSMContext):
     if not amount:
         return await m.answer(NAP_HELP)
     if not MIN_DEPOSIT <= amount <= MAX_DEPOSIT:
-        return await m.answer(f"⚠️ Số tiền nạp từ {money(MIN_DEPOSIT)} đến {money(MAX_DEPOSIT)}.")
+        return await m.answer(f"{E_WARN} Số tiền nạp từ {money(MIN_DEPOSIT)} đến {money(MAX_DEPOSIT)}.")
     uid = m.from_user.id
     caption = (
-        "💳 <b>THÔNG TIN NẠP TIỀN ĐÂY BẠN NHÉ</b>\n"
+        f"{E_CARD} <b>THÔNG TIN NẠP TIỀN ĐÂY BẠN NHÉ</b>\n"
         "━━━━━━━━━━━━━━━\n"
-        f"👤 CHỦ TÀI KHOẢN: <b>{ACCOUNT_NAME}</b>\n"
-        f"🏦 SỐ TÀI KHOẢN: <code>{ACCOUNT_NO}</code>\n"
-        f"🏛 NGÂN HÀNG: <b>{BANK_NAME}</b>\n"
-        f"💵 SỐ TIỀN: <b>{money(amount)}</b>\n"
-        f"📝 NỘI DUNG CHUYỂN KHOẢN: <code>{TRANSFER_PREFIX}{uid}</code>\n\n"
-        "⚠️ Chuyển <b>đúng số tiền và nội dung</b> để hệ thống tự động cập nhật. "
+        f"{E_USER} CHỦ TÀI KHOẢN: <b>{ACCOUNT_NAME}</b>\n"
+        f"{E_BANK} SỐ TÀI KHOẢN: <code>{ACCOUNT_NO}</code>\n"
+        f"{E_BANK} NGÂN HÀNG: <b>{BANK_NAME}</b>\n"
+        f"{E_CASH} SỐ TIỀN: <b>{money(amount)}</b>\n"
+        f"{E_NOTE} NỘI DUNG CHUYỂN KHOẢN: <code>{TRANSFER_PREFIX}{uid}</code>\n\n"
+        f"{E_WARN} Chuyển <b>đúng số tiền và nội dung</b> để hệ thống tự động cập nhật. "
         "Nội dung này là riêng của bạn, không dùng chung với người khác.")
     try:
         await m.answer_photo(qr_url(uid, amount), caption=caption)
@@ -364,9 +434,9 @@ async def shop(m: Message, state: FSMContext):
     lines = "\n".join(f"• <b>{g['gate']}</b>: {g['price'] // 1000}K [ {g['points']} ]" for g in gates)
     extra = "\n".join(f"• {p // 1000}K [ {pt} ]" for p, pt in EXTRA)
     await m.answer(
-        "🛒 <b>BẢNG GIÁ CODE</b>\n━━━━━━━━━━━━━━━\n"
-        f"{lines}\n\n➕ Mỗi cổng có thêm các mệnh giá:\n{extra}\n\n"
-        "👇 Chọn cổng game bạn muốn mua:",
+        f"{E_CART} <b>BẢNG GIÁ CODE</b>\n━━━━━━━━━━━━━━━\n"
+        f"{lines}\n\n{E_PLUS} Mỗi cổng có thêm các mệnh giá:\n{extra}\n\n"
+        f"{E_TARGET} Chọn cổng game bạn muốn mua bên dưới:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -377,7 +447,7 @@ async def pick_gate(c: CallbackQuery):
         return await c.answer("Cổng này tạm ngưng bán.", show_alert=True)
     rows = [[InlineKeyboardButton(text=f"{p // 1000}K - {pt}", callback_data=f"pkg:{g['gate']}:{j}")]
             for j, (p, pt) in enumerate(packages(g))]
-    await c.message.answer(f"🎮 Cổng <b>{g['gate']}</b> — chọn mệnh giá:",
+    await c.message.answer(f"{E_GAME} Cổng <b>{g['gate']}</b> — chọn mệnh giá:",
                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await c.answer()
 
@@ -393,7 +463,7 @@ async def pick_pkg(c: CallbackQuery, state: FSMContext):
     await state.update_data(gate=name, price=price, points=points, login=None)
     await c.message.answer(
         f"Bạn chọn <b>{name}</b> — {money(price)} [{points}]\n\n"
-        "✍️ Vui lòng gửi <b>TÊN ĐĂNG NHẬP</b> của bạn:\n"
+        f"{E_EDIT} Vui lòng gửi <b>TÊN ĐĂNG NHẬP</b> của bạn:\n"
         "<i>(bấm một nút trên menu để hủy)</i>")
     await c.answer()
 
@@ -401,7 +471,7 @@ async def pick_pkg(c: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "buy_no")
 async def buy_no(c: CallbackQuery, state: FSMContext):
     await state.clear()
-    await c.message.edit_text("❌ Đã hủy đơn hàng.")
+    await c.message.edit_text(f"{E_NO} Đã hủy đơn hàng.")
     await c.answer()
 
 
@@ -427,11 +497,11 @@ async def buy_ok(c: CallbackQuery, state: FSMContext):
     if oid is None:
         bal = await balance_of(uid)
         await c.message.edit_text(
-            f"❌ <b>SỐ DƯ KHÔNG ĐỦ</b>\nSố dư: {money(bal)} — cần: {money(d['price'])}\n"
+            f"{E_NO} <b>SỐ DƯ KHÔNG ĐỦ</b>\nSố dư: {money(bal)} — cần: {money(d['price'])}\n"
             f"Thiếu: <b>{money(d['price'] - bal)}</b>. Dùng <code>/nap số_tiền</code> để nạp thêm.")
         return await c.answer()
     await c.message.edit_text(
-        f"✅ <b>ĐÃ MUA THÀNH CÔNG</b>\nMã đơn: <b>#{oid}</b>\n"
+        f"{E_OK} <b>ĐÃ MUA THÀNH CÔNG</b>\nMã đơn: <b>#{oid}</b>\n"
         "Đơn hàng sẽ được xử lý trong vòng <b>24-72H</b>.\n"
         "Theo dõi trạng thái tại mục LỊCH SỬ.")
     await c.answer()
@@ -444,7 +514,7 @@ async def notify_admin_order(oid, chat_id=None):
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ DUYỆT", callback_data=f"ok:{oid}"),
         InlineKeyboardButton(text="❌ TỪ CHỐI", callback_data=f"no:{oid}")]])
-    text = (f"🛎 <b>ĐƠN MỚI #{oid}</b>\n━━━━━━━━━━━━━━━\n"
+    text = (f"{E_NEW} <b>ĐƠN MỚI #{oid}</b>\n━━━━━━━━━━━━━━━\n"
             f"Khách: {user_link(o['user_id'], o['name'], o['username'])}\n"
             f"ID: <code>{o['user_id']}</code>\n"
             f"Cổng: <b>{o['gate']}</b> — {money(o['price'])} [{o['points']}]\n"
@@ -456,8 +526,9 @@ async def notify_admin_order(oid, chat_id=None):
         await to_admins(text, reply_markup=kb)
 
 
-STATUS = {"pending": "⏳ ĐANG XỬ LÝ", "done": "✅ MUA THÀNH CÔNG (ADMIN ĐÃ XỬ LÝ)",
-          "rejected": "❌ BỊ TỪ CHỐI (ĐÃ HOÀN TIỀN)"}
+STATUS = {"pending": f"{E_WAIT} ĐANG XỬ LÝ",
+          "done": f"{E_OK} MUA THÀNH CÔNG (ADMIN ĐÃ XỬ LÝ)",
+          "rejected": f"{E_NO} BỊ TỪ CHỐI (ĐÃ HOÀN TIỀN)"}
 
 
 @dp.message(F.text == "LỊCH SỬ")
@@ -466,10 +537,10 @@ async def history(m: Message, state: FSMContext):
     uid = m.from_user.id
     deps = await pool.fetch("SELECT * FROM deposits WHERE user_id=$1 ORDER BY id DESC LIMIT 10", uid)
     ords = await pool.fetch("SELECT * FROM orders WHERE user_id=$1 ORDER BY id DESC LIMIT 10", uid)
-    t = "📜 <b>LỊCH SỬ NẠP TIỀN</b> (10 gần nhất)\n━━━━━━━━━━━━━━━\n"
-    t += "\n".join(f"✅ NẠP TIỀN THÀNH CÔNG: <b>{money(d['amount'])}</b> — {fmt(d['created'])}"
+    t = f"{E_LIST} <b>LỊCH SỬ NẠP TIỀN</b> (10 gần nhất)\n━━━━━━━━━━━━━━━\n"
+    t += "\n".join(f"{E_OK} NẠP TIỀN THÀNH CÔNG: <b>{money(d['amount'])}</b> — {fmt(d['created'])}"
                    for d in deps) if deps else "Chưa có giao dịch nạp tiền."
-    t += "\n\n🛒 <b>LỊCH SỬ MUA CODE</b> (10 gần nhất)\n━━━━━━━━━━━━━━━\n"
+    t += f"\n\n{E_CART} <b>LỊCH SỬ MUA CODE</b> (10 gần nhất)\n━━━━━━━━━━━━━━━\n"
     t += "\n\n".join(f"#{o['id']} • {o['gate']} • {money(o['price'])} [{o['points']}]\n"
                      f"{STATUS[o['status']]} — {fmt(o['created'])}"
                      for o in ords) if ords else "Chưa có đơn hàng."
@@ -479,12 +550,12 @@ async def history(m: Message, state: FSMContext):
 @dp.message(F.text == "HỖ TRỢ")
 async def support(m: Message, state: FSMContext):
     await state.clear()
-    await m.answer(f"🆘 CẦN HỖ TRỢ XIN VUI LÒNG NHẮN QUA {SUPPORT}")
+    await m.answer(f"{E_HELP} CẦN HỖ TRỢ XIN VUI LÒNG NHẮN QUA {SUPPORT}")
 
 
 # ===================== ADMIN =====================
 ADMIN_HELP = (
-    "🛠 <b>LỆNH ADMIN</b>\n━━━━━━━━━━━━━━━\n"
+    f"{E_ADMIN} <b>LỆNH ADMIN</b>\n━━━━━━━━━━━━━━━\n"
     "<code>/nap id số_tiền</code> — nạp tiền thủ công (có báo khách)\n"
     "<code>/tru id số_tiền</code> — trừ số dư\n"
     "<code>/donhang</code> — đơn đang chờ xử lý\n"
@@ -519,14 +590,14 @@ async def admin_decide(c: CallbackQuery):
     if not o:
         return await c.answer("Đơn này đã được xử lý rồi.", show_alert=True)
     if new == "done":
-        await safe_send(o["user_id"], f"✅ <b>Đơn #{oid}</b> ({o['gate']} - {o['points']}) "
-                                      "đã được admin xử lý thành công!\nCảm ơn bạn đã ủng hộ 💙")
+        await safe_send(o["user_id"], f"{E_OK} <b>Đơn #{oid}</b> ({o['gate']} - {o['points']}) "
+                                      f"đã được admin xử lý thành công!\nCảm ơn bạn đã ủng hộ {E_HEART}")
     else:
-        await safe_send(o["user_id"], f"❌ <b>Đơn #{oid}</b> ({o['gate']}) bị từ chối. "
+        await safe_send(o["user_id"], f"{E_NO} <b>Đơn #{oid}</b> ({o['gate']}) bị từ chối. "
                                       f"Đã hoàn <b>{money(o['price'])}</b> vào số dư.\n"
                                       f"Cần hỗ trợ vui lòng liên hệ {SUPPORT}")
     who = esc(c.from_user.full_name)
-    mark = "✅ ĐÃ DUYỆT" if new == "done" else "❌ ĐÃ TỪ CHỐI"
+    mark = f"{E_OK} ĐÃ DUYỆT" if new == "done" else f"{E_NO} ĐÃ TỪ CHỐI"
     await c.message.edit_text(c.message.html_text + f"\n\n<b>{mark}</b> bởi {who}")
     await c.answer("Xong")
 
@@ -542,8 +613,8 @@ async def tru(m: Message, command: CommandObject):
         "UPDATE users SET balance=GREATEST(balance-$2,0) WHERE id=$1 RETURNING balance", uid, amt)
     if bal is None:
         return await m.answer("Không tìm thấy người dùng này.")
-    await m.answer(f"✅ Đã trừ {money(amt)} của ID <code>{uid}</code>. Số dư còn: {money(bal)}")
-    await safe_send(uid, f"ℹ️ Admin đã điều chỉnh trừ <b>{money(amt)}</b> trong số dư của bạn.\n"
+    await m.answer(f"{E_OK} Đã trừ {money(amt)} của ID <code>{uid}</code>. Số dư còn: {money(bal)}")
+    await safe_send(uid, f"{E_INFO} Admin đã điều chỉnh trừ <b>{money(amt)}</b> trong số dư của bạn.\n"
                          f"Số dư hiện tại: {money(bal)}\nLiên hệ {SUPPORT} nếu cần hỗ trợ.")
 
 
@@ -551,8 +622,8 @@ async def tru(m: Message, command: CommandObject):
 async def donhang(m: Message):
     rows = await pool.fetch("SELECT id FROM orders WHERE status='pending' ORDER BY id")
     if not rows:
-        return await m.answer("✅ Không có đơn nào đang chờ xử lý.")
-    await m.answer(f"⏳ Có <b>{len(rows)}</b> đơn đang chờ xử lý:")
+        return await m.answer(f"{E_OK} Không có đơn nào đang chờ xử lý.")
+    await m.answer(f"{E_WAIT} Có <b>{len(rows)}</b> đơn đang chờ xử lý:")
     for r in rows:
         await notify_admin_order(r["id"], m.chat.id)
 
@@ -562,7 +633,7 @@ async def muatc(m: Message):
     rows = await pool.fetch("SELECT * FROM orders WHERE status='done' ORDER BY id DESC")
     if not rows:
         return await m.answer("Chưa có đơn thành công.")
-    await send_long(m.chat.id, f"✅ <b>ĐƠN MUA THÀNH CÔNG ({len(rows)})</b>\n\n" + "\n".join(
+    await send_long(m.chat.id, f"{E_OK} <b>ĐƠN MUA THÀNH CÔNG ({len(rows)})</b>\n\n" + "\n".join(
         f"#{o['id']} | ID {o['user_id']} | {o['gate']} {money(o['price'])} [{o['points']}] | "
         f"{esc(o['login'])} | {fmt(o['created'])}" for o in rows))
 
@@ -573,13 +644,13 @@ async def thongke(m: Message):
     today = datetime.now(VN_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     await m.answer(
         "📊 <b>THỐNG KÊ</b>\n━━━━━━━━━━━━━━━\n"
-        f"💰 Tổng tiền nạp: <b>{money(await v('SELECT COALESCE(SUM(total_deposit),0) FROM users'))}</b>\n"
+        f"{E_MONEY} Tổng tiền nạp: <b>{money(await v('SELECT COALESCE(SUM(total_deposit),0) FROM users'))}</b>\n"
         f"👥 Tổng thành viên: <b>{await v('SELECT COUNT(*) FROM users')}</b>\n"
-        f"⏳ Đơn chờ xử lý: <b>{await v('SELECT COUNT(*) FROM orders WHERE status=$1', 'pending')}</b>\n"
-        f"✅ Đơn mua thành công: <b>{await v('SELECT COUNT(*) FROM orders WHERE status=$1', 'done')}</b>\n"
-        f"🛒 Tổng tiền mua code thành công: "
+        f"{E_WAIT} Đơn chờ xử lý: <b>{await v('SELECT COUNT(*) FROM orders WHERE status=$1', 'pending')}</b>\n"
+        f"{E_OK} Đơn mua thành công: <b>{await v('SELECT COUNT(*) FROM orders WHERE status=$1', 'done')}</b>\n"
+        f"{E_CART} Tổng tiền mua code thành công: "
         f"<b>{money(await v('SELECT COALESCE(SUM(price),0) FROM orders WHERE status=$1', 'done'))}</b>\n"
-        f"💼 Tổng số dư khách đang giữ: {money(await v('SELECT COALESCE(SUM(balance),0) FROM users'))}\n\n"
+        f"{E_CASH} Tổng số dư khách đang giữ: {money(await v('SELECT COALESCE(SUM(balance),0) FROM users'))}\n\n"
         "📅 <b>HÔM NAY</b>\n"
         f"• Khách mới: {await v('SELECT COUNT(*) FROM users WHERE joined >= $1', today)}\n"
         f"• Tiền nạp: {money(await v('SELECT COALESCE(SUM(amount),0) FROM deposits WHERE created >= $1', today))}\n"
@@ -597,12 +668,13 @@ async def user_info(m: Message, command: CommandObject):
     spent = await pool.fetchval(
         "SELECT COALESCE(SUM(price),0) FROM orders WHERE user_id=$1 AND status='done'", u["id"])
     n_ord = await pool.fetchval("SELECT COUNT(*) FROM orders WHERE user_id=$1", u["id"])
+    status = f"{E_BAN} ĐANG BỊ KHÓA" if u["banned"] else "🟢 Bình thường"
     await m.answer(
-        f"👤 {user_link(u['id'], u['name'], u['username'])}\n"
+        f"{E_USER} {user_link(u['id'], u['name'], u['username'])}\n"
         f"ID: <code>{u['id']}</code>\nSố dư: <b>{money(u['balance'])}</b>\n"
         f"Tổng nạp: {money(u['total_deposit'])}\nTổng mua thành công: {money(spent)}\n"
         f"Số đơn: {n_ord}\nTham gia: {fmt(u['joined'])}\n"
-        f"Trạng thái: {'🚫 ĐANG BỊ KHÓA' if u['banned'] else '🟢 Bình thường'}")
+        f"Trạng thái: {status}")
 
 
 @dp.message(Command("ban", "unban"), admin)
@@ -614,7 +686,8 @@ async def ban(m: Message, command: CommandObject):
     found = await pool.fetchval("UPDATE users SET banned=$2 WHERE id=$1 RETURNING id", int(a), flag)
     if found is None:
         return await m.answer("Không tìm thấy người dùng này.")
-    await m.answer(f"{'🚫 Đã khóa' if flag else '🟢 Đã mở khóa'} ID <code>{a}</code>")
+    head = f"{E_BAN} Đã khóa" if flag else f"{E_OK} Đã mở khóa"
+    await m.answer(f"{head} ID <code>{a}</code>")
 
 
 @dp.message(Command("thongbao"), admin)
@@ -625,20 +698,20 @@ async def broadcast(m: Message, command: CommandObject):
     try:
         await bot.send_message(m.chat.id, text)           # xem thử (và kiểm tra lỗi HTML)
     except TelegramBadRequest:
-        return await m.answer("⚠️ Nội dung có thẻ HTML sai, vui lòng kiểm tra lại.")
+        return await m.answer(f"{E_WARN} Nội dung có thẻ HTML sai, vui lòng kiểm tra lại.")
     ids = [r["id"] for r in await pool.fetch("SELECT id FROM users WHERE NOT banned") if r["id"] != m.chat.id]
-    await m.answer(f"📢 Đang gửi cho {len(ids)} người...")
+    await m.answer(f"{E_MEGA} Đang gửi cho {len(ids)} người...")
     ok = 0
     for uid in ids:
         ok += await safe_send(uid, text)
         await asyncio.sleep(0.05)                          # tránh bị Telegram giới hạn
-    await m.answer(f"✅ Gửi xong: {ok}/{len(ids)} người nhận được.")
+    await m.answer(f"{E_OK} Gửi xong: {ok}/{len(ids)} người nhận được.")
 
 
 @dp.message(Command("sanpham"), admin)
 async def sanpham(m: Message):
     rows = await get_gates(active_only=False)
-    await m.answer("📦 <b>DANH SÁCH CỔNG</b>\n\n" + "\n".join(
+    await m.answer(f"{E_CART} <b>DANH SÁCH CỔNG</b>\n\n" + "\n".join(
         f"{'🟢' if g['active'] else '🔴'} <b>{g['gate']}</b> — {money(g['price'])} [{g['points']}]"
         for g in rows))
 
@@ -655,7 +728,7 @@ async def setgia(m: Message, command: CommandObject):
         await pool.execute("UPDATE products SET price=$2, points=$3 WHERE gate=$1", name, price, a[2].upper())
     else:
         await pool.execute("UPDATE products SET price=$2 WHERE gate=$1", name, price)
-    await m.answer(f"✅ Đã cập nhật <b>{name}</b>: {money(price)}")
+    await m.answer(f"{E_OK} Đã cập nhật <b>{name}</b>: {money(price)}")
 
 
 @dp.message(Command("themcong"), admin)
@@ -671,7 +744,7 @@ async def themcong(m: Message, command: CommandObject):
     pos = await pool.fetchval("SELECT COALESCE(MAX(pos),0)+1 FROM products")
     await pool.execute("INSERT INTO products(gate, price, points, pos) VALUES($1,$2,$3,$4)",
                        name, price, a[2].upper(), pos)
-    await m.answer(f"✅ Đã thêm cổng <b>{name}</b>: {money(price)} [{a[2].upper()}]")
+    await m.answer(f"{E_OK} Đã thêm cổng <b>{name}</b>: {money(price)} [{a[2].upper()}]")
 
 
 @dp.message(Command("tat", "bat"), admin)
@@ -681,13 +754,14 @@ async def toggle_gate(m: Message, command: CommandObject):
         return await m.answer(f"Cú pháp: <code>/{command.command} CỔNG</code>")
     flag = command.command == "bat"
     await pool.execute("UPDATE products SET active=$2 WHERE gate=$1", name, flag)
-    await m.answer(f"{'🟢 Đã mở bán' if flag else '🔴 Đã tạm ngưng bán'} <b>{name}</b>")
+    head = f"{E_OK} Đã mở bán" if flag else f"{E_NO} Đã tạm ngưng bán"
+    await m.answer(f"{head} <b>{name}</b>")
 
 
 # Đặt cuối cùng: lệnh không tồn tại
 @dp.message(F.text.startswith("/"))
 async def unknown_cmd(m: Message):
-    await m.answer("Lệnh không tồn tại. Vui lòng dùng menu bên dưới nhé.", reply_markup=MENU)
+    await answer_menu(m, "Lệnh không tồn tại. Vui lòng dùng menu bên dưới nhé.")
 
 
 # Đặt SAU các nút menu và lệnh để bấm menu/lệnh khi đang nhập tên vẫn hoạt động
@@ -695,7 +769,7 @@ async def unknown_cmd(m: Message):
 async def get_login(m: Message, state: FSMContext):
     login = m.text.strip()
     if not re.fullmatch(r"[\w.@\-]{3,40}", login):
-        return await m.answer("⚠️ Tên đăng nhập không hợp lệ (3-40 ký tự, không dấu cách). Vui lòng gửi lại.")
+        return await m.answer(f"{E_WARN} Tên đăng nhập không hợp lệ (3-40 ký tự, không dấu cách). Vui lòng gửi lại.")
     await state.update_data(login=login)
     d = await state.get_data()
     bal = await balance_of(m.from_user.id)
@@ -703,14 +777,14 @@ async def get_login(m: Message, state: FSMContext):
         InlineKeyboardButton(text="✅ XÁC NHẬN MUA", callback_data="buy_ok"),
         InlineKeyboardButton(text="❌ HỦY", callback_data="buy_no")]])
     await m.answer(
-        "📋 <b>XÁC NHẬN ĐƠN HÀNG</b>\n━━━━━━━━━━━━━━━\n"
+        f"{E_NOTE} <b>XÁC NHẬN ĐƠN HÀNG</b>\n━━━━━━━━━━━━━━━\n"
         "DỊCH VỤ: CODE LDC\n"
         f"CỔNG: <b>{d['gate']}</b>\n"
         f"GIÁ TIỀN: <b>{money(d['price'])}</b>\n"
         f"ĐIỂM: {d['points']}\n"
         f"TÊN ĐĂNG NHẬP: <code>{esc(login)}</code>\n"
         f"SỐ DƯ HIỆN TẠI: {money(bal)}\n\n"
-        "⚠️ VUI LÒNG KIỂM TRA LẠI THÔNG TIN TRÁNH SAI SÓT",
+        f"{E_WARN} VUI LÒNG KIỂM TRA LẠI THÔNG TIN TRÁNH SAI SÓT",
         reply_markup=kb)
 
 
@@ -742,17 +816,18 @@ async def sepay_hook(request: web.Request):
     uid = int(mt.group(1))
     status, bal = await credit_bank(tx_id, uid, amount)
     if status == "ok":
-        await safe_send(uid, f"✅ <b>NẠP TIỀN THÀNH CÔNG</b>\nSố tiền: <b>{money(amount)}</b>\n"
+        await safe_send(uid, f"{E_OK} <b>NẠP TIỀN THÀNH CÔNG</b>\nSố tiền: <b>{money(amount)}</b>\n"
                              f"Số dư hiện tại: {money(bal)}")
-        await to_admins(f"💰 Khách <code>{uid}</code> vừa nạp tự động {money(amount)}")
+        await to_admins(f"{E_MONEY} Khách <code>{uid}</code> vừa nạp tự động {money(amount)}")
     elif status == "nouser":
-        await to_admins(f"⚠️ Nhận {money(amount)} với nội dung có ID <code>{uid}</code> "
+        await to_admins(f"{E_WARN} Nhận {money(amount)} với nội dung có ID <code>{uid}</code> "
                         "nhưng ID này chưa có trong hệ thống. Vui lòng kiểm tra thủ công.")
     return web.json_response({"success": True})
 
 
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.info("Đang khởi động bot...")
     await init_db()
     app = web.Application()
     app.router.add_get("/", health)
