@@ -15,7 +15,7 @@ import html
 import traceback
 
 # ============================================================
-# CUSTOM EMOJI MAPPING (Telegram Premium - Animated)
+# CUSTOM EMOJI MAPPING (Đã cập nhật siêu đầy đủ)
 # ============================================================
 CUSTOM_EMOJI = {
     "🥰": "5238188302279909462", "👋": "5235701688014217208", "🙂": "5238185738184435219",
@@ -145,7 +145,7 @@ def query(q, args=()):
         conn.close()
     return res
 
-# TẠO CÁC BẢNG MỚI (KẾT SÁT, TÍCH LŨY)
+# TẠO CÁC BẢNG
 query("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, reward INTEGER, uses INTEGER)")
 query("""
 CREATE TABLE IF NOT EXISTS users (
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS users (
     bank_linked INTEGER DEFAULT 0
 )
 """)
-query("CREATE TABLE IF NOT EXISTS game_rates (id INTEGER PRIMARY KEY, name TEXT, rate INTEGER)")
+# Bỏ bảng game_rates vì bạn yêu cầu xoá chức năng can thiệp tỉ lệ
 query("CREATE TABLE IF NOT EXISTS banned_games (user_id BIGINT, game_id INTEGER, PRIMARY KEY (user_id, game_id))")
 query("CREATE TABLE IF NOT EXISTS banned_features (user_id BIGINT, feature TEXT, PRIMARY KEY (user_id, feature))")
 query("CREATE TABLE IF NOT EXISTS banned_admins (admin_id BIGINT PRIMARY KEY, banned_by BIGINT, reason TEXT, banned_at TEXT)")
@@ -256,7 +256,6 @@ CREATE TABLE IF NOT EXISTS codenap (
     created_at TEXT
 )
 """)
-# THÊM BẢNG KẾT SÁT & TÍCH LŨY NẠP
 query("""
 CREATE TABLE IF NOT EXISTS ket_sat (
     user_id BIGINT PRIMARY KEY,
@@ -275,26 +274,6 @@ CREATE TABLE IF NOT EXISTS tich_luy_nap (
     PRIMARY KEY (user_id, milestone, date)
 )
 """)
-
-games_to_keep = [
-    (1, "TÀI XỈU ROOM"),
-    (2, "XÚC XẮC ĐƠN"),
-    (3, "LONG HỔ"),
-    (4, "MINI POKER"),
-    (5, "BACCARAT"),
-    (7, "XÓC ĐĨA 4 VỊ"),
-    (8, "TÀI XỈU MD5"),
-    (9, "BẦU CUA"),
-    (10, "XÓC ĐĨA 6 VỊ")
-]
-for gid, name in games_to_keep:
-    res = query("SELECT 1 FROM game_rates WHERE id=%s", (gid,))
-    if not res:
-        query("INSERT INTO game_rates VALUES(%s, %s, 10)", (gid, name))
-    else:
-        query("UPDATE game_rates SET name=%s WHERE id=%s", (name, gid))
-
-query("DELETE FROM game_rates WHERE id > 10 OR id = 6")
 
 try:
     query("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_bet BIGINT DEFAULT 0")
@@ -383,14 +362,6 @@ def get_bot_name():
     res = query("SELECT value FROM settings WHERE key='bot_display_name'")
     return res[0][0] if res else "Hệ thống Game Uy Tín"
 
-def get_rate_by_id(game_id, user_id=None):
-    if user_id:
-        res_user = query("SELECT rate_bonus FROM users WHERE user_id=%s", (user_id,))
-        if res_user and res_user[0][0] is not None:
-            return res_user[0][0]
-    res = query("SELECT rate FROM game_rates WHERE id=%s", (game_id,))
-    return res[0][0] if res else 10
-
 def is_game_banned(uid, gid):
     res = query("SELECT 1 FROM banned_games WHERE user_id=%s AND game_id=%s", (uid, gid))
     return len(res) > 0 if res else False
@@ -400,7 +371,6 @@ def is_feature_banned(uid, feature):
     return len(res) > 0 if res else False
 
 def get_vip_info(total_bet):
-    # Tính điểm VIP dựa trên 300k cược = 1 điểm (theo ảnh)
     vip_points = total_bet // 300000
     if vip_points >= 100000: return "VIP 9 (Chí Tôn)", vip_points
     if vip_points >= 50000: return "VIP 8 (Huyền Thoại)", vip_points
@@ -1590,7 +1560,6 @@ async def xd6_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(f'{ce("❌")} Số tiền không hợp lệ!', parse_mode=ParseMode.HTML)
     await play_xocdia6(update, ctx, choice, amt)
 
-# ================= COMMANDS MỚI THEO ẢNH =================
 async def chuyen_tien_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if len(ctx.args) < 2:
@@ -1642,7 +1611,6 @@ async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'⚠️ Phí 5%. Mệnh giá mỗi code tối thiểu 1.000đ. Cần tổng nạp >50k.',
             parse_mode=ParseMode.HTML
         )
-    # Placeholder logic vì cần check tổng nạp và trừ tiền
     await update.message.reply_text(
         f'{ce("✅")} Đã ghi nhận yêu cầu mua Giftcode!\nVui lòng chờ Admin duyệt và gửi code.',
         parse_mode=ParseMode.HTML
@@ -1971,7 +1939,6 @@ async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML)
 
 async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # Hàm này được gọi từ Account Menu
     uid = update.effective_user.id
     data = query("SELECT amount, note, time FROM history WHERE user_id=%s ORDER BY time DESC LIMIT 20", (uid,))
     title_icon = ce_id("5210956306952758910")
@@ -2064,7 +2031,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cuoc_hom_nay = query("SELECT SUM(amount) FROM history WHERE user_id=%s AND amount < 0 AND note NOT LIKE '%%Rút%%' AND time LIKE %s", (uid, f"%{today_str}%"))
         cuoc_hom_nay = abs(cuoc_hom_nay[0][0]) if cuoc_hom_nay and cuoc_hom_nay[0][0] else 0
 
-        # Nút Inline theo ảnh
+        # Nút Inline theo ảnh (Đã sửa lỗi ID Callback)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LS nạp", callback_data="acc_ls_nap"), InlineKeyboardButton("📉 LS rút", callback_data="acc_ls_rut")],
             [InlineKeyboardButton("🎮 LS chơi", callback_data="acc_ls_choi"), InlineKeyboardButton("🎲 LS Room TX", callback_data="acc_ls_tx")],
@@ -2827,53 +2794,6 @@ async def soduall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 @admin_only
-async def tileall_set_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        return await update.message.reply_text(f'{ce("❌")} Cú pháp: <code>/tileall [số]</code>', parse_mode=ParseMode.HTML)
-    try:
-        new_rate = int(ctx.args[0])
-        query("UPDATE game_rates SET rate = %s", (new_rate,))
-        await update.message.reply_text(f'{ce("✅")} Đã chỉnh tất cả game về tỉ lệ thắng: <code>{new_rate}%</code>', parse_mode=ParseMode.HTML)
-    except:
-        await update.message.reply_text(f'{ce("❌")} Tỉ lệ phải là số nguyên.', parse_mode=ParseMode.HTML)
-
-@admin_only
-async def tile1_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if len(ctx.args) < 2:
-        return await update.message.reply_text(f'{ce("❌")} Cú pháp: <code>/tile1 [ID] [Tỉ_lệ]</code>', parse_mode=ParseMode.HTML)
-    try:
-        uid = int(ctx.args[0])
-        rate = int(ctx.args[1])
-        query("UPDATE users SET rate_bonus = %s WHERE user_id = %s", (rate, uid))
-        await update.message.reply_text(f'{ce("✅")} Đã áp dụng tỉ lệ thắng <code>{rate}%</code> riêng cho người dùng <code>{uid}</code>', parse_mode=ParseMode.HTML)
-    except:
-        await update.message.reply_text(f'{ce("❌")} Lỗi dữ liệu nhập vào.', parse_mode=ParseMode.HTML)
-
-@admin_only
-async def tilewin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        game_id = int(ctx.args[0])
-        new_rate = int(ctx.args[1])
-        if not (0 <= new_rate <= 100):
-            return await update.message.reply_text(f'{ce("❌")} Tỉ lệ thắng phải từ 0% đến 100%!', parse_mode=ParseMode.HTML)
-        query("UPDATE game_rates SET rate=%s WHERE id=%s", (new_rate, game_id))
-        res = query("SELECT name FROM game_rates WHERE id=%s", (game_id,))
-        game_name = res[0][0] if res else "Không xác định"
-        await update.message.reply_text(
-            f'{ce("✅")} <b>CẬP NHẬT TỈ LỆ THÀNH CÔNG</b>\n\n'
-            f'{ce("🎮")} Game: <code>{game_id} - {game_name}</code>\n'
-            f'📈 Tỉ lệ thắng mới: <code>{new_rate}%</code>',
-            parse_mode=ParseMode.HTML)
-    except:
-        msg = (
-            f'{ce("⚡")} <b>HƯỚNG DẪN CHỈNH TỈ LỆ</b>\n'
-            f'Cú pháp: <code>/tilewin [Số_ID] [Tỉ_lệ]</code>\n\n'
-            f'1. TÀI XỈU ROOM | 2. XÚC XẮC ĐƠN | 3. LONG HỔ | 4. MINI POKER\n'
-            f'5. BACCARAT | 7. XÓC ĐĨA 4 VỊ | 8. TÀI XỈU MD5 | 9. BẦU CUA | 10. XÓC ĐĨA 6 VỊ'
-        )
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-
-@admin_only
 async def resetsdall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query("UPDATE users SET balance = 0")
     await update.message.reply_text(f'{ce("✅")} Đã xóa toàn bộ số dư của tất cả người dùng về 0!', parse_mode=ParseMode.HTML)
@@ -3280,13 +3200,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     d = q.data
     uid = q.from_user.id
 
-    # XỬ LÝ CALLBACK CHO TÀI KHOẢN (ACC_)
-    if d == "acc_ls_nap":
-        await q.answer()
-        return await q.message.reply_text(
-            f'{ce("💸")} <b>Chuyển tiền:</b>\n'
-            f'Vui lòng nhập lệnh: <code>/chuyen [ID] [số tiền]</code>',
-            parse_mode=ParseMode.HTML)
+    # XỬ LÝ CALLBACK CHO TÀI KHOẢN (ĐÃ SỬA LỖI NÚT LS NẠP)
     if d == "acc_ls_nap":
         await q.answer()
         data = query("SELECT amount, time FROM deposit_history WHERE user_id=%s AND status='success' ORDER BY time DESC LIMIT 10", (uid,))
@@ -3295,6 +3209,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             for row in data: text += f'{ce("✔️")} <code>+{fmt_money(row[0])}đ</code> | <i>{row[1]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
+    
     if d == "acc_ls_rut":
         await q.answer()
         data = query("SELECT amount, status, time FROM withdraw_history WHERE user_id=%s ORDER BY time DESC LIMIT 10", (uid,))
@@ -3305,24 +3220,31 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 status_icon = f'{ce("✔️")}' if row[1] == "success" else f'{ce("❌")}' if row[1] == "rejected" else f'{ce("⏰")}'
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | {row[1]} | <i>{row[2]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
+        
     if d == "acc_ls_choi":
         await q.answer()
         return await ls_choi_cmd(update, ctx)
+        
     if d == "acc_ls_tx":
         await q.answer()
         return await ls_room_tx_cmd(update, ctx)
+        
     if d == "acc_nhap_gift":
         await q.answer()
         return await q.message.reply_text(f'{ce("🎁")} Vui lòng nhập lệnh <code>/code [mã]</code> để nhập giftcode.', parse_mode=ParseMode.HTML)
+        
     if d == "acc_mua_gift":
         await q.answer()
         return await mua_gift_cmd(update, ctx)
+        
     if d == "acc_nhan_thuong":
         await q.answer()
         return await q.message.reply_text(f'{ce("🎉")} Bạn không có phần thưởng nào đang chờ duyệt.', parse_mode=ParseMode.HTML)
+        
     if d == "acc_chuyen_tien":
         await q.answer()
         return await chuyen_tien_cmd(update, ctx)
+        
     if d == "acc_vip":
         await q.answer()
         res = query("SELECT total_bet FROM users WHERE user_id=%s", (uid,))
@@ -3335,9 +3257,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'💡 Cứ mỗi 300.000đ cược hợp lệ bạn sẽ nhận được 1 điểm VIP.\n'
             f'Đổi điểm VIP bằng lệnh: <code>/doidiemvip [số điểm]</code>',
             parse_mode=ParseMode.HTML)
+            
     if d == "acc_fan_cung":
         await q.answer("Tính năng đang được cập nhật!", show_alert=True)
         return
+        
     if d == "acc_tich_luy":
         await q.answer()
         return await q.message.reply_text(
@@ -3348,6 +3272,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'... (Xem chi tiết tại BOT)\n\n'
             f'{ce("⏰")} Code chỉ có hạn sử dụng trong ngày!',
             parse_mode=ParseMode.HTML)
+            
     if d == "acc_ket_sat":
         await q.answer()
         return await q.message.reply_text(
@@ -3402,7 +3327,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if d == "ev_moi_de_tu":
             return await q.message.reply_text(f'{ce("🧑‍🤝‍🧑")} <b>MỜI ĐỆ TỬ</b>\n\nVui lòng vào mục GIỚI THIỆU để lấy link mời!', parse_mode=ParseMode.HTML)
 
-    # --- CÁC XỬ LÝ CŨ GIỮ NGUYÊN ---
+    # --- CÁC XỬ LÝ GAME VÀ MENU CŨ GIỮ NGUYÊN ---
     if d == "menu_taixiu_room":
         await q.answer()
         msg = (
@@ -3825,7 +3750,6 @@ application.add_handler(CommandHandler("bc", bc_cmd))
 application.add_handler(CommandHandler("xd6", xd6_cmd))
 application.add_handler(CommandHandler("group_status", group_status_cmd))
 
-# NEW COMMANDS
 application.add_handler(CommandHandler("chuyen", chuyen_tien_cmd))
 application.add_handler(CommandHandler("muagift", mua_gift_cmd))
 application.add_handler(CommandHandler("doidiemvip", doi_diem_vip_cmd))
@@ -3847,9 +3771,6 @@ application.add_handler(CommandHandler("check", check_user_history))
 application.add_handler(CommandHandler("thongke", dashboard_cmd))
 application.add_handler(CommandHandler("tong", tong_cmd))
 application.add_handler(CommandHandler("soduall", soduall_cmd))
-application.add_handler(CommandHandler("tileall", tileall_set_cmd))
-application.add_handler(CommandHandler("tile1", tile1_user_cmd))
-application.add_handler(CommandHandler("tilewin", tilewin_cmd))
 application.add_handler(CommandHandler("resetsdall", resetsdall_cmd))
 application.add_handler(CommandHandler("resetall", resetsdall_cmd))
 application.add_handler(CommandHandler("xoalsall", xoalsall_cmd))
