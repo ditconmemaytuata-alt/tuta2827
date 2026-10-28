@@ -16,128 +16,64 @@ import traceback
 
 # ============================================================
 # CUSTOM EMOJI MAPPING (Telegram Premium - Animated)
+# Đã cập nhật theo danh sách 94 ID của bạn
 # ============================================================
 CUSTOM_EMOJI = {
-    "🎲": "5260547274957672345",
-    "👥": "5453957997418004470",
-    "💰": "5224257782013769471",
-    "💸": "5231005931550030290",
-    "📊": "5231200819986047254",
-    "💬": "5386691718571646404",
-    "🦌": "5422516277010774456",
-    "🦀": "5319247469165433798",
-    "💿": "5429118663946945233",
-    "🎰": "5321295593040010652",
-    "🃏": "5298499667569425533",
-    "🎮": "5235989279024373566",
-    "🎯": "5256131095094652290",
-    "💎": "6003595618100974363",
-    "💍": "5262922516426420894",
-    "🍬": "5404573776253825754",
-    "❤️": "5406926593698312391",
-    "🏅": "5204271353565300127",
-    "🥇": "5440539497383087970",
-    "🥈": "5447203607294265305",
-    "🥉": "5453902265922376865",
-    "⚠️": "5420323339723881652",
-    "➕": "5397916757333654639",
-    "➖": "5382261056078881010",
-    "📈": "5244837092042750681",
-    "📉": "5246762912428603768",
-    "✨": "5325547803936572038",
-    "🌟": "5267500801240092311",
-    "✅": "6003745186042089867",
-    "❌": "5210952531676504517",
-    "🔥": "5373310043586310463",
-    "⚡": "5411590687663608498",
-    "🔒": "5296369303661067030",
-    "🔓": "5291873529464122510",
-    "🔑": "5278573677900752088",
-    "✔️": "5780463361175066565",
-    "🆗": "5413617405421167103",
-    "🆘": "5429262837409138106",
-    "✏️": "5395444784611480792",
-    "📍": "5321275372333979355",
-    "🔗": "5271604874419647061",
-    "📎": "5305265301917549162",
-    "🗑": "5372825386591732174",
-    "🗓": "5413879192267805083",
-    "⌛": "5386367538735104399",
-    "🔜": "5440621591387980068",
-    "🚀": "5372917041193828849",
-    "🌈": "5409109841538994759",
-    "☀️": "5373021138316186413",
-    "🌛": "5438362704878250587",
-    "🎉": "5208541126583136130",
-    "🏆": "5188344996356448758",
-    "👑": "5217822164362739968",
-    "🚫": "5462882007451185227",
-    "💳": "5445353829304387411",
-    "🛒": "5400090058030075645",
-    "📥": "5443127283898405358",
-    "📤": "5445355530111437729",
-    "⏰": "5386415655253730366",
-    "👀": "5210956306952758910",
-    "💵": "5409048419211682843",
-    "🎁": "5203996991054432397",
-    "💠": "5461151367559141950",
-    "🔔": "5458603043203327669",
-    "📫": "5287533898803211359",
-    "⚙️": "5267334530171169409",
-    "🛠": "5462921117423384478",
-    "📌": "5397782960512444700",
-    "✍️": "5258500400918587241",
-    "🆔": "5443038326535759644",
-    "📜": "6098288123580518916",
-    "📞": "5237988788164107500",
-    "🛡": "5400250414929041085",
-    "🔮": "5278651867780377852",
-    "🐯": "5456463412393342595",
-    "🐉": "5395493912344353272",
-    "🫵": "5461098492216752942",
-    "😮‍💨": "5192886773948107844",
-    "🤕": "5350584327946127806",
-    "😯": "5350392879778908359",
-    "🥸": "5391112412445288650",
-    "😃": "5276450615436787319",
-    "🥷": "5217514674769120391",
-    "👤": "5332455502917949981",
-    "🏦": "5400250414929041085",
-    "⚖️": "5280939169793732849",
-    "🎴": "5276239041052828276",
-    "1️⃣": "5305763715692377402",
-    "2️⃣": "5307907239380528763",
-    "3️⃣": "5305783000095537258",
-    "4️⃣": "5305255243104138538",
-    "🟢": "5416081784641168838",
-    "🔙": "5352759161945867747",
-    "⬅️": "5363896514655564837",
-    "➡️": "5416117059207572332",
-    "📣": "5298609030321691620",
-    "🛍": "5406683434124859552",
-    "🆓": "5406756500108501710",
-    "✉️": "5253742260054409879",
-    "😵": "5465137208878969279",
-    "⚰️": "5463186335948878489",
-    "🔝": "5463071033256848094",
-    "⬆️": "5463122435425448565",
-    "❓": "5463139580934892960",
-    "👌": "5463423955014529788",
-    "step_1": "5415655814079723871",
-    "step_2": "5375338737028841420",
-    "step_3": "5382357040008021292",
-    "😆": "5375135722514685501",
-    "game_icon_1": "5217822164362739968",
-    "game_icon_2": "5386367538735104399",
-    "game_icon_3": "5361741454685256344",
-    "game_icon_4": "5422439311196834318",
-    "game_icon_5": "5406683434124859552",
-    "game_icon_6": "5416041192905265756",
-    "game_icon_7": "5460755126761312667",
-    "🥰": "5197387964098813812",
-    "👅": "6192771593001767805",
-    "🏳️": "6336979307558081524",
-    "🪙": "5379773896352355687"
+    "🥰": "5238188302279909462", "👋": "5235701688014217208", "🙂": "5238185738184435219",
+    "⌨️": "5242451907724716893", "❤️": "6307296870179804027", "🆗": "6307624533234815952",
+    "💰": "6307538509334844759", "🍀": "6307381081603577097", "⁉️": "5314504236132747481",
+    "⚠️": "5420323339723881652", "☄️": "5224607267797606837", "🛍": "5229064374403998351",
+    "⛔️": "5260293700088511294", "🚫": "5240241223632954241", "❗️": "5274099962655816924",
+    "👀": "5210956306952758910", "❌": "5210952531676504517", "💸": "5231449120635370684",
+    "💱": "5402186569006210455", "▶️": "5264919878082509254", "💥": "5276032951342088188",
+    "🔗": "5271604874419647061", "🔄": "5375338737028841420", "🔝": "5415655814079723871",
+    "➕": "5397916757333654639", "✉️": "5253742260054409879", "📍": "5391032818111363540",
+    "💎": "5427168083074628963", "⭐️": "5438496463044752972", "🗑": "5445267414562389170",
+    "🔖": "5222444124698853913", "🔒": "5296369303661067030", "😮": "5303479226882603449",
+    "📎": "5305265301917549162", "⚙️": "5341715473882955310", "🎮": "5361741454685256344",
+    "🔈": "5388632425314140043", "⌛": "5386367538735104399", "⬇️": "5406745015365943482",
+    "🌧": "5399913388845322366", "❄️": "5449449325434266744", "🌈": "5409109841538994759",
+    "💧": "5393512611968995988", "🥇": "5440539497383087970", "🥈": "5447203607294265305",
+    "🥉": "5453902265922376865", "🆓": "5406756500108501710", "🚨": "5395695537687123235",
+    "🏠": "5416041192905265756", "🚩": "5460755126761312667", "🎉": "5461151367559141950",
+    "🔥": "6309824960944673394", "🐣": "6307545381282517559", "🐺": "6309898817202295364",
+    "⚡": "6143242687274291080", "😎": "6224009027584528984", "🚗": "6280407793631498213",
+    "👅": "6192771593001767805", "😘": "6172246648668821119", "🦉": "6172679422458467366",
+    "🏳️": "6336979307558081524", "🎁": "6064301746719562425", "🇻🇳": "6111496780103292027",
+    "🌟": "6111754757313926362", "😃": "6111737246732262016", "😞": "6199453007336184702",
+    "😍": "6273945156341209192", "👍": "5440910346334255336", "🔔": "5440833702642857683",
+    "🤭": "5253821918812862724", "🍭": "5255858639549251782", "💳": "5472250091332993630",
+    "🎰": "5235989279024373566", "⚖️": "5461152608804689572", "🧲": "5202106638508512484",
+    "📞": "5213179235996294999", "📥": "5443127283898405358", "📤": "5445355530111437729",
+    "🐻": "5411089297476441876", "🖼": "5262517101578443800",
+    # Giữ lại một số emoji cũ đang dùng trong code để tránh lỗi
+    "👥": "5453957997418004470", "📊": "5231200819986047254", "💬": "5386691718571646404",
+    "🦌": "5422516277010774456", "🦀": "5319247469165433798", "💿": "5429118663946945233",
+    "🃏": "5298499667569425533", "🎯": "5256131095094652290", "💍": "5262922516426420894",
+    "🍬": "5404573776253825754", "🏅": "5204271353565300127", "➖": "5382261056078881010",
+    "📈": "5244837092042750681", "📉": "5246762912428603768", "✨": "5325547803936572038",
+    "✅": "6003745186042089867", "🔓": "5291873529464122510", "🔑": "5278573677900752088",
+    "✔️": "5780463361175066565", "🆘": "5429262837409138106", "✏️": "5395444784611480792",
+    "🗓": "5413879192267805083", "🔜": "5440621591387980068", "🚀": "5372917041193828849",
+    "☀️": "5373021138316186413", "🌛": "5438362704878250587", "🏆": "5188344996356448758",
+    "👑": "5217822164362739968", "🛒": "5400090058030075645", "⏰": "5386415655253730366",
+    "💵": "5409048419211682843", "💠": "5461151367559141950", "📫": "5287533898803211359",
+    "🛠": "5462921117423384478", "📌": "5397782960512444700", "✍️": "5258500400918587241",
+    "🆔": "5443038326535759644", "📜": "6098288123580518916", "🛡": "5400250414929041085",
+    "🔮": "5278651867780377852", "🐯": "5456463412393342595", "🐉": "5395493912344353272",
+    "🫵": "5461098492216752942", "😮‍💨": "5192886773948107844", "🤕": "5350584327946127806",
+    "😯": "5350392879778908359", "🥸": "5391112412445288650", "🥷": "5217514674769120391",
+    "👤": "5332455502917949981", "🏦": "5400250414929041085", "🎴": "5276239041052828276",
+    "1️⃣": "5305763715692377402", "2️⃣": "5307907239380528763", "3️⃣": "5305783000095537258",
+    "4️⃣": "5305255243104138538", "🟢": "5416081784641168838", "🔙": "5352759161945867747",
+    "⬅️": "5363896514655564837", "➡️": "5416117059207572332", "📣": "5298609030321691620",
+    "😵": "5465137208878969279", "⚰️": "5463186335948878489", "⬆️": "5463122435425448565",
+    "❓": "5463139580934892960", "👌": "5463423955014529788", "step_1": "5415655814079723871",
+    "step_2": "5375338737028841420", "step_3": "5382357040008021292", "😆": "5375135722514685501",
+    "game_icon_1": "5217822164362739968", "game_icon_2": "5386367538735104399", 
+    "game_icon_3": "5361741454685256344", "game_icon_4": "5422439311196834318", 
+    "game_icon_5": "5406683434124859552", "game_icon_6": "5416041192905265756", 
+    "game_icon_7": "5460755126761312667", "🪙": "5379773896352355687"
 }
 
 def ce(emoji: str) -> str:
@@ -151,7 +87,8 @@ def ce_id(custom_id: str) -> str:
 
 def ce_text(text: str) -> str:
     for emoji, emoji_id in CUSTOM_EMOJI.items():
-        text = text.replace(emoji, f'<tg-emoji emoji-id="{emoji_id}">{emoji}</tg-emoji>')
+        if len(emoji) <= 2: # Chỉ replace các emoji đơn giản
+            text = text.replace(emoji, f'<tg-emoji emoji-id="{emoji_id}">{emoji}</tg-emoji>')
     return text
 
 def fmt_money(amount: int) -> str:
@@ -653,20 +590,21 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
 
             jackpot_now = get_jackpot()
 
+            # --- ĐÃ SỬA: CẬP NHẬT TIN NHẮN BẮT ĐẦU PHIÊN THEO YÊU CẦU ---
             start_text = (
-                f'🎯 Xin mời đặt cược phiên XX #{session_id} 🎯\n'
-                f'💵 Min: 1.000 | Max: 1.000.000\n'
-                f'🎲 Cách chơi: [Cửa cược] [số tiền]\n'
+                f'{ce("🎯")} <b>Xin mời đặt cược phiên XX #{session_id}</b> {ce("🎯")}\n'
+                f'{ce("💰")} Min: 1.000 | Max: 1.000.000\n'
+                f'{ce("🎮")} Cách chơi: [Cửa cược] [số tiền]\n'
                 f'🔵 Tài: T | 🔴 Xỉu: X | ⚪ Chẵn: C | ⚫ Lẻ: L\n'
-                f'🕶 Ẩn danh thường: TT/XX/CC/LL, VD TT 50000, XX 50000\n\n'
-                f'🔥 T/X/C/L trả x2.3: thua tổng khi 3 XX 9/10/11/12 điểm\n'
-                f'🕶 Tất tay: VD T MAX hoặc T ALL\n'
-                f'🎯 D1 [mặt] x5: đoán viên đầu, VD D1 4 20k\n'
-                f'🎯 D2 [2 mặt] x10: đoán viên 1 và 2 đúng thứ tự, VD D2 46 20k\n'
-                f'🎯 D3 [tổng]: 9/10/11/12 x7; 8/13 x9; 7/14 x12; 6/15 x15; 5/16 x18; 4/17 x25; 3/18 x30, VD: D3 13 20000 hoặc D3 13 max\n'
-                f'💎 Xiên TC/TL/XC/XL trả x3, VD: TC 50000, XC 50000,\n\n'
-                f'✅ VD: T 50000, X 50000, XX MAX, TT MAX hoặc TC max\n\n'
-                f'🎁 Hũ jackpot: <code>{fmt_money(jackpot_now)}đ</code>'
+                f'{ce("👅")} Ẩn danh thường: TT/XX/CC/LL, VD TT 50000, XX 50000\n\n'
+                f'{ce("🔥")} T/X/C/L trả x2.3: thua tổng khi 3 XX 9/10/11/12 điểm\n'
+                f'{ce("👅")} Tất tay: VD T MAX hoặc T ALL <i>(Lưu ý: MAX là tất tay)</i>\n'
+                f'{ce("🎰")} D1 [mặt] x5: đoán viên đầu, VD D1 4 20k\n'
+                f'{ce("🎰")} D2 [2 mặt] x10: đoán viên 1 và 2 đúng thứ tự, VD D2 46 20k\n'
+                f'{ce("🎰")} D3 [tổng]: 9/10/11/12 x7; 8/13 x9; 7/14 x12; 6/15 x15; 5/16 x18; 4/17 x25; 3/18 x30, VD: D3 13 20000 hoặc D3 13 max\n'
+                f'{ce("💎")} Xiên TC/TL/XC/XL trả x3, VD: TC 50000, XC 50000,\n\n'
+                f'{ce("✅")} <b>VD tổng hợp:</b> T 50000, X 50000, XX MAX, TT MAX hoặc TC max\n\n'
+                f'{ce("🎁")} Hũ jackpot: <code>{fmt_money(jackpot_now)}đ</code>'
             )
             
             try:
@@ -685,6 +623,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 if current_second < 0:
                     current_second = 0
 
+                # Tính toán tiền cược
                 tai_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "tai")
                 xiu_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "xiu")
                 chan_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "chan")
@@ -693,58 +632,61 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 tc_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "tc")
                 xl_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "xl")
                 xc_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "xc")
+                
+                d1_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"].startswith("d1_"))
+                d2_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"].startswith("d2_"))
+                d3_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"].startswith("d3_"))
+                anon_count = sum(b["amount"] for b in game_state['bets'].values() if b["anonymous"])
+
                 total_players = len(set(b["user_id"] for b in game_state['bets'].values()))
                 
-                header = f'{ce("🚫")} <b>SẮP ĐÓNG CƯỢC!</b>' if current_second <= 10 else ''
+                # --- ĐÃ SỬA: GIAO DIỆN ĐẾM NGƯỢC VÀ HIỂN THỊ CÁC CỬA PHỤ ---
+                header = f'{ce("🚫")} <b>SẮP ĐÓNG CƯỢC!</b>\n' if current_second <= 10 else ''
 
                 edit_text = (
-                    f'Còn {current_second} giây phiên #{session_id}\n'
-                    f'🔵 TÀI: {fmt_money(tai_count)}\n'
-                    f'🔴 XỈU: {fmt_money(xiu_count)}\n\n'
-                    f'⚪️ CHẴN: {fmt_money(chan_count)}\n'
-                    f'⚫️ LẺ: {fmt_money(le_count)}\n'
+                    f'{header}'
+                    f'{ce("⌛")} <b>Còn {current_second} giây phiên #{session_id}</b>\n'
+                    f'🔵 <b>TÀI:</b> {fmt_money(tai_count)}\n'
+                    f'🔴 <b>XỈU:</b> {fmt_money(xiu_count)}\n'
+                    f'⚪ <b>CHẴN:</b> {fmt_money(chan_count)}\n'
+                    f'⚫ <b>LẺ:</b> {fmt_money(le_count)}\n'
                 )
                 
-                if tl_count > 0: edit_text += f'💎 TL (TÀI+LẺ): {fmt_money(tl_count)}\n'
-                if tc_count > 0: edit_text += f'💎 TC (TÀI+CHẴN): {fmt_money(tc_count)}\n'
-                if xl_count > 0: edit_text += f'💎 XL (XỈU+LẺ): {fmt_money(xl_count)}\n'
-                if xc_count > 0: edit_text += f'💎 XC (XỈU+CHẴN): {fmt_money(xc_count)}\n'
+                # Thêm các cửa Xiên nếu có
+                if tl_count > 0 or tc_count > 0 or xl_count > 0 or xc_count > 0:
+                    edit_text += f'\n{ce("💎")} <b>Xiên:</b>\n'
+                    if tl_count > 0: edit_text += f' - TL (Tài+Lẻ): {fmt_money(tl_count)}\n'
+                    if tc_count > 0: edit_text += f' - TC (Tài+Chẵn): {fmt_money(tc_count)}\n'
+                    if xl_count > 0: edit_text += f' - XL (Xỉu+Lẻ): {fmt_money(xl_count)}\n'
+                    if xc_count > 0: edit_text += f' - XC (Xỉu+Chẵn): {fmt_money(xc_count)}\n'
                 
+                # Thêm các cửa Dự đoán (D1, D2, D3) nếu có
+                if d1_count > 0 or d2_count > 0 or d3_count > 0:
+                    edit_text += f'\n{ce("🎰")} <b>Dự đoán:</b>\n'
+                    if d1_count > 0: edit_text += f' - D1 (Mặt 1): {fmt_money(d1_count)}\n'
+                    if d2_count > 0: edit_text += f' - D2 (2 Mặt): {fmt_money(d2_count)}\n'
+                    if d3_count > 0: edit_text += f' - D3 (Tổng): {fmt_money(d3_count)}\n'
+                    
+                # Thêm cửa Ẩn danh nếu có
+                if anon_count > 0:
+                    edit_text += f'\n{ce("👅")} <b>Ẩn danh:</b> {fmt_money(anon_count)}\n'
+
                 edit_text += (
-                    f'━━━━━━━━━━━━━━━━━━━━━\n'
-                    f'🎯 Cách chơi: [Cửa cược] [số tiền]\n'
-                    f'🔵 Tài: T | 🔴 Xỉu: X | ⚪ Chẵn: C | ⚫ Lẻ: L\n'
-                    f'🕶 Ẩn danh thường: TT/XX/CC/LL\n'
-                    f'🔥 T/X/C/L trả x2.3\n'
-                    f'🎯 D1 [mặt] x5, D2 [2 mặt] x10, D3 [tổng] x7-x30\n'
-                    f'💎 Xiên TC/TL/XC/XL trả x3\n'
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
                     f'{ce("👥")} Tổng người chơi: {total_players}\n'
                     f'{ce("🎁")} Hũ jackpot: {fmt_money(jackpot_now)}đ'
                 )
 
-                if current_second % 10 == 0 and current_second > 0:
-                    try:
-                        await bot.delete_message(chat_id, current_msg_id)
-                    except Exception as e:
-                        pass
-
-                    try:
-                        new_msg = await bot.send_message(chat_id, edit_text, parse_mode=ParseMode.HTML)
-                        current_msg_id = new_msg.message_id
-                        game_state["message_id"] = current_msg_id
-                    except Exception as e:
-                        pass
-                else:
-                    try:
-                        await bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=current_msg_id,
-                            text=edit_text,
-                            parse_mode=ParseMode.HTML
-                        )
-                    except Exception as e:
-                        pass
+                # Chỉnh sửa tin nhắn liên tục, không xoá tin nhắn cũ
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=current_msg_id,
+                        text=edit_text,
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e:
+                    pass
 
             game_state["status"] = "rolling"
             
@@ -854,7 +796,16 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                             parse_mode=ParseMode.HTML)
                     except: pass
 
+            # --- ĐÃ SỬA: LOGIC CHÍCH HŨ 4.4% ---
             jackpot_amount = get_jackpot()
+            jackpot_contribution = 0
+            
+            # Chỉ trích hũ khi tổng thua > tổng thắng
+            if total_lose > total_win:
+                jackpot_contribution = int(total_lose * 0.044)
+                jackpot_amount += jackpot_contribution
+                update_jackpot(jackpot_amount)
+
             jackpot_winners = []
             count_1 = dice_values.count(1)
             count_6 = dice_values.count(6)
@@ -892,6 +843,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 cau_tx += "🔵" if h['tx'] == "tai" else "🔴"
                 cau_cl += "⚪️" if h['cl'] == "chan" else "⚫️"
 
+            # --- ĐÃ SỬA: CẬP NHẬT TIN NHẮN TỔNG KẾT CÓ HIỂN THỊ HŨ ---
             final_msg = (
                 f'{ce("📊")} <b>Kết quả Phiên #{session_id}</b>\n'
                 f'┏━━━━━━━━━━━━━\n'
@@ -900,7 +852,8 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 f'┃ {ce("💰")} Tổng thắng: {fmt_money(total_win)}\n'
                 f'┃ {ce("❌")} Tổng thua: {fmt_money(total_lose)}\n'
                 f'┃\n'
-                f'┃ {ce("🎁")} Hũ jackpot: {fmt_money(jackpot_amount)}đ\n'
+                f'┃ {ce("🤑")} Trích hũ (4.4% tổng thua): +{fmt_money(jackpot_contribution)}\n'
+                f'┃ {ce("🎁")} Hũ hiện tại: {fmt_money(jackpot_amount)}đ\n'
                 f'┗━━━━━━━━━━━━━\n'
                 f'<b>Cầu gần đây:</b>\n'
                 f'{cau_tx if cau_tx else "Chưa có"}\n'
@@ -1016,7 +969,7 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
         f'{ce("✅")} Đặt thành công — Phiên #{session_id}\n\n'
         f'{ce("🥷")} Công khai\n'
         f'{ce("🎯")} {choice_display_map} · {fmt_money(game["bets"][bet_key]["amount"])}\n'
-        f'{ce("💲")} Tỷ lệ x{multiplier}\n'
+        f'{ce("💵")} Tỷ lệ x{multiplier}\n'
         f'{ce("💰")} Số dư: {fmt_money(new_balance)}'
     )
     return True, msg
@@ -1040,6 +993,7 @@ async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
         if not sub_money(user_id, amount, f"Cược ẩn danh {choice.upper()} - {amount:,}đ"):
             return False, f'{ce("❌")} Lỗi trừ tiền, vui lòng thử lại!'
         game["bets"][bet_key]["amount"] = new_total
+        game["bets"][bet_key]["anonymous"] = True
     else:
         conflict = False
         for existing_bet in game["bets"].values():
@@ -1657,7 +1611,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     
-    # Cập nhật Menu với 6 emoji Premium
     menu = ReplyKeyboardMarkup([
         ["👑 DANH SÁCH GAME", "💳 TÀI KHOẢN"],
         ["🪙 NẠP TIỀN", "🥰 RÚT TIỀN"],
