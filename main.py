@@ -3117,12 +3117,17 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not ctx.args:
         try:
-            qr_url, caption, kb = deposit_menu_content(uid)
-            return await msg_obj.reply_photo(photo=qr_url, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+            # Chỉ hiện hướng dẫn và các nút mệnh giá; không tạo QR số tiền 0.
+            _, caption, kb = deposit_menu_content(uid)
+            return await msg_obj.reply_text(
+                caption,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
         except Exception as e:
             print(f"nap menu lỗi: {e}")
             return await msg_obj.reply_text(
-                f'{ce("❌")} Cú pháp: <code>/nap [số_tiền]</code>\nVD: <code>/nap 50000</code>',
+                f'{ce("❌")} Không thể hiển thị menu nạp tiền lúc này. Vui lòng thử lại sau.',
                 parse_mode=ParseMode.HTML
             )
     try:
@@ -3374,7 +3379,35 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await user_reply.reply_text(GAME_LIST_TEXT, reply_markup=game_list_kb(), parse_mode=ParseMode.HTML)
 
     if key == "NẠP TIỀN":
-        return await nap_cmd(update, ctx)
+        # Hiển thị menu trực tiếp, không gọi nap_cmd để tránh lấy nhầm args
+        # từ context của lệnh /nap hoặc rơi vào thông báo cú pháp cũ.
+        if is_banned(uid):
+            return
+        if is_total_maintenance() and uid not in ADMIN_IDS:
+            return await user_reply.reply_text(
+                f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>',
+                parse_mode=ParseMode.HTML
+            )
+        if is_feature_banned(uid, 'nap'):
+            return await user_reply.reply_text(
+                f'{ce("🚫")} Tính năng NẠP TIỀN đã bị khóa!',
+                parse_mode=ParseMode.HTML
+            )
+        if check_mt('mt_nap') and uid not in ADMIN_IDS:
+            return await user_reply.reply_text(
+                f'{ce("⚙️")} Nạp Tiền đang bảo trì!',
+                parse_mode=ParseMode.HTML
+            )
+        try:
+            _, caption, kb = deposit_menu_content(uid)
+            return await user_reply.reply_text(
+                caption, reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            print(f"Nút menu NẠP TIỀN lỗi: {e}")
+            return await user_reply.reply_text(
+                'Không thể hiển thị menu nạp tiền lúc này. Vui lòng thử lại sau.'
+            )
 
     if key == "RÚT TIỀN":
         return await rut(update, ctx)
