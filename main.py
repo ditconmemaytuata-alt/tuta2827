@@ -654,7 +654,7 @@ def deposit_menu_content(uid):
         [btn("100.000đ", "💵", "dep_100000"), btn("200.000đ", "💵", "dep_200000"), btn("500.000đ", "💵", "dep_500000")],
         [btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000"), btn("5.000.000đ", "💰", "dep_5000000")],
         [btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000"), btn("50.000.000đ", "💎", "dep_50000000")],
-        [btn("Hỗ Trợ", "🔔", "dep_support")]
+        [btn("100.000.000đ", "💎", "dep_100000000"), btn("Hỗ Trợ", "🔔", "dep_support")]
     ])
     
     caption = (
@@ -2953,7 +2953,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     menu = ReplyKeyboardMarkup([
         [kbtn("DANH SÁCH GAME", "👑"), kbtn("TÀI KHOẢN", "📜")],
-        [kbtn("NẠP TIỀN", "💵"), kbtn("RÚT TIỀN", "₿")],
+        [kbtn("NẠP TIỀN", "💵"), kbtn("RÚT TIỀN", "💸")],
         [kbtn("GIỚI THIỆU", "🌸"), kbtn("ĐUA TOP", "🍕")],
         [kbtn("EVENT", "🎁"), kbtn("LỆNH", "🔍")]
     ], resize_keyboard=True)
@@ -3033,22 +3033,22 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         req_cuoc_text = ""
         if remaining > 0:
             req_cuoc_text = (
-                f'⚠️ Cần cược thêm <b>{fmt_money(remaining)}đ</b> nữa để được rút.\n\n'
+                f'{ce("⚠️")} Cần cược thêm <b>{fmt_money(remaining)}đ</b> nữa để được rút.\n\n'
             )
             
         text = (
-            f'🧾 <b>THÔNG TIN RÚT TIỀN</b>\n\n'
+            f'{ce("🧾")} <b>THÔNG TIN RÚT TIỀN</b>\n\n'
             f'STK đã cài đặt của bạn:\n'
             f'<code>{html.escape(str(u[1]))} - {html.escape(str(u[0]))} - {html.escape(str(u[2]))}</code>\n\n'
             f'Để đổi STK vui lòng liên hệ Admin.\n\n'
-            f'🎰 <b>Rút tiền về tài khoản trên:</b>\n'
+            f'{ce("🎰")} <b>Rút tiền về tài khoản trên:</b>\n'
             f'• /rut [số tiền] - VD: /rut 50000\n'
             f'• /rut all - Rút tối đa phần khả dụng (đã trừ phí 0%)\n\n'
-            f'📝 <b>Điều kiện rút tiền:</b>\n'
+            f'{ce("📝")} <b>Điều kiện rút tiền:</b>\n'
             f'• Cược đủ Room TX: {fmt_money(u[3])}\n'
             f'• Hiện đã cược: {fmt_money(get_balance(uid) * 0)}\n\n'
             f'<blockquote>{req_cuoc_text}'
-            f'⚠️ Phí rút 0%. Rút tối thiểu theo cài đặt bot (thường 50k).</blockquote>'
+            f'{ce("⚠️")} Phí rút 0%. Rút tối thiểu theo cài đặt bot (thường 50k).</blockquote>'
         )
         return await msg_obj.reply_text(text, parse_mode=ParseMode.HTML)
     
@@ -3136,6 +3136,8 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         if amount < 10000:
             return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là 10,000đ!', parse_mode=ParseMode.HTML)
+        if amount > 100000000:
+            return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối đa là 100.000.000đ!', parse_mode=ParseMode.HTML)
 
         qr_url, caption, content = get_deposit_info(uid, amount)
         kb = InlineKeyboardMarkup([
