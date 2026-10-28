@@ -18,6 +18,12 @@ import traceback
 # CUSTOM EMOJI MAPPING (Telegram Premium - Animated)
 # ============================================================
 CUSTOM_EMOJI = {
+    "🥰": "5197387964098813812",
+    "👑": "5217822164362739968",
+    "👅": "6192771593001767805",
+    "🏳️": "6336979307558081524",
+    "🪙": "5379773896352355687",
+    "💳": "5445353829304387411",
     "🎲": "5260547274957672345",
     "👥": "5453957997418004470",
     "💰": "5224257782013769471",
@@ -981,12 +987,6 @@ def choices_conflict(c1, c2):
     return False
 
 async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""):
-    if not check_bank_linked(user_id):
-        return False, (
-            f'{ce("🚫")} <b>BẮT BUỘC LIÊN KẾT NGÂN HÀNG!</b>\n\n'
-            f'Bạn cần liên kết tài khoản ngân hàng để tham gia cá cược.\n'
-            f'Dùng lệnh: <code>/lienket [Ngân_hàng] [STK] [Tên]</code>'
-        )
     if not room_betting_enabled.get(group_id, True):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
@@ -1060,12 +1060,6 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
     return True, msg
 
 async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
-    if not check_bank_linked(user_id):
-        return False, (
-            f'{ce("🚫")} <b>BẮT BUỘC LIÊN KẾT NGÂN HÀNG!</b>\n\n'
-            f'Bạn cần liên kết tài khoản ngân hàng để tham gia cá cược.\n'
-            f'Dùng lệnh: <code>/lienket [Ngân_hàng] [STK] [Tên]</code>'
-        )
     if not room_betting_enabled.get(group_id, True):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
@@ -1604,9 +1598,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     menu = ReplyKeyboardMarkup([
-        ["🎮 GAME", "🆓 TÀI KHOẢN"],
-        ["💸 NẠP", "💵 RÚT"],
-        ["🗓 LỊCH SỬ", "✉️ HỖ TRỢ"]
+        ["🎮 DANH SÁCH GAME", "🥰 TÀI KHOẢN"],
+        ["🪙 NẠP TIỀN", "💳 RÚT TIỀN"],
+        ["🏳️ LỊCH SỬ", "👅 HỖ TRỢ"]
     ], resize_keyboard=True)
     welcome_text = (
         f'{ce("🎉")} <b>CHÀO MỪNG {update.effective_user.first_name.upper()} ĐÃ THAM GIA!</b>\n\n'
@@ -1868,7 +1862,7 @@ async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if is_total_maintenance() and uid not in ADMIN_IDS:
         await update.message.reply_text(f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>', parse_mode=ParseMode.HTML)
         return
-    data = query("SELECT amount, note, time FROM history WHERE user_id=%s ORDER BY time DESC LIMIT 20", (uid,))
+    data = query("SELECT amount, note, time FROM history WHERE user_id=%s ORDER BY ctid DESC LIMIT 20", (uid,))
     
     title_icon = ce_id("5210956306952758910")
     clock_icon = ce_id("5386367538735104399")
@@ -1941,7 +1935,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     user_reply = update.message
 
-    if txt == "🆓 TÀI KHOẢN":
+    if txt in ("🆓 TÀI KHOẢN", "🥰 TÀI KHOẢN"):
         res = query("SELECT balance, bank, stk, name, refs, total_bet FROM users WHERE user_id=%s", (uid,))
         if not res:
             get_user(uid)
@@ -1968,7 +1962,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return await user_reply.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-    if txt == "💸 NẠP":
+    if txt in ("💸 NẠP", "🪙 NẠP TIỀN"):
         if is_feature_banned(uid, 'nap'):
             return await user_reply.reply_text(f'{ce("🚫")} Tính năng NẠP TIỀN đã bị khóa!', parse_mode=ParseMode.HTML)
         if check_mt('mt_nap') and uid not in ADMIN_IDS:
@@ -1995,7 +1989,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         qr_url, _ = get_deposit_info(uid, 0)
         return await user_reply.reply_photo(photo=qr_url, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-    if txt == "🎮 GAME":
+    if txt in ("🎮 GAME", "🎮 DANH SÁCH GAME"):
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("TÀI XỈU ROOM", callback_data="menu_taixiu_room"),
@@ -2014,12 +2008,12 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ]
         ])
         return await user_reply.reply_text(
-            f'{ce("🛍")} <b>DANH SÁCH TRÒ CHƠI</b>\n'
+            f'{ce("🛍")} <b>DANH SÁCH GAME</b>\n'
             f'{ce("😃")} Chúc bạn chơi vui vẻ! {ce("✍️")}\n\n'
             f'{ce("🫵")} Vui lòng chọn game bên dưới: {ce("😮‍💨")}',
             reply_markup=kb, parse_mode=ParseMode.HTML)
 
-    if txt == "💵 RÚT":
+    if txt in ("💵 RÚT", "💳 RÚT TIỀN"):
         if is_feature_banned(uid, 'rut'):
             return await user_reply.reply_text(f'{ce("🚫")} Tính năng RÚT TIỀN đã bị khóa!', parse_mode=ParseMode.HTML)
         if check_mt('mt_rut') and uid not in ADMIN_IDS:
@@ -2043,10 +2037,10 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML)
         return
 
-    if txt == "🗓 LỊCH SỬ":
+    if txt in ("🗓 LỊCH SỬ", "🏳️ LỊCH SỬ"):
         return await history_pro(update, ctx)
 
-    if txt == "✉️ HỖ TRỢ":
+    if txt in ("✉️ HỖ TRỢ", "👅 HỖ TRỢ"):
         msg = (
             f'{ce("✉️")} <b>HỖ TRỢ KHÁCH HÀNG</b>\n\n'
             f'{ce("👥")} <b>Hỗ Trợ:</b> @echcutodz\n'
@@ -2515,7 +2509,7 @@ async def admin_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def history_all_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    data = query("SELECT * FROM history ORDER BY time DESC LIMIT 50")
+    data = query("SELECT * FROM history ORDER BY ctid DESC LIMIT 50")
     msg = f'{ce("📊")} <b>LỊCH SỬ TOÀN HỆ THỐNG:</b>\n\n'
     if data:
         for d in data:
@@ -3388,7 +3382,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await handle_mt_toggle_callback(update, ctx)
 
     if d == "his_deposit":
-        data = query("SELECT amount, time FROM deposit_history WHERE user_id=%s AND status='success' ORDER BY time DESC LIMIT 10", (uid,))
+        await q.answer()
+        data = query("SELECT amount, time FROM deposit_history WHERE user_id=%s AND status='success' ORDER BY ctid DESC LIMIT 10", (uid,))
         text = f'{ce("📥")} <b>10 GIAO DỊCH NẠP GẦN NHẤT:</b>\n\n'
         if not data:
             text += "Trống."
@@ -3398,7 +3393,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
     if d == "his_withdraw":
-        data = query("SELECT amount, status, time FROM withdraw_history WHERE user_id=%s ORDER BY time DESC LIMIT 10", (uid,))
+        await q.answer()
+        data = query("SELECT amount, status, time FROM withdraw_history WHERE user_id=%s ORDER BY ctid DESC LIMIT 10", (uid,))
         text = f'{ce("📤")} <b>10 GIAO DỊCH RÚT GẦN NHẤT:</b>\n\n'
         if not data:
             text += "Trống."
