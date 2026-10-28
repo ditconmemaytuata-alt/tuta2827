@@ -2044,7 +2044,10 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                         pass
 
                 try:
-                    new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap')]]))
+                    new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
+                        [btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap')],
+                        [btn('BOT CHƠI GAME', '🎮', url='https://t.me/Jav88gamebot')]
+                    ]))
                     stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
                     print(f"Lỗi gửi thống kê: {e}")
@@ -3057,6 +3060,28 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
         return
     get_user(uid)
+    # Deep link từ nút NẠP TIỀN TẠI ĐÂY: mở thẳng menu nạp tiền.
+    if ctx.args and ctx.args[0].lower() == "nap":
+        if is_feature_banned(uid, 'nap') and uid not in ADMIN_IDS:
+            return await update.effective_message.reply_text(
+                f'{ce("🚫")} Tính năng NẠP TIỀN đã bị khóa!',
+                parse_mode=ParseMode.HTML
+            )
+        if check_mt('mt_nap') and uid not in ADMIN_IDS:
+            return await update.effective_message.reply_text(
+                f'{ce("⚙️")} Nạp Tiền đang bảo trì!',
+                parse_mode=ParseMode.HTML
+            )
+        try:
+            _, caption, kb = deposit_menu_content(uid)
+            return await update.effective_message.reply_text(
+                caption, reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            print(f"Lỗi mở menu nạp từ deep link: {e}")
+            return await update.effective_message.reply_text(
+                'Không thể hiển thị menu nạp tiền lúc này. Vui lòng thử lại sau.'
+            )
     if ctx.args:
         try:
             ref = int(ctx.args[0])
