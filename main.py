@@ -3741,19 +3741,84 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d.startswith("ev_"):
         await q.answer()
         if d == "ev_hc_ngay":
-            return await q.message.reply_text(f'{ce("📈")} <b>HOÀN CƯỢC NGÀY</b>\n\nTích lũy càng nhiều - Hoàn càng cao\nMốc 100K-1M: 0.2%\nMốc 1M-10M: 0.3%\n...\n\nKỳ hôm nay: 0\nDự kiến hoàn: 0 (chưa đạt 100.000đ)', parse_mode=ParseMode.HTML)
+            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_hc_ngay")]])
+            return await q.message.reply_text(
+                f'{ce("📈")} <b>HOÀN CƯỢC NGÀY</b>\n'
+                f'<i>(Tích lũy càng nhiều - Hoàn càng cao)</i>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 0.20%\n'
+                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 0.30%\n'
+                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 0.40%\n'
+                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 0.60%\n'
+                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 0.80%\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("📌")} Chỉ tính cược đã có kết quả. Cược đang chờ, bị hủy hoặc được hoàn tiền không tính vào doanh số.\n'
+                f'{ce("⏰")} Số liệu chốt cuối ngày.\n\n'
+                f'{ce("📊")} Kỳ hôm nay: <code>0</code>\n'
+                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
+                reply_markup=kb, parse_mode=ParseMode.HTML)
         if d == "ev_hc_tuan":
-            return await q.message.reply_text(f'{ce("📉")} <b>HOÀN CƯỢC TUẦN</b>\n\nThưởng duy trì hoạt động cả tuần\nMốc 100K-1M: 0.8%\n...\n\nKỳ tuần này: 0\nDự kiến hoàn: 0 (chưa đạt 100.000đ)', parse_mode=ParseMode.HTML)
+            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_hc_tuan")]])
+            return await q.message.reply_text(
+                f'{ce("📉")} <b>HOÀN CƯỢC TUẦN</b>\n'
+                f'<i>(Thưởng duy trì hoạt động cả tuần)</i>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 0.80%\n'
+                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 0.40%\n'
+                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 0.30%\n'
+                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 0.20%\n'
+                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 0.15%\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("📌")} Chỉ tính cược đã có kết quả. Cược đang chờ, bị hủy hoặc được hoàn tiền không tính vào doanh số.\n'
+                f'{ce("⏰")} Số liệu chốt cuối tuần.\n\n'
+                f'{ce("📊")} Kỳ tuần này: <code>0</code>\n'
+                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
+                reply_markup=kb, parse_mode=ParseMode.HTML)
         if d == "ev_ht_ngay":
-            return await q.message.reply_text(f'{ce("💸")} <b>HOÀN THUA NGÀY</b>\n\nTổng thua ròng = Nạp - Rút trong ngày\nMốc 100K-1M: 2%\n...\n\nKỳ hôm nay: 0\nDự kiến hoàn: 0', parse_mode=ParseMode.HTML)
+            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_ht_ngay")]])
+            return await q.message.reply_text(
+                f'{ce("💸")} <b>HOÀN THUA NGÀY</b>\n'
+                f'<i>(Tổng thua ròng = Tổng nạp thành công - Tổng rút thành công trong ngày)</i>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 2%\n'
+                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 4%\n'
+                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 6%\n'
+                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 8%\n'
+                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 12%\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("📌")} Nếu kết quả nhỏ hơn hoặc bằng 0 thì không phát sinh hoàn thua.\n'
+                f'{ce("⏰")} Chốt số liệu cuối ngày.\n\n'
+                f'{ce("📊")} Kỳ hôm nay: <code>0</code>\n'
+                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
+                reply_markup=kb, parse_mode=ParseMode.HTML)
         if d == "ev_ht_tuan":
-            return await q.message.reply_text(f'{ce("💸")} <b>HOÀN THUA TUẦN</b>\n\nTổng thua ròng = Nạp - Rút trong tuần\nMốc 100K-1M: 1%\n...\n\nKỳ tuần này: 0\nDự kiến hoàn: 0', parse_mode=ParseMode.HTML)
+            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_ht_tuan")]])
+            return await q.message.reply_text(
+                f'{ce("💸")} <b>HOÀN THUA TUẦN</b>\n'
+                f'<i>(Tổng thua ròng = Tổng nạp thành công - Tổng rút thành công trong tuần)</i>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 1%\n'
+                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 2%\n'
+                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 2.5%\n'
+                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 3%\n'
+                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 5%\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("📌")} Nếu kết quả nhỏ hơn hoặc bằng 0 thì không phát sinh hoàn thua.\n'
+                f'{ce("⏰")} Chốt số liệu cuối tuần.\n\n'
+                f'{ce("📊")} Kỳ tuần này: <code>0</code>\n'
+                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
+                reply_markup=kb, parse_mode=ParseMode.HTML)
         if d == "ev_nhan_vip":
             return await q.message.reply_text(f'{ce("👑")} <b>NHẬN THƯỞNG VIP</b>\n\nCấp hiện tại: Đồng\nĐiểm VIP: 0\n\nMốc VIP 1: Thưởng 10.000 - Cần thêm 10 điểm\n...\n\nKhi đạt mốc VIP mới, nút Nhận thưởng VIP sẽ xuất hiện!', parse_mode=ParseMode.HTML)
         if d == "ev_tuong_tac":
             return await q.message.reply_text(f'{ce("🎁")} <b>TƯƠNG TÁC NHÓM +50K</b>\n\nTương tác đủ 200 tin nhắn trong nhóm để nhận 50.000đ!', parse_mode=ParseMode.HTML)
         if d == "ev_moi_de_tu":
             return await q.message.reply_text(f'{ce("👥")} <b>MỜI ĐỆ TỬ</b>\n\nVui lòng vào mục GIỚI THIỆU để lấy link mời!', parse_mode=ParseMode.HTML)
+        
+        # Xử lý nút Nhận Thưởng
+        if d.startswith("ev_nhan_"):
+            await q.answer("Hệ thống đang cập nhật dữ liệu, bạn chưa có thưởng để nhận!", show_alert=True)
+            return
 
     # ===== NẠP TIỀN =====
     if d.startswith("paid_dep_"):
