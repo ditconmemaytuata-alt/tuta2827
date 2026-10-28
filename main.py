@@ -676,16 +676,56 @@ async def fetch_qr_image(qr_url: str) -> BytesIO:
     photo.seek(0)
     return photo
 
-async def send_deposit_qr(bot, chat_id, qr_url, caption, kb):
-    """Gửi ảnh QR: ưu tiên tải về rồi upload; lỗi thì cho Telegram tự lấy ảnh từ URL."""
+# ---- Tạo QR VietQR ngay trên server (không phụ thuộc img.vietqr.io) ----
+_BANK_BIN = {"MB": "970422", "MBBANK": "970422", "VCB": "970436", "TCB": "970407",
+             "ACB": "970416", "BIDV": "970418", "CTG": "970415", "VPB": "970432",
+             "TPB": "970423", "STB": "970403", "VIB": "970441", "OCB": "970448"}
+
+def _crc16_ccitt(text: str) -> str:
+    crc = 0xFFFF
+    for b in text.encode("ascii"):
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return f"{crc:04X}"
+
+def _tlv(tag: str, value: str) -> str:
+    return f"{tag}{len(value):02d}{value}"
+
+def build_vietqr_payload(amount: int, content: str) -> str:
+    bin_ = _BANK_BIN.get(str(BANK_ID).upper(), "970422")
+    acc = _tlv("00", bin_) + _tlv("01", str(ACCOUNT_NO))
+    merchant = _tlv("00", "A000000727") + _tlv("01", acc) + _tlv("02", "QRIBFTTA")
+    info = _tlv("08", content)
+    body = (
+        _tlv("00", "01") + _tlv("01", "12") + _tlv("38", merchant) +
+        _tlv("53", "704") + _tlv("54", str(int(amount))) + _tlv("58", "VN") +
+        _tlv("62", info) + "6304"
+    )
+    return body + _crc16_ccitt(body)
+
+def make_local_qr(amount: int, content: str) -> BytesIO:
+    import qrcode
+    img = qrcode.make(build_vietqr_payload(amount, content))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.name = "deposit_qr.png"
+    buf.seek(0)
+    return buf
+
+async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content=""):
+    """Gửi QR: 1) tải từ VietQR, 2) lỗi thì tự vẽ QR trên server, 3) cuối cùng gửi bằng URL."""
     try:
-        qr_photo = await fetch_qr_image(qr_url)
-        return await bot.send_photo(chat_id=chat_id, photo=qr_photo, caption=caption,
-                                    reply_markup=kb, parse_mode=ParseMode.HTML)
+        photo = await fetch_qr_image(qr_url)
     except Exception as e:
-        print(f"fetch_qr_image lỗi, thử gửi bằng URL: {type(e).__name__}: {e}")
-        return await bot.send_photo(chat_id=chat_id, photo=qr_url, caption=caption,
-                                    reply_markup=kb, parse_mode=ParseMode.HTML)
+        print(f"fetch_qr_image lỗi: {type(e).__name__}: {e}")
+        try:
+            photo = make_local_qr(amount, content)
+        except Exception as e2:
+            print(f"make_local_qr lỗi: {type(e2).__name__}: {e2}")
+            photo = qr_url
+    return await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption,
+                                reply_markup=kb, parse_mode=ParseMode.HTML)
 
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
@@ -3188,11 +3228,11 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [btn("Hỗ Trợ", "🔔", callback_data="dep_support")]
         ])
-        await send_deposit_qr(ctx.bot, msg_obj.chat_id, qr_url, caption, kb)
+        await send_deposit_qr(ctx.bot, msg_obj.chat_id, qr_url, caption, kb, amount, content)
     except ValueError:
         await msg_obj.reply_text(f'{ce("❌")} Số tiền không hợp lệ! VD: <code>/nap 50000</code>', parse_mode=ParseMode.HTML)
     except Exception as e:
-        print(f"Tạo QR nạp tiền thất bại uid={uid}: {type(e).__name__}: {e}")
+        print(f"Tạo QR nạp tiền thất bại uid={uid}: {type(e).__name__}: {e}"); traceback.print_exc()
         await msg_obj.reply_text(
             f'{ce("❌")} Không tải được mã QR lúc này. Vui lòng thử lại sau hoặc liên hệ hỗ trợ.',
             parse_mode=ParseMode.HTML
@@ -4896,14 +4936,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             qr_url, caption, content = get_deposit_info(uid, amount)
             kb = InlineKeyboardMarkup([[btn("Hỗ Trợ", "🔔", callback_data="dep_support")]])
             # Gửi QR mới trước; chỉ xóa menu cũ sau khi gửi thành công để không mất giao diện nếu API lỗi.
-            sent = await send_deposit_qr(ctx.bot, uid, qr_url, caption, kb)
+            sent = await send_deposit_qr(ctx.bot, uid, qr_url, caption, kb, amount, content)
             try:
                 await q.message.delete()
             except Exception:
                 pass
             return sent
         except Exception as e:
-            print(f"Nút nạp QR lỗi uid={uid}, data={d}: {type(e).__name__}: {e}")
+            print(f"Nút nạp QR lỗi uid={uid}, data={d}: {type(e).__name__}: {e}"); traceback.print_exc()
             try:
                 await ctx.bot.send_message(
                     chat_id=uid,
