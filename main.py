@@ -590,7 +590,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
 
             jackpot_now = get_jackpot()
 
-            # --- ĐÃ SỬA: CẬP NHẬT TIN NHẮN BẮT ĐẦU PHIÊN THEO YÊU CẦU ---
+            # 1. TIN NHẮN HƯỚNG DẪN: Gửi 1 lần, giữ nguyên không sửa/xoá
             start_text = (
                 f'{ce("🎯")} <b>Xin mời đặt cược phiên XX #{session_id}</b> {ce("🎯")}\n'
                 f'{ce("💰")} Min: 1.000 | Max: 1.000.000\n'
@@ -608,18 +608,18 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             )
             
             try:
-                start_msg = await bot.send_message(chat_id, start_text, parse_mode=ParseMode.HTML)
-                current_msg_id = start_msg.message_id
-                game_state["message_id"] = current_msg_id
+                await bot.send_message(chat_id, start_text, parse_mode=ParseMode.HTML)
             except Exception as e:
                 print(f"Lỗi gửi tin nhắn bắt đầu phiên: {e}")
                 await asyncio.sleep(5)
                 continue
 
             current_second = 60
+            stats_msg_id = None # Biến lưu ID tin nhắn thống kê
+
             while current_second > 0:
-                await asyncio.sleep(5)
-                current_second -= 5
+                await asyncio.sleep(10) # Cứ 10s cập nhật 1 lần
+                current_second -= 10
                 if current_second < 0:
                     current_second = 0
 
@@ -636,14 +636,13 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 d1_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"].startswith("d1_"))
                 d2_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"].startswith("d2_"))
                 d3_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"].startswith("d3_"))
-                anon_count = sum(b["amount"] for b in game_state['bets'].values() if b["anonymous"])
 
                 total_players = len(set(b["user_id"] for b in game_state['bets'].values()))
                 
-                # --- ĐÃ SỬA: GIAO DIỆN ĐẾM NGƯỢC VÀ HIỂN THỊ CÁC CỬA PHỤ ---
+                # 2. GIAO DIỆN THỐNG KÊ (Không có ẩn danh, không sửa, chỉ xoá & gửi mới)
                 header = f'{ce("🚫")} <b>SẮP ĐÓNG CƯỢC!</b>\n' if current_second <= 10 else ''
 
-                edit_text = (
+                stats_text = (
                     f'{header}'
                     f'{ce("⌛")} <b>Còn {current_second} giây phiên #{session_id}</b>\n'
                     f'🔵 <b>TÀI:</b> {fmt_money(tai_count)}\n'
@@ -654,42 +653,48 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 
                 # Thêm các cửa Xiên nếu có
                 if tl_count > 0 or tc_count > 0 or xl_count > 0 or xc_count > 0:
-                    edit_text += f'\n{ce("💎")} <b>Xiên:</b>\n'
-                    if tl_count > 0: edit_text += f' - TL (Tài+Lẻ): {fmt_money(tl_count)}\n'
-                    if tc_count > 0: edit_text += f' - TC (Tài+Chẵn): {fmt_money(tc_count)}\n'
-                    if xl_count > 0: edit_text += f' - XL (Xỉu+Lẻ): {fmt_money(xl_count)}\n'
-                    if xc_count > 0: edit_text += f' - XC (Xỉu+Chẵn): {fmt_money(xc_count)}\n'
+                    stats_text += f'\n{ce("💎")} <b>Xiên:</b>\n'
+                    if tl_count > 0: stats_text += f' - TL (Tài+Lẻ): {fmt_money(tl_count)}\n'
+                    if tc_count > 0: stats_text += f' - TC (Tài+Chẵn): {fmt_money(tc_count)}\n'
+                    if xl_count > 0: stats_text += f' - XL (Xỉu+Lẻ): {fmt_money(xl_count)}\n'
+                    if xc_count > 0: stats_text += f' - XC (Xỉu+Chẵn): {fmt_money(xc_count)}\n'
                 
                 # Thêm các cửa Dự đoán (D1, D2, D3) nếu có
                 if d1_count > 0 or d2_count > 0 or d3_count > 0:
-                    edit_text += f'\n{ce("🎰")} <b>Dự đoán:</b>\n'
-                    if d1_count > 0: edit_text += f' - D1 (Mặt 1): {fmt_money(d1_count)}\n'
-                    if d2_count > 0: edit_text += f' - D2 (2 Mặt): {fmt_money(d2_count)}\n'
-                    if d3_count > 0: edit_text += f' - D3 (Tổng): {fmt_money(d3_count)}\n'
-                    
-                # Thêm cửa Ẩn danh nếu có
-                if anon_count > 0:
-                    edit_text += f'\n{ce("👅")} <b>Ẩn danh:</b> {fmt_money(anon_count)}\n'
+                    stats_text += f'\n{ce("🎰")} <b>Dự đoán:</b>\n'
+                    if d1_count > 0: stats_text += f' - D1 (Mặt 1): {fmt_money(d1_count)}\n'
+                    if d2_count > 0: stats_text += f' - D2 (2 Mặt): {fmt_money(d2_count)}\n'
+                    if d3_count > 0: stats_text += f' - D3 (Tổng): {fmt_money(d3_count)}\n'
 
-                edit_text += (
+                stats_text += (
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
                     f'{ce("👥")} Tổng người chơi: {total_players}\n'
                     f'{ce("🎁")} Hũ jackpot: {fmt_money(jackpot_now)}đ'
                 )
 
-                # Chỉnh sửa tin nhắn liên tục, không xoá tin nhắn cũ
+                # Xoá tin nhắn thống kê cũ (nếu có)
+                if stats_msg_id:
+                    try:
+                        await bot.delete_message(chat_id, stats_msg_id)
+                    except Exception:
+                        pass
+
+                # Gửi tin nhắn thống kê mới
                 try:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=current_msg_id,
-                        text=edit_text,
-                        parse_mode=ParseMode.HTML
-                    )
+                    new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML)
+                    stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
-                    pass
+                    print(f"Lỗi gửi thống kê: {e}")
 
             game_state["status"] = "rolling"
             
+            # Xoá tin nhắn thống kê cuối cùng trước khi lắc
+            if stats_msg_id:
+                try:
+                    await bot.delete_message(chat_id, stats_msg_id)
+                except Exception:
+                    pass
+
             # KHOÁ CHAT KHI BẮT ĐẦU LẮC
             try:
                 await bot.set_chat_permissions(chat_id, ChatPermissions(can_send_messages=False))
@@ -697,9 +702,8 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 print(f"Lỗi khóa chat: {e}")
             
             try:
-                await bot.edit_message_text(
+                await bot.send_message(
                     chat_id=chat_id,
-                    message_id=current_msg_id,
                     text=f'{ce("🔒")} <b>ĐÃ ĐÓNG CƯỢC PHIÊN #{session_id}!</b>\n{ce("⏰")} Đang lắc 3 xúc xắc...',
                     parse_mode=ParseMode.HTML
                 )
@@ -796,7 +800,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                             parse_mode=ParseMode.HTML)
                     except: pass
 
-            # --- ĐÃ SỬA: LOGIC CHÍCH HŨ 4.4% ---
+            # --- LOGIC CHÍCH HŨ 4.4% ---
             jackpot_amount = get_jackpot()
             jackpot_contribution = 0
             
@@ -843,7 +847,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 cau_tx += "🔵" if h['tx'] == "tai" else "🔴"
                 cau_cl += "⚪️" if h['cl'] == "chan" else "⚫️"
 
-            # --- ĐÃ SỬA: CẬP NHẬT TIN NHẮN TỔNG KẾT CÓ HIỂN THỊ HŨ ---
+            # --- TIN NHẮN TỔNG KẾT CÓ HIỂN THỊ HŨ ---
             final_msg = (
                 f'{ce("📊")} <b>Kết quả Phiên #{session_id}</b>\n'
                 f'┏━━━━━━━━━━━━━\n'
