@@ -322,6 +322,47 @@ CREATE TABLE IF NOT EXISTS daily_top_interactions (
 )
 """)
 query("""
+CREATE TABLE IF NOT EXISTS interaction_reward_claims (
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    milestone INTEGER NOT NULL,
+    code TEXT,
+    reward_amount BIGINT DEFAULT 0,
+    created_at TEXT,
+    PRIMARY KEY (user_id, group_id, date, milestone)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS interaction_message_guard (
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    last_text TEXT,
+    last_at TIMESTAMPTZ,
+    PRIMARY KEY (user_id, group_id)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS interaction_top_rewards (
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    reward_amount BIGINT NOT NULL DEFAULT 0,
+    code TEXT,
+    created_at TEXT,
+    PRIMARY KEY (user_id, group_id, date)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS interaction_top_settlements (
+    group_id BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    settled_at TEXT,
+    PRIMARY KEY (group_id, date)
+)
+""")
+query("""
 CREATE TABLE IF NOT EXISTS tanthu_code (
     user_id BIGINT PRIMARY KEY,
     code TEXT,
@@ -1447,6 +1488,7 @@ GIFT_TYPES = {
     "NAP":     {"name": "Code Nạp",      "icon": "💳", "fmt": "JAV88-1234567-ABCDEFG"},
     "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "JAV88-TRIAN-xxxxxxx"},
     "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "JAV88-TICHLUY-xxxxxxx"},
+    "INTERACT": {"name": "Code Tương Tác", "icon": "💬", "fmt": "JAV88-INTERACT-xxxxxxx"},
 }
 GIFT_BUY_EXPIRE_DAYS = 30
 _DIGITS = "0123456789"
@@ -1522,7 +1564,7 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
     required_bet = reward * wager
     if required_bet > 0:
         add_wager_requirement(uid, reward, required_bet)
-    await msg.reply_text(
+    success_text = (
         f'{ce("🎉")} <b>NHẬN CODE THÀNH CÔNG!</b> {ce("🎉")}\n'
         f'┏━━━━━━━━━━━━━━━━━━━━━━━━━\n'
         f'┃ {ce("🔑")} <b>Loại:</b> {gname}\n'
@@ -1531,8 +1573,37 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
         f'┃ {ce("🎯")} <b>Vòng cược yêu cầu:</b> <code>x{wager}</code>\n'
         f'┃ {ce("📊")} <b>Tổng cược cần:</b> <code>{fmt_money(required_bet)}đ</code>\n'
         f'┗━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
-        f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>',
-        parse_mode=ParseMode.HTML)
+        f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>'
+    )
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat and chat.type != "private":
+        await msg.reply_text(
+            f"✅ Nhập giftcode thành công! ID: <code>{mask_user_id(uid)}</code> · "
+            f"Người dùng: {html.escape('@' + user.username if user and user.username else (user.full_name if user else 'Thành viên'))}. "
+            f"Chi tiết được gửi riêng qua bot.",
+            parse_mode=ParseMode.HTML
+        )
+        try:
+            await update.get_bot().send_message(uid, success_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        await msg.reply_text(success_text, parse_mode=ParseMode.HTML)
+    try:
+        public_name = ("@" + user.username) if user and user.username else (user.full_name if user else "Thành viên")
+        if not chat or chat.id != LOG_GROUP_ID:
+            await update.get_bot().send_message(
+                LOG_GROUP_ID,
+                f"🎟 <b>NHẬP GIFTCODE THÀNH CÔNG</b>\n"
+                f"👤 Người dùng: {html.escape(public_name)}\n"
+                f"🆔 ID: <code>{mask_user_id(uid)}</code>\n"
+                f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược x{wager}\n"
+                f"⏰ Thời gian: <code>{get_vietnam_datetime_db()}</code>",
+                parse_mode=ParseMode.HTML
+            )
+    except Exception as e:
+        print(f"Không gửi được thông báo nhập code: {e}")
     return True
 
 # ---------- MUA GIFTCODE (tự động, không cần admin duyệt) ----------
@@ -1592,6 +1663,23 @@ async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await msg_obj.reply_text(f'{ce("❌")} Lỗi hệ thống, đã hoàn tiền. Vui lòng thử lại!', parse_mode=ParseMode.HTML)
 
     code_lines = "\n".join(f'{i}. <code>{c}</code>' for i, c in enumerate(codes, 1))
+    try:
+        buyer = update.effective_user
+        public_name = ("@" + buyer.username) if buyer and buyer.username else (buyer.full_name if buyer else "Thành viên")
+        await ctx.bot.send_message(
+            LOG_GROUP_ID,
+            f"🛒 <b>CÓ NGƯỜI MUA GIFTCODE</b>\n"
+            f"👤 Người mua: {html.escape(public_name)}\n"
+            f"🆔 ID: <code>{mask_user_id(uid)}</code>\n"
+            f"🎟 Số lượng: <b>{len(codes)}</b> · Giá trị mỗi code: <b>{fmt_money(value)}đ</b>\n"
+            f"💰 Tổng thanh toán: <b>{fmt_money(len(codes)*value + int(len(codes)*value*0.05))}đ</b>\n"
+            f"⏰ Thời gian: <code>{get_vietnam_datetime_db()}</code>\n"
+            f"🔒 Mã code không được công khai.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        print(f"Không gửi được thông báo mua giftcode: {e}")
+
     await msg_obj.reply_text(
         f'{ce("✅")} <b>MUA GIFTCODE THÀNH CÔNG!</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━\n'
@@ -1874,38 +1962,146 @@ async def dsgift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 backfill_bet_daily()
 
-async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
+INTERACTION_MILESTONES = [
+    (50, 5111),
+    (100, 12222),
+    (200, 22555),
+    (500, 44777),
+    (1000, 76111),
+    (2000, 88222),
+    (3000, 89333),
+    (4000, 90444),
+    (5000, 92555),
+    (6000, 155666),
+]
+TOP_INTERACTION_PRIZES = {1: 18888, 2: 13333, 3: 10000, 4: 9999,
+                          5: 7777, 6: 7777, 7: 7777, 8: 7777, 9: 7777, 10: 7777}
+_interaction_seen = {}
+
+def mask_user_id(user_id):
+    """Ẩn 5 chữ số đầu khi đưa ID lên nhóm công khai."""
+    raw = str(user_id or "")
+    return "*****" + raw[5:] if len(raw) > 5 else "*****"
+
+def _parse_db_date(value):
+    if not value:
+        return None
+    value = str(value)
+    for fmt in ("%H:%M - %d/%m/%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except (ValueError, TypeError):
+            continue
+    match = re.search(r"(\d{2}/\d{2}/\d{4})", value)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%d/%m/%Y").date()
+        except ValueError:
+            pass
+    return None
+
+async def _send_interaction_code(bot, uid, group_id, milestone, reward, date_text):
+    # Mỗi người/mốc/ngày chỉ được phát một code; code ràng buộc với user và cược x7.
+    code = gen_gift_code("TT")
+    expiry = get_vietnam_time() + timedelta(hours=24)
+    inserted = query(
+        "INSERT INTO giftcodes (code, ctype, reward, wager, expiry, require_deposit, required_amount, "
+        "bound_user, used, created_by, created_at) "
+        "VALUES (%s,'INTERACT',%s,7,%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
+        (code, reward, expiry, uid, get_vietnam_datetime_db())
+    )
+    if not inserted:
         return
-    uid = update.effective_user.id
-    gid = update.effective_chat.id
+    claim = query(
+        "INSERT INTO interaction_reward_claims (user_id,group_id,date,milestone,code,reward_amount,created_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING milestone",
+        (uid, group_id, date_text, milestone, code, reward, get_vietnam_datetime_db())
+    )
+    if not claim:
+        query("DELETE FROM giftcodes WHERE code=%s AND used=0", (code,))
+        return
+    try:
+        await bot.send_message(
+            uid,
+            f"🎁 <b>QUÀ TƯƠNG TÁC NHÓM</b>\n"
+            f"Bạn đã đạt mốc <b>{milestone:,}</b> tin nhắn hợp lệ.\n"
+            f"Mã giftcode: <code>{code}</code>\n"
+            f"Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược: <b>x7</b>\n"
+            f"Hạn dùng: 24 giờ kể từ lúc phát. Dùng <code>/code {code}</code> để nhận.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        # Không đăng code công khai; thông báo mở bot để nhận riêng.
+        try:
+            await bot.send_message(
+                group_id,
+                f"🎁 Thành viên ID {mask_user_id(uid)} đã đạt mốc tương tác {milestone:,} tin. "
+                f"Hãy mở bot riêng và nhắn /start để nhận giftcode (code không đăng trong nhóm)."
+            )
+        except Exception:
+            pass
+        print(f"Không gửi được giftcode tương tác cho {uid}: {e}")
+
+async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user or not chat or chat.type == "private" or user.is_bot:
+        return
+    if GROUP_IDS and chat.id not in GROUP_IDS:
+        return
+    # Chỉ đếm tin nhắn văn bản tự nhiên; bỏ command, media-only, nội dung quá ngắn.
+    text_value = (msg.text or msg.caption or "").strip()
+    if not text_value or text_value.startswith("/") or len(text_value) < 2:
+        return
+    normalized = re.sub(r"\s+", " ", text_value).casefold()
+    now = get_vietnam_time()
+    key = (user.id, chat.id)
+    previous = _interaction_seen.get(key)
+    if previous:
+        prev_text, prev_at = previous
+        # Bỏ tin lặp trong 60 giây và flood nhanh dưới 2 giây.
+        if normalized == prev_text and (now - prev_at).total_seconds() < 60:
+            return
+        if (now - prev_at).total_seconds() < 2:
+            return
+    _interaction_seen[key] = (normalized, now)
+    # Giới hạn cache trong bộ nhớ.
+    if len(_interaction_seen) > 10000:
+        for old_key in list(_interaction_seen)[:2000]:
+            _interaction_seen.pop(old_key, None)
+
+    uid, gid = user.id, chat.id
     today = get_vietnam_date()
     now_str = get_vietnam_datetime_db()
     query("""
         INSERT INTO group_interactions (user_id, group_id, interaction_count, last_interaction)
         VALUES (%s, %s, 1, %s)
-        ON CONFLICT (user_id, group_id) DO UPDATE SET 
-            interaction_count = group_interactions.interaction_count + 1,
-            last_interaction = %s
-    """, (uid, gid, now_str, now_str))
+        ON CONFLICT (user_id, group_id) DO UPDATE SET
+            interaction_count = GREATEST(group_interactions.interaction_count,0) + 1,
+            last_interaction = EXCLUDED.last_interaction
+    """, (uid, gid, now_str))
     query("""
         INSERT INTO daily_top_interactions (user_id, group_id, interaction_count, date)
         VALUES (%s, %s, 1, %s)
-        ON CONFLICT (user_id, group_id, date) DO UPDATE SET 
+        ON CONFLICT (user_id, group_id, date) DO UPDATE SET
             interaction_count = daily_top_interactions.interaction_count + 1
     """, (uid, gid, today))
-    total = query("SELECT interaction_count FROM group_interactions WHERE user_id=%s AND group_id=%s", (uid, gid))
-    if total and total[0][0] >= 200:
-        rewarded = query("SELECT 1 FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND rewarded=1 AND interaction_count>=200", (uid, gid))
-        if not rewarded:
-            query("UPDATE group_interactions SET interaction_count = -200 WHERE user_id=%s AND group_id=%s", (uid, gid))
-            try:
-                await ctx.bot.send_message(uid,
-                    f'{ce("🎉")} <b>CHÚC MỪNG!</b> {ce("🎉")}\n{ce("🔥")} Bạn đã đạt <b>200 lượt tương tác</b>!',
-                    parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
-            query("UPDATE daily_top_interactions SET rewarded=1 WHERE user_id=%s AND group_id=%s", (uid, gid))
+    total = query(
+        "SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
+        (uid, gid, today)
+    )
+    count = int(total[0][0] or 0) if total else 0
+    for milestone, reward in INTERACTION_MILESTONES:
+        if count < milestone:
+            continue
+        already = query(
+            "SELECT 1 FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
+            (uid, gid, today, milestone)
+        )
+        if not already:
+            await _send_interaction_code(ctx.bot, uid, gid, milestone, reward, today)
+
 
 def get_jackpot():
     res = query("SELECT value FROM settings WHERE key='jackpot_amount'")
@@ -3302,6 +3498,39 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
 
+async def _reply_code_success_safely(update, ctx, uid, code_str, reward, wager, code_type, success_text):
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    public_name = ("@" + user.username) if user and user.username else (user.full_name if user else "Thành viên")
+    if chat and chat.type != "private":
+        await msg.reply_text(
+            f"✅ Nhập code thành công!\n"
+            f"👤 {html.escape(public_name)} · ID <code>{mask_user_id(uid)}</code>\n"
+            f"💰 Giá trị: <b>{fmt_money(int(reward))}đ</b>. Chi tiết đã gửi riêng qua bot.",
+            parse_mode=ParseMode.HTML
+        )
+        try:
+            await ctx.bot.send_message(uid, success_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        await msg.reply_text(success_text, parse_mode=ParseMode.HTML)
+    try:
+        if not chat or chat.id != LOG_GROUP_ID:
+            await ctx.bot.send_message(
+                LOG_GROUP_ID,
+                f"🎟 <b>NHẬP CODE THÀNH CÔNG</b>\n"
+                f"👤 Người dùng: {html.escape(public_name)}\n"
+                f"🆔 ID: <code>{mask_user_id(uid)}</code>\n"
+                f"🏷 Loại: {html.escape(code_type)} · Giá trị: <b>{fmt_money(int(reward))}đ</b>\n"
+                f"🎯 Vòng cược: x{int(wager or 0)}\n"
+                f"⏰ <code>{get_vietnam_datetime_db()}</code>",
+                parse_mode=ParseMode.HTML
+            )
+    except Exception as e:
+        print(f"Không gửi được thông báo nhập code: {e}")
+
 async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if is_banned(uid):
@@ -3363,7 +3592,7 @@ async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             (uid, reward, required_bet, now_str)
         )
 
-        await update.effective_message.reply_text(
+        success_text = (
             f'{ce("🎉")} <b>NHẬN CODE NẠP THÀNH CÔNG!</b> {ce("🎉")}\n'
             f'┏━━━━━━━━━━━━━━━━━━━━━━━━━\n'
             f'┃ {ce("🔑")} <b>Mã code:</b> <code>{code_str}</code>\n'
@@ -3371,9 +3600,9 @@ async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'┃ {ce("🎯")} <b>Vòng cược yêu cầu:</b> <code>x{wager}</code>\n'
             f'┃ {ce("📊")} <b>Tổng cược cần:</b> <code>{fmt_money(required_bet)}đ</code>\n'
             f'┗━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
-            f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>',
-            parse_mode=ParseMode.HTML
+            f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>'
         )
+        await _reply_code_success_safely(update, ctx, uid, code_str, reward, wager, "CODE NẠP", success_text)
         return
 
     today = get_vietnam_date()
@@ -3398,11 +3627,13 @@ async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query("UPDATE codes SET uses=uses-1 WHERE code=%s", (code_str,))
     used_today = code_count[0][0] + 1 if code_count else 1
     remaining = 3 - used_today
-    await update.effective_message.reply_text(
+    success_text = (
         f'{ce("🎉")} <b>NHẬN QUÀ THÀNH CÔNG!</b>\n\n'
         f'{ce("💰")} Bạn nhận được: <code>+{fmt_money(reward)}đ</code>\n'
-        f'{ce("📊")} Hôm nay còn: <code>{remaining}/3</code> lượt nhập code.',
-        parse_mode=ParseMode.HTML)
+        f'{ce("📊")} Hôm nay còn: <code>{remaining}/3</code> lượt nhập code.\n'
+        f'Mã đã nhập: <code>{code_str}</code>'
+    )
+    await _reply_code_success_safely(update, ctx, uid, code_str, reward, 0, "GIFTCODE", success_text)
 
 async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -3575,7 +3806,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         msg = (
             f'{ce("🔗")} Link mời: {ref_link}\n\n'
-            f'{ce("🌷")} Hoa hồng đệ tử: {ce("🐺")} 2% tiền cược thua đệ (không HH nạp)\n\n'
+            f'{ce("🌷")} Hoa hồng cược đệ tử: 0% (không nhận hoa hồng từ cược)\n\n'
             f'{ce("👥")} Số đệ tử: {so_de_tu} | Hợp lệ event: 0\n\n'
             f'Hoa hồng hôm nay: 0\n'
             f'Tổng hoa hồng: 0\n'
@@ -4936,7 +5167,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
 
     if d == "ref_nhan_hh":
-        await q.answer("Bạn chưa có hoa hồng để nhận!", show_alert=True)
+        await q.answer("Chương trình hoa hồng cược đệ tử đã tắt (0%).", show_alert=True)
         return
     if d == "ref_ruong":
         await q.answer("Bạn chưa đủ điều kiện nhận rương!", show_alert=True)
@@ -5118,7 +5349,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         wid = pending[0][0]
         if act == "ok":
             query("UPDATE withdraw_history SET status='success', admin_id=%s WHERE id=%s", (uid, wid))
-            try: await ctx.bot.send_message(chat_id=LOG_GROUP_ID, text=f'{ce("📤")} <b>THÔNG BÁO RÚT TIỀN</b>\n{ce("👥")} ID: <code>{u_id}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✅")} Đã duyệt!', parse_mode=ParseMode.HTML)
+            try:
+                target_chat = await ctx.bot.get_chat(u_id)
+                target_name = ("@" + target_chat.username) if getattr(target_chat, "username", None) else (getattr(target_chat, "full_name", None) or "Thành viên")
+            except Exception:
+                target_name = "Thành viên"
+            try: await ctx.bot.send_message(chat_id=LOG_GROUP_ID, text=f'{ce("📤")} <b>RÚT TIỀN THÀNH CÔNG</b>\n👤 Người rút: {html.escape(target_name)}\n🆔 ID: <code>{mask_user_id(u_id)}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✅")} Trạng thái: Thành công\n⏰ {get_vietnam_datetime_db()}', parse_mode=ParseMode.HTML)
             except Exception as e: pass
             try: await ctx.bot.send_message(u_id, f'{ce("✅")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> đã được duyệt!', parse_mode=ParseMode.HTML)
             except: pass
@@ -5126,7 +5362,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             query("UPDATE withdraw_history SET status='rejected', admin_id=%s, admin_note='Từ chối' WHERE id=%s", (uid, wid))
             add_money(u_id, amt, "Hoàn tiền rút")
-            try: await ctx.bot.send_message(chat_id=LOG_GROUP_ID, text=f'{ce("❌")} <b>THÔNG BÁO TỪ CHỐI RÚT</b>\n{ce("👥")} ID: <code>{u_id}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("🔄")} Đã hoàn tiền về ví!', parse_mode=ParseMode.HTML)
+            try:
+                target_chat = await ctx.bot.get_chat(u_id)
+                target_name = ("@" + target_chat.username) if getattr(target_chat, "username", None) else (getattr(target_chat, "full_name", None) or "Thành viên")
+            except Exception:
+                target_name = "Thành viên"
+            try: await ctx.bot.send_message(chat_id=LOG_GROUP_ID, text=f'{ce("❌")} <b>RÚT TIỀN BỊ TỪ CHỐI</b>\n👤 Người rút: {html.escape(target_name)}\n🆔 ID: <code>{mask_user_id(u_id)}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("🔄")} Đã hoàn tiền về ví!\n⏰ {get_vietnam_datetime_db()}', parse_mode=ParseMode.HTML)
             except Exception as e: pass
             try: await ctx.bot.send_message(u_id, f'{ce("❌")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> bị từ chối.\n{ce("🔄")} Tiền đã được hoàn về số dư của bạn.', parse_mode=ParseMode.HTML)
             except: pass
@@ -5323,7 +5564,9 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<b>💰 Số dư & giao dịch</b>\n<code>/add ID số_tiền</code>, <code>/sub ID số_tiền</code>, <code>/setsd ID số_tiền</code>\n"
         "<code>/naptien ID số_tiền</code> — nạp tay; <code>/dsnap</code> / <code>/dsrut</code> — danh sách chờ\n\n"
         "<b>📊 Thống kê / code</b>\n<code>/stats</code>, <code>/all</code>, <code>/thongke</code>, <code>/tong</code>, <code>/check ID</code>, <code>/hisall</code>\n"
-        "<code>/top [n]</code>, <code>/topcuoc [n]</code>, <code>/taocode</code>, <code>/taocodeall</code>, <code>/xoacode</code>, <code>/taogift</code>, <code>/dsgift</code>, <code>/xoagift</code>\n"
+        "<code>/top</code> — Top tương tác hôm nay; <code>/topsodu [n]</code> — Top số dư; <code>/topcuoc [n]</code>, <code>/taocode</code>, <code>/taocodeall</code>, <code>/xoacode</code>, <code>/taogift</code>, <code>/dsgift</code>, <code>/xoagift</code>\n"
+        "<code>/fulluser ID</code> — hồ sơ + xuất XLSX lịch sử theo 1–7 ngày/tất cả; <code>/resetbank ID</code> — gỡ liên kết ngân hàng\n"
+        "<code>/checktt</code> — tiến trình tương tác; <code>/top</code> — Top 10 tương tác; <code>/code MÃ</code> — nhập code\n"
         "<code>/send nội_dung</code>, <code>/rep ID nội_dung</code> — thông báo/liên hệ user\n\n"
         "<b>Trạng thái bảo trì</b> (🔴 bảo trì, 🟢 hoạt động):\n" + _admin_mt_lines()
     )
@@ -5488,13 +5731,157 @@ async def setsd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if diff: add_money(target, diff, "Admin điều chỉnh số dư")
     await update.effective_message.reply_text(f"Đã cập nhật <code>{target}</code>: {fmt_money(old)}đ → {fmt_money(amount)}đ", parse_mode=ParseMode.HTML)
 
-@admin_only
+async def _interaction_top_text(bot, group_id, date_text, limit=10):
+    rows = query(
+        "SELECT user_id, interaction_count FROM daily_top_interactions "
+        "WHERE group_id=%s AND date=%s ORDER BY interaction_count DESC, user_id ASC LIMIT %s",
+        (group_id, date_text, limit)
+    ) or []
+    if not rows:
+        return "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>\n\nChưa có tin nhắn hợp lệ nào được ghi nhận trong nhóm."
+    lines = [
+        "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>",
+        "📌 Tính theo tin nhắn hợp lệ trong nhóm hiện tại.",
+        "",
+    ]
+    medals = ["🥇", "🥈", "🥉"]
+    for rank, (user_id, count) in enumerate(rows, 1):
+        prize = TOP_INTERACTION_PRIZES.get(rank, 0)
+        display = await _telegram_name(bot, user_id, {})
+        if not display:
+            display = "Thành viên"
+        lines.append(f"{medals[rank-1] if rank <= 3 else '⭐️'} {rank}. {html.escape(display)} · {int(count)} tin · 🎁 {fmt_money(prize)}đ")
+    lines += [
+        "",
+        "⏱ Chốt bảng lúc 00:00; giftcode Top 10 được gửi riêng qua bot.",
+        "🎁 Giftcode thưởng yêu cầu x7 vòng cược và hết hạn sau 24 giờ.",
+        "",
+        "⚠️ Không spam, flood, gửi lặp ký tự hoặc dùng bot/farm tương tác. Tin nhắn bị quản trị viên xóa và nội dung quảng cáo/spam không được tính.",
+        "💡 Gõ /checktt để xem tiến trình của bạn."
+    ]
+    return "\n".join(lines)
+
 async def top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    group_id = chat.id if chat and chat.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
+    if not group_id:
+        return await update.effective_message.reply_text("Chưa cấu hình nhóm tương tác.")
+    text = await _interaction_top_text(ctx.bot, group_id, get_vietnam_date(), 10)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def topsodu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try: n = max(1, min(50, int(ctx.args[0]))) if ctx.args else 10
     except ValueError: n = 10
     rows = query("SELECT user_id,balance FROM users ORDER BY balance DESC LIMIT %s", (n,)) or []
     text = f"🏆 <b>TOP {n} SỐ DƯ</b>\n\n" + ("\n".join(f"{i}. <code>{r[0]}</code> — {fmt_money(int(r[1] or 0))}đ" for i,r in enumerate(rows,1)) or "Chưa có dữ liệu.")
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user:
+        return
+    group_id = chat.id if chat and chat.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
+    if not group_id:
+        return await update.effective_message.reply_text("Chưa cấu hình nhóm tương tác.")
+    today = get_vietnam_date()
+    row = query("SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
+                (user.id, group_id, today))
+    count = int(row[0][0] or 0) if row else 0
+    claimed_rows = query("SELECT milestone FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s ORDER BY milestone",
+                         (user.id, group_id, today)) or []
+    claimed = {int(r[0]) for r in claimed_rows}
+    next_milestone = next(((m, reward) for m, reward in INTERACTION_MILESTONES if count < m), None)
+    if next_milestone:
+        m, reward = next_milestone
+        progress = f"🎯 Mốc tiếp theo: <b>{m:,}</b> tin — còn <b>{m-count:,}</b> tin để nhận <b>{fmt_money(reward)}đ</b>."
+    else:
+        progress = "🏆 Bạn đã đạt toàn bộ mốc tương tác trong ngày!"
+    earned = "\n".join(f"✅ Mốc {m:,}: {fmt_money(reward)}đ {'(đã phát code)' if m in claimed else '(đang xử lý)'}"
+                       for m, reward in INTERACTION_MILESTONES if m in claimed) or "Chưa nhận mốc nào hôm nay."
+    await update.effective_message.reply_text(
+        f"📊 <b>THỐNG KÊ TƯƠNG TÁC CỦA BẠN</b>\n"
+        f"👤 {html.escape(user.full_name or 'Thành viên')} · ID {mask_user_id(user.id)}\n"
+        f"💬 Hôm nay: <b>{count:,}</b> tin hợp lệ\n\n{progress}\n\n"
+        f"🎁 <b>Mốc đã nhận</b>\n{earned}\n\n"
+        f"Phần thưởng được gửi riêng qua bot, mỗi giftcode yêu cầu x7 vòng cược và hết hạn sau 24 giờ.",
+        parse_mode=ParseMode.HTML
+    )
+
+async def interaction_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "🎁 <b>HỆ THỐNG TƯƠNG TÁC NHÓM</b>\n\n"
+        "• /checktt — xem tiến trình tương tác hôm nay\n"
+        "• /top — Top 10 tương tác hôm nay\n"
+        "• /code MÃ_CODE — nhập giftcode\n\n"
+        "Mốc thưởng: 50 / 100 / 200 / 500 / 1.000 / 2.000 / 3.000 / 4.000 / 5.000 / 6.000 tin.\n"
+        "Chỉ tính tin nhắn văn bản tự nhiên; lệnh bot, spam, tin lặp và flood nhanh không được tính.\n"
+        "Giftcode được gửi riêng, yêu cầu x7 vòng cược, hạn dùng 24 giờ.",
+        parse_mode=ParseMode.HTML
+    )
+
+async def settle_interaction_top_loop(bot):
+    while True:
+        try:
+            yesterday_date = get_vietnam_time().date() - timedelta(days=1)
+            date_text = yesterday_date.strftime("%d/%m/%Y")
+            for group_id in GROUP_IDS:
+                settled = query("SELECT 1 FROM interaction_top_settlements WHERE group_id=%s AND date=%s",
+                                (group_id, date_text))
+                if settled:
+                    continue
+                rows = query(
+                    "SELECT user_id, interaction_count FROM daily_top_interactions "
+                    "WHERE group_id=%s AND date=%s ORDER BY interaction_count DESC, user_id ASC LIMIT 10",
+                    (group_id, date_text)
+                ) or []
+                public_lines = [f"🏆 <b>TOP TƯƠNG TÁC NGÀY {date_text}</b>"]
+                for rank, (user_id, count) in enumerate(rows, 1):
+                    reward = TOP_INTERACTION_PRIZES.get(rank, 0)
+                    code = gen_gift_code("TOPTT")
+                    expiry = get_vietnam_time() + timedelta(hours=24)
+                    created = query(
+                        "INSERT INTO giftcodes (code,ctype,reward,wager,expiry,require_deposit,required_amount,bound_user,used,created_by,created_at) "
+                        "VALUES (%s,'INTERACT',%s,7,%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
+                        (code, reward, expiry, user_id, get_vietnam_datetime_db())
+                    )
+                    if created:
+                        claim = query(
+                            "INSERT INTO interaction_top_rewards (user_id,group_id,date,rank,reward_amount,code,created_at) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING user_id",
+                            (user_id, group_id, date_text, rank, reward, code, get_vietnam_datetime_db())
+                        )
+                        if claim:
+                            try:
+                                await bot.send_message(
+                                    user_id,
+                                    f"🏆 <b>BẠN ĐẠT TOP {rank} TƯƠNG TÁC NGÀY {date_text}!</b>\n"
+                                    f"💬 Tin hợp lệ: <b>{int(count):,}</b>\n"
+                                    f"🎁 Giftcode: <code>{code}</code>\n"
+                                    f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược x7\n"
+                                    f"⏰ Hạn dùng 24 giờ. Nhập bằng <code>/code {code}</code>.",
+                                    parse_mode=ParseMode.HTML
+                                )
+                            except Exception:
+                                pass
+                    display = await _telegram_name(bot, user_id, {})
+                    public_lines.append(
+                        f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉' if rank==3 else '⭐️'} "
+                        f"{rank}. {html.escape(display or 'Thành viên')} · {int(count):,} tin · 🎁 {fmt_money(reward)}đ"
+                    )
+                    query("UPDATE daily_top_interactions SET rank=%s,reward_amount=%s,rewarded=1 WHERE user_id=%s AND group_id=%s AND date=%s",
+                          (rank, reward, user_id, group_id, date_text))
+                public_lines.append("\n🎁 Giftcode Top 10 đã gửi riêng qua bot; không đăng mã trong nhóm.")
+                try:
+                    await bot.send_message(group_id, "\n".join(public_lines), parse_mode=ParseMode.HTML)
+                except Exception as e:
+                    print(f"Không gửi được bảng Top tương tác nhóm {group_id}: {e}")
+                query("INSERT INTO interaction_top_settlements (group_id,date,settled_at) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                      (group_id, date_text, get_vietnam_datetime_db()))
+        except Exception as e:
+            print(f"Lỗi settle top tương tác: {e}")
+        await asyncio.sleep(30)
 
 @admin_only
 async def topcuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -5535,11 +5922,15 @@ application = ApplicationBuilder().token(TOKEN).build()
 # ============================================================
 def _report_keyboard(uid):
     return InlineKeyboardMarkup([
-        [btn("FULL THÔNG TIN + LỊCH SỬ", "📊", callback_data=f"admreport_{uid}_all_today" )],
-        [btn("LỊCH SỬ NẠP", "📥", callback_data=f"admreport_{uid}_nap_today"), btn("LỊCH SỬ RÚT", "📤", callback_data=f"admreport_{uid}_rut_today")],
-        [btn("LỊCH SỬ NHẬP CODE", "🎟", callback_data=f"admreport_{uid}_code_today"), btn("LỊCH SỬ CƯỢC", "🎲", callback_data=f"admreport_{uid}_cuoc_today")],
-        [btn("TẤT CẢ THỜI GIAN", "🗓", callback_data=f"admreport_{uid}_all_all")],
-        [btn("NGÀY KHÁC", "📅", callback_data=f"admreport_{uid}_date")],
+        [btn("📊 FULL HỒ SƠ + LỊCH SỬ", "📊", callback_data=f"admreport_{uid}_all_pick")],
+        [btn("📥 LỊCH SỬ NẠP", "📥", callback_data=f"admreport_{uid}_nap_pick"),
+         btn("📤 LỊCH SỬ RÚT", "📤", callback_data=f"admreport_{uid}_rut_pick")],
+        [btn("🎟 NHẬP CODE", "🎟", callback_data=f"admreport_{uid}_code_pick"),
+         btn("🎲 LỊCH SỬ CƯỢC", "🎲", callback_data=f"admreport_{uid}_cuoc_pick")],
+        [btn("🛒 GIFTCODE ĐÃ MUA", "🛒", callback_data=f"admreport_{uid}_mua_pick"),
+         btn("🎁 CODE ĐÃ DÙNG", "🎁", callback_data=f"admreport_{uid}_gift_pick")],
+        [btn("🗓 TẤT CẢ THỜI GIAN", "🗓", callback_data=f"admreport_{uid}_all_all")],
+        [btn("📅 CHỌN NGÀY CỤ THỂ", "📅", callback_data=f"admreport_{uid}_date")],
     ])
 
 @admin_only
@@ -5583,61 +5974,242 @@ async def resetbank_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+async def _telegram_name(bot, uid, cache=None):
+    if not uid:
+        return ""
+    if cache is not None and uid in cache:
+        return cache[uid]
+    result = ""
+    try:
+        chat = await bot.get_chat(int(uid))
+        username = getattr(chat, "username", None)
+        full_name = getattr(chat, "full_name", None) or getattr(chat, "first_name", None)
+        result = ("@" + username) if username else (full_name or "")
+    except Exception:
+        result = ""
+    if cache is not None:
+        cache[uid] = result
+    return result
+
+def _in_report_period(value, days):
+    if days == "all":
+        return True
+    dt = _parse_db_date(value)
+    if not dt:
+        return False
+    today = get_vietnam_time().date()
+    try:
+        n = int(days)
+    except (TypeError, ValueError):
+        return False
+    return today - timedelta(days=max(0, n-1)) <= dt <= today
+
+def _make_report_document(title, headers, data, filename):
+    """Tạo XLSX có tiêu đề, định dạng, bộ lọc; fallback CSV nếu thiếu openpyxl."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Bao cao"
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(headers)))
+        c = ws.cell(1, 1, title)
+        c.font = Font(name="Arial", size=16, bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="183153")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 30
+        ws.cell(2, 1, f"Xuất lúc: {get_vietnam_datetime_db()} | Tổng dòng: {len(data)}")
+        ws.cell(2, 1).font = Font(name="Arial", italic=True, color="666666")
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(4, col, str(header))
+            cell.font = Font(name="Arial", bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="246B8E")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for r_idx, row in enumerate(data, 5):
+            for c_idx, value in enumerate(row, 1):
+                cell = ws.cell(r_idx, c_idx, "" if value is None else str(value))
+                cell.font = Font(name="Arial", size=10)
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
+                # Luôn ép chuỗi thành text, tránh dữ liệu người dùng bị hiểu là công thức Excel.
+                cell.data_type = "s"
+        ws.freeze_panes = "A5"
+        if data:
+            ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{len(data)+4}"
+        for col_idx, header in enumerate(headers, 1):
+            vals = [str(header)] + [str(row[col_idx-1] if row[col_idx-1] is not None else "") for row in data[:300]]
+            width = min(42, max(12, max((len(v) for v in vals), default=12) + 2))
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+        out = BytesIO()
+        wb.save(out)
+        out.seek(0)
+        out.name = filename.replace(".csv", ".xlsx")
+        return out, out.name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    except Exception as e:
+        import csv as _csv
+        out = BytesIO()
+        import io
+        wrapper = io.TextIOWrapper(out, encoding="utf-8-sig", newline="")
+        writer = _csv.writer(wrapper)
+        writer.writerow(headers)
+        writer.writerows(data)
+        wrapper.flush()
+        out.seek(0)
+        out.name = filename if filename.endswith(".csv") else filename.rsplit(".", 1)[0] + ".csv"
+        return out, out.name, "text/csv"
+
 async def admin_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if q.from_user.id not in ADMIN_IDS:
         return await q.answer("Bạn không có quyền.", show_alert=True)
     await q.answer()
     parts = q.data.split("_")
-    # admreport_UID_KIND_PERIOD; ID là số nên split an toàn.
     try:
-        uid = int(parts[1]); kind = parts[2]; period = parts[3] if len(parts) > 3 else "today"
+        uid = int(parts[1])
+        kind = parts[2]
+        period = parts[3] if len(parts) > 3 else "pick"
     except Exception:
         return
     if kind == "date":
         ctx.user_data["report_wait_date"] = uid
+        ctx.user_data["report_wait_kind"] = "all"
         return await q.message.reply_text("Nhập ngày cần xuất theo định dạng DD/MM/YYYY, ví dụ 28/10/2026. Gửi /huy để hủy.")
-    today = get_vietnam_date()
-    if period == "today":
-        date_filter = ctx.user_data.get("report_date") or today
-    else:
-        date_filter = None
-    if kind == "all":
-        rows = query("SELECT amount,note,time FROM history WHERE user_id=%s ORDER BY id DESC", (uid,)) or []
-        if date_filter:
-            rows = [r for r in rows if date_filter in str(r[2])]
-        headers = ["user_id", "amount", "note", "time"]
-        data = [(uid, *r) for r in rows]
-    elif kind == "nap":
-        sql = "SELECT amount, status, time, ref_code FROM deposit_history WHERE user_id=%s"
-        args = [uid]
-        if date_filter: sql += " AND time LIKE %s"; args.append(f"%{date_filter}%")
-        sql += " ORDER BY id DESC"
-        rows = query(sql, tuple(args)) or []; headers = ["user_id", "amount", "status", "time", "ref_code"]; data = [(uid,*r) for r in rows]
-    elif kind == "rut":
-        sql = "SELECT amount, status, time, admin_id, admin_note FROM withdraw_history WHERE user_id=%s"
-        args = [uid]
-        if date_filter: sql += " AND time LIKE %s"; args.append(f"%{date_filter}%")
-        sql += " ORDER BY id DESC"
-        rows = query(sql, tuple(args)) or []; headers = ["user_id", "amount", "status", "time", "admin_id", "admin_note"]; data = [(uid,*r) for r in rows]
-    elif kind == "code":
-        rows = query("SELECT code,used_date FROM code_usage WHERE user_id=%s ORDER BY used_date DESC", (uid,)) or []
-        if date_filter: rows = [r for r in rows if date_filter in str(r[1])]
-        headers = ["user_id", "code", "used_date"]; data = [(uid,*r) for r in rows]
-    elif kind == "cuoc":
-        rows = query("SELECT amount,note,time FROM history WHERE user_id=%s AND amount<0 AND note ILIKE '%cược%' ORDER BY id DESC", (uid,)) or []
-        if date_filter: rows = [r for r in rows if date_filter in str(r[2])]
-        headers = ["user_id", "amount", "note", "time"]; data = [(uid,*r) for r in rows]
-    else:
+    if period == "pick":
+        buttons = [
+            [btn("HÔM NAY / 1 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_1"),
+             btn("3 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_3")],
+            [btn("2 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_2"),
+             btn("4 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_4")],
+            [btn("5 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_5"),
+             btn("6 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_6")],
+            [btn("7 NGÀY GẦN ĐÂY", "📅", callback_data=f"admperiod_{uid}_{kind}_7"),
+             btn("TẤT CẢ THỜI GIAN", "🗓", callback_data=f"admperiod_{uid}_{kind}_all")],
+            [btn("📅 CHỌN NGÀY CỤ THỂ", "📅", callback_data=f"admperiod_{uid}_{kind}_date")],
+        ]
+        return await q.message.reply_text(
+            f"📊 <b>CHỌN KHOẢNG THỜI GIAN</b>\n"
+            f"ID người dùng: <code>{uid}</code>\n"
+            f"Loại báo cáo: <b>{html.escape(kind.upper())}</b>\n\n"
+            f"Chọn từ 1 đến 7 ngày gần đây hoặc toàn bộ lịch sử.",
+            reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML
+        )
+    return await _export_user_report(q.message, ctx.bot, uid, kind, period, ctx)
+
+async def admin_report_period_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS:
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    await q.answer()
+    try:
+        _, uid_s, kind, period = q.data.split("_", 3)
+        uid = int(uid_s)
+    except Exception:
         return
-    out = BytesIO()
-    import io
-    import csv as _csv
-    # UTF-8 BOM giúp Excel hiển thị tiếng Việt chính xác.
-    wrapper = io.TextIOWrapper(out, encoding="utf-8-sig", newline="")
-    writer = _csv.writer(wrapper); writer.writerow(headers); writer.writerows(data); wrapper.flush(); out.seek(0)
-    out.name = f"bao_cao_{kind}_{uid}_{(date_filter or 'tat_ca').replace('/', '-')}.csv"
-    await q.message.reply_document(document=out, filename=out.name, caption=f"📊 Báo cáo {kind.upper()} của ID {uid} | {date_filter or 'Tất cả thời gian'} | {len(data)} dòng")
+    if period == "date":
+        ctx.user_data["report_wait_date"] = uid
+        ctx.user_data["report_wait_kind"] = kind
+        return await q.message.reply_text("Nhập ngày cần xuất theo định dạng DD/MM/YYYY, ví dụ 28/10/2026. Gửi /huy để hủy.")
+    await _export_user_report(q.message, ctx.bot, uid, kind, period, ctx)
+
+async def _export_user_report(message, bot, uid, kind, period, ctx):
+    today = get_vietnam_time().date()
+    if period == "date":
+        date_filter = ctx.user_data.get("report_date")
+        period_label = date_filter or "ngày đã chọn"
+    elif period == "all":
+        date_filter = None
+        period_label = "Tất cả thời gian"
+    else:
+        try:
+            days = int(period)
+        except ValueError:
+            days = 1
+        date_filter = None
+        period_label = f"{days} ngày gần đây ({(today - timedelta(days=max(0, days-1))).strftime('%d/%m/%Y')} – {today.strftime('%d/%m/%Y')})"
+
+    name_cache = {}
+    target_name = await _telegram_name(bot, uid, name_cache)
+    rows = []
+    if kind in ("all", "history"):
+        raw = query("SELECT amount,note,time FROM history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
+        rows = [("Lịch sử", uid, target_name, r[0], r[1], r[2]) for r in raw
+                if (period == "date" and date_filter in str(r[2])) or
+                   (period != "date" and _in_report_period(r[2], period))]
+        headers = ["Loại", "ID người dùng", "@username / Tên", "Số tiền", "Nội dung", "Thời gian"]
+    elif kind == "nap":
+        raw = query("SELECT amount,status,time,ref_code,admin_id FROM deposit_history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
+        rows = [(uid, target_name, r[0], r[1], r[2], r[3], r[4]) for r in raw
+                if (period == "date" and date_filter in str(r[2])) or
+                   (period != "date" and _in_report_period(r[2], period))]
+        headers = ["ID người nạp", "@username / Tên", "Số tiền", "Trạng thái", "Thời gian", "Mã giao dịch", "Admin xử lý"]
+    elif kind == "rut":
+        raw = query("SELECT amount,status,time,admin_id,admin_note,id FROM withdraw_history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
+        rows = [(uid, target_name, r[0], r[1], r[2], r[3], r[4], r[5]) for r in raw
+                if (period == "date" and date_filter in str(r[2])) or
+                   (period != "date" and _in_report_period(r[2], period))]
+        headers = ["ID người rút", "@username / Tên", "Số tiền", "Trạng thái", "Thời gian", "Admin xử lý", "Ghi chú", "Mã yêu cầu"]
+    elif kind == "code":
+        raw = query("SELECT code,used_date FROM code_usage WHERE user_id=%s ORDER BY used_date DESC LIMIT 20000", (uid,)) or []
+        rows = [(uid, target_name, r[0], "Đã sử dụng", r[1]) for r in raw
+                if (period == "date" and date_filter in str(r[1])) or
+                   (period != "date" and _in_report_period(r[1], period))]
+        headers = ["ID người nhập", "@username / Tên", "Mã code", "Trạng thái", "Thời gian nhập"]
+    elif kind == "cuoc":
+        raw = query("SELECT amount,note,time FROM history WHERE user_id=%s AND amount<0 AND note ILIKE '%cược%' ORDER BY id DESC LIMIT 20000", (uid,)) or []
+        rows = [(uid, target_name, abs(int(r[0] or 0)), r[1], r[2]) for r in raw
+                if (period == "date" and date_filter in str(r[2])) or
+                   (period != "date" and _in_report_period(r[2], period))]
+        headers = ["ID người cược", "@username / Tên", "Giá trị cược", "Game / Nội dung", "Thời gian"]
+    elif kind in ("mua", "gift"):
+        raw = query(
+            "SELECT code,created_by,created_at,reward,wager,expiry,used,used_by,used_at,ctype "
+            "FROM giftcodes WHERE (created_by=%s OR used_by=%s) AND ctype IN ('CODEMUA','INTERACT','TICHLUY') "
+            "ORDER BY created_at DESC LIMIT 20000", (uid, uid)
+        ) or []
+        for r in raw:
+            created_by, used_by = r[1], r[7]
+            if kind == "mua" and int(created_by or 0) != uid:
+                continue
+            if kind == "gift" and int(used_by or 0) != uid:
+                continue
+            when = r[2] if kind == "mua" else (r[8] or r[2])
+            if not ((period == "date" and date_filter in str(when)) or
+                    (period != "date" and _in_report_period(when, period))):
+                continue
+            buyer_name = await _telegram_name(bot, created_by, name_cache)
+            used_name = await _telegram_name(bot, used_by, name_cache)
+            status = "Đã dùng" if r[6] else ("Hết hạn" if r[5] and get_vietnam_time() > r[5] else "Chưa dùng")
+            rows.append((r[0], created_by, buyer_name, used_by or "", used_name, r[3], f"x{r[4] or 0}", str(r[5] or ""), status, r[2], r[8] or ""))
+        headers = ["Mã code (chỉ báo cáo admin)", "ID người mua/tạo", "@username người mua", "ID người dùng", "@username người dùng", "Giá trị", "Vòng cược", "Hạn sử dụng", "Trạng thái", "Mua/tạo lúc", "Dùng lúc"]
+    else:
+        return await message.reply_text("Loại báo cáo không hợp lệ.")
+
+    # Báo cáo full hồ sơ có thêm thông tin tài khoản.
+    if kind == "all":
+        u = query("SELECT balance,refs,refed,bank,stk,name,last_checkin,last_withdraw,total_bet,bank_linked FROM users WHERE user_id=%s", (uid,))
+        if u:
+            x = u[0]
+            rows.insert(0, ("HỒ SƠ", uid, target_name, x[0], f"Tổng cược={x[8] or 0}; refs={x[1] or 0}; refed={x[2] or 0}; ngân hàng={x[3] or '-'}; STK={x[4] or '-'}; chủ TK={x[5] or '-'}; bank_linked={x[9]}; checkin cuối={x[6] or '-'}; rút cuối={x[7] or '-'}", ""))
+            dep = _sum("SELECT COALESCE(SUM(amount),0) FROM deposit_history WHERE user_id=%s AND status='success'", (uid,))
+            wd = _sum("SELECT COALESCE(SUM(amount),0) FROM withdraw_history WHERE user_id=%s AND status='success'", (uid,))
+            rows.insert(1, ("TỔNG KẾT", uid, target_name, x[0], f"Tổng nạp thành công={dep}; tổng rút thành công={wd}; số dư={x[0] or 0}", ""))
+        headers = ["Loại", "ID người dùng", "@username / Tên", "Số tiền / Số dư", "Chi tiết", "Thời gian"]
+
+    safe_uid = str(uid)
+    file_stem = f"bao_cao_{kind}_{safe_uid}_{period}"
+    file_obj, filename, mime = _make_report_document(
+        f"BÁO CÁO {kind.upper()} — ID {uid} — {period_label}",
+        headers, rows, file_stem + ".csv"
+    )
+    await message.reply_document(
+        document=file_obj, filename=filename,
+        caption=f"📊 <b>BÁO CÁO {kind.upper()}</b>\n"
+                f"🆔 ID: <code>{uid}</code> · Tài khoản: {html.escape(target_name or 'Chưa lấy được username')}\n"
+                f"🗓 Thời gian: {html.escape(period_label)}\n"
+                f"📄 Số dòng: <b>{len(rows)}</b>",
+        parse_mode=ParseMode.HTML
+    )
 
 async def report_date_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = ctx.user_data.get("report_wait_date")
@@ -5647,15 +6219,18 @@ async def report_date_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if update.effective_message.text.strip().lower() == "/huy":
         ctx.user_data.pop("report_wait_date", None)
+        ctx.user_data.pop("report_wait_kind", None)
         return await update.effective_message.reply_text("Đã hủy chọn ngày.")
     try:
         date_obj = datetime.strptime(update.effective_message.text.strip(), "%d/%m/%Y")
         date_filter = date_obj.strftime("%d/%m/%Y")
     except ValueError:
         return await update.effective_message.reply_text("Ngày không hợp lệ. Hãy nhập DD/MM/YYYY, ví dụ 28/10/2026.")
+    kind = ctx.user_data.get("report_wait_kind", "all")
     ctx.user_data.pop("report_wait_date", None)
+    ctx.user_data.pop("report_wait_kind", None)
     ctx.user_data["report_date"] = date_filter
-    await update.effective_message.reply_text(f"Đã chọn ngày {date_filter}. Mở /fulluser {uid}, sau đó bấm nút loại lịch sử (các nút ‘hôm nay’ sẽ dùng ngày vừa chọn). Để quay lại hôm nay, chọn lại NGÀY KHÁC và nhập ngày hôm nay.")
+    await _export_user_report(update.effective_message, ctx.bot, int(uid), kind, "date", ctx)
 
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("lienket", lien_ket))
@@ -5721,8 +6296,10 @@ application.add_handler(CommandHandler("tatroom", tatroom_cmd))
 
 application.add_handler(CommandHandler("admin", admin_help_cmd))
 application.add_handler(CommandHandler("fulluser", fulluser_cmd))
+application.add_handler(CommandHandler("huy", report_date_input))
 application.add_handler(CommandHandler("resetbank", resetbank_cmd))
 application.add_handler(CallbackQueryHandler(admin_report_callback, pattern=r"^admreport_"))
+application.add_handler(CallbackQueryHandler(admin_report_period_callback, pattern=r"^admperiod_"))
 application.add_handler(CommandHandler("baotrigame", baotrigame_cmd))
 application.add_handler(CommandHandler("trangthai", trangthai_cmd))
 application.add_handler(CommandHandler("user", user_cmd))
@@ -5736,6 +6313,9 @@ application.add_handler(CommandHandler("dsrut", dsrut_cmd))
 application.add_handler(CommandHandler("dsnap", dsnap_cmd))
 application.add_handler(CommandHandler("setsd", setsd_cmd))
 application.add_handler(CommandHandler("top", top_cmd))
+application.add_handler(CommandHandler("topsodu", topsodu_cmd))
+application.add_handler(CommandHandler("checktt", checktt_cmd))
+application.add_handler(CommandHandler("help", interaction_help_cmd))
 application.add_handler(CommandHandler("topcuoc", topcuoc_cmd))
 application.add_handler(CallbackQueryHandler(admin_user_callback, pattern=r"^admuser_"))
 
@@ -5762,6 +6342,7 @@ async def main():
     
     _bg_tasks.append(asyncio.create_task(reward_settle_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(auto_settle_tich_luy_loop(application.bot)))
+    _bg_tasks.append(asyncio.create_task(settle_interaction_top_loop(application.bot)))
     
     # Khởi động webhook server
     await start_webhook_server()
