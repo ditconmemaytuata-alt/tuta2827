@@ -1,4 +1,29 @@
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions
+bạn sửa phần ‘nhận thưởng’ ở phần tài khoản thành như này nhé ‘. 🎁 TRUNG TÂM NHẬN THƯỞNG
+Theo dõi tiến độ và khoản thưởng dự kiến của bạn
+
+🎯 HOÀN CƯỢC NGÀY
+Doanh số: 0
+❌ Chưa đạt mốc tối thiểu 100.000đ
+⏳ Còn 06:03:02
+
+🚀 HOÀN CƯỢC TUẦN
+Doanh số: 0
+❌ Chưa đạt mốc tối thiểu 100.000đ
+⏳ Còn 4 ngày 06:03:02
+
+📉 HOÀN THUA NGÀY
+Thua ròng: 0
+❌ Chưa đạt mốc tối thiểu 100.000đ
+⏳ Còn 06:03:02
+
+📆 HOÀN THUA TUẦN
+Thua ròng: 0
+❌ Chưa đạt mốc tối thiểu 100.000đ
+⏳ Còn 4 ngày 06:03:02
+
+📌 Ngày chốt lúc 23:59. Tuần chung toàn hệ thống: Thứ Hai 00:00 — Chủ Nhật 23:59.
+💡 Khi có khoản thưởng đã chốt, nút Nhận thưởng sẽ tự động xuất hiện bên dưới.
+🧾 Số liệu chỉ tính các giao dịch và cược hợp lệ đã hoàn tất. cho emonj premium vào nhé khi đến cuối ngày sẽ tự động chốt thường và có nút nhận ở dưới nhé cứ hoàn 2% cho tổng cược ngày nhé và tổng cược tuần sẽ cuối tuần sẽ tổng kết lại và nhận của cuối tuần nhé gửi toàn bộ code hoàn chỉnh cho tôi from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
 import psycopg2
@@ -4144,4 +4169,58 @@ if __name__ == "__main__":
         print("🛑 Bot đã dừng.")
     except Exception as e:
         print(f"❌ Lỗi: {e}")
-        traceback.print_exc()
+        traceback.print_exc() và bạn sửa phần ‘ VIP’ trong tài khoản thành như này nhé 👑 Cấp VIP hiện tại: 🥉 (Đồng)
+🚀 Điểm VIP: 0/10 up VIP 1
+🖐 Số điểm VIP có thể đổi: 0
+
+Với mỗi 300K tiền cược, bạn nhận 1 điểm VIP.
+Điểm này dùng để xét tăng cấp VIP và đổi thưởng.
+
+💎 Tỉ lệ quy đổi: đạt VIP 1 để mở đổi điểm (VIP 1: 1 điểm = 100đ)
+
+🏆 CẤP VIP VÀ BIỂU TƯỢNG
+VIP 0: 🥉 (Đồng)
+VIP 1: 🥈 (Bạc)
+VIP 2: 🥇 (Vàng)
+VIP 3: ⭐ (Bạch Kim)
+VIP 4: 💎 (Kim Cương)
+VIP 5: 🏆 (Cao Thủ)
+VIP 6: ⚔️ (Chiến Tướng)
+VIP 7: 💎 (Đại Tướng)
+VIP 8: 👑 (Huyền Thoại)
+VIP 9: 💰 (Chí Tôn)
+
+📌 ĐIỂM YÊU CẦU ĐỂ ĐẠT CẤP VIP
+VIP 1: 10
+VIP 2: 50
+VIP 3: 100
+VIP 4: 500
+VIP 5: 1000
+VIP 6: 5000
+VIP 7: 10000
+VIP 8: 50000
+VIP 9: 100000
+
+💎 TỈ LỆ QUY ĐỔI ĐIỂM
+VIP 1: 1 điểm = 100
+VIP 2: 1 điểm = 200
+VIP 3: 1 điểm = 300
+VIP 4: 1 điểm = 400
+VIP 5: 1 điểm = 500
+VIP 6: 1 điểm = 600
+VIP 7: 1 điểm = 700
+VIP 8: 1 điểm = 800
+VIP 9: 1 điểm = 1.000
+
+❤️ Cách đổi điểm VIP
+/doidiemvip [số điểm]
+VD: /doidiemvip 100              bạn thêm phần code của game như sau
+bạn làm lệnh cho admin tạo từng loại code nhé
+JAV88-TANTHU-7chữ và số
+JAV88-CODEMUA-7chữ và số
+JAV88-GIOVANG-7 chữ và số
+JAV88-7số-7chữ 
+JAV88-TRIAN-7số chữ
+và thêm lệnh để admin có yêu cầu nạp để nhập code hay không và khi người dùng nhập code mà chưa nạp bot sẽ báo giá trị của code là bao nhiêu tiền và yêu cầu số tiền nạp trong ngày để nhập code 
+và số thêm lệnh để admin chọn loại code cần tạo nhé và hiện để admin nhập số vòng cược cho code và giá trị code và hạn sử dụng nhé và nhập số lượng tạo mã code nhé và có nút để có chọn tài khoản nhập code chỉ định không kiểu là admin cho tài khoản nào nhập code thì mã code chỉ nhập được trong tài khoản đó lưu ý JAV88-CODEMUA-7chữ và số' code này là dành khi người dùng mua nhé code này chỉ x1 vòng cược khi người dùng mua sẽ tự động gửi code cho người dùng ngay không cần admin duyệt 
+khi bấm nút nhận thưởng hay vip sẽ hiện ra như vậy bạn thêm tính năng theo hình ảnh nhé 
