@@ -650,30 +650,30 @@ def get_deposit_info(user_id, amount=0):
     return qr_url, caption, content
 
 async def fetch_qr_image(qr_url: str) -> BytesIO:
-    """Tải QR VietQR về bộ nhớ; kiểm tra phản hồi để báo lỗi rõ ràng."""
-    timeout = aiohttp.ClientTimeout(total=30)
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; TelegramBot/1.0)"}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(qr_url, allow_redirects=True) as response:
-            content_type = response.headers.get("Content-Type", "")
-            data = await response.read()
-            if response.status != 200:
-                detail = data[:250].decode("utf-8", errors="replace")
-                raise RuntimeError(f"VietQR HTTP {response.status}; Content-Type={content_type}; body={detail}")
-            # Một số CDN trả ảnh với Content-Type không chuẩn; chấp nhận các định dạng ảnh phổ biến.
-            is_image = (
-                "image/" in content_type.lower()
-                or data.startswith(b"\x89PNG\r\n\x1a\n")
-                or data.startswith(b"\xff\xd8\xff")
-                or data.startswith((b"GIF87a", b"GIF89a", b"RIFF"))
-            )
-            if not data or not is_image:
-                detail = data[:200].decode("utf-8", errors="replace")
-                raise RuntimeError(f"VietQR không trả về ảnh; Content-Type={content_type}; body={detail}")
-    photo = BytesIO(data)
-    photo.name = "deposit_qr.png"
-    photo.seek(0)
-    return photo
+    """Tải QR VietQR về bộ nhớ với cơ chế xử lý lỗi an toàn."""
+    timeout = aiohttp.ClientTimeout(total=15)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+    }
+    
+    # Thử gọi tối đa 2 lần nếu gặp lỗi kết nối tạm thời
+    for attempt in range(2):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(qr_url, allow_redirects=True) as response:
+                    data = await response.read()
+                    if response.status == 200 and data:
+                        photo = BytesIO(data)
+                        photo.name = "deposit_qr.png"
+                        photo.seek(0)
+                        return photo
+        except Exception as e:
+            if attempt == 1:
+                raise RuntimeError(f"Không thể kết nối đến máy chủ VietQR: {str(e)}")
+            await asyncio.sleep(1)
+            
+    raise RuntimeError("VietQR không phản hồi dữ liệu ảnh hợp lệ.")
 
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
