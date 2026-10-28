@@ -649,6 +649,23 @@ def get_deposit_info(user_id, amount=0):
     )
     return qr_url, caption, content
 
+async def fetch_qr_image(qr_url: str) -> BytesIO:
+    """Tải ảnh QR từ VietQR về trước khi gửi Telegram, tránh lỗi Telegram tự tải URL."""
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(qr_url) as response:
+            if response.status != 200:
+                body = (await response.text())[:300]
+                raise RuntimeError(f"VietQR trả HTTP {response.status}: {body}")
+            content_type = response.headers.get("Content-Type", "")
+            data = await response.read()
+            if not data or ("image" not in content_type.lower() and not data.startswith(b"\x89PNG")):
+                raise RuntimeError(f"VietQR không trả về ảnh hợp lệ (Content-Type: {content_type})")
+    photo = BytesIO(data)
+    photo.name = "deposit_qr.png"
+    photo.seek(0)
+    return photo
+
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
     kb = InlineKeyboardMarkup([
@@ -3150,9 +3167,16 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [btn("Hỗ Trợ", "🔔", callback_data="dep_support")]
         ])
-        await msg_obj.reply_photo(photo=qr_url, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        qr_photo = await fetch_qr_image(qr_url)
+        await msg_obj.reply_photo(photo=qr_photo, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
     except ValueError:
         await msg_obj.reply_text(f'{ce("❌")} Số tiền không hợp lệ! VD: <code>/nap 50000</code>', parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"Tạo QR nạp tiền thất bại uid={uid}: {type(e).__name__}: {e}")
+        await msg_obj.reply_text(
+            f'{ce("❌")} Không tải được mã QR lúc này. Vui lòng thử lại sau hoặc liên hệ hỗ trợ.',
+            parse_mode=ParseMode.HTML
+        )
 
 async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -4847,15 +4871,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await q.answer()
             amount = int(d.split("_")[1])
+            if amount < 10000 or amount > 100000000:
+                return await q.message.reply_text("Số tiền nạp phải từ 10.000đ đến 100.000.000đ.")
             qr_url, caption, content = get_deposit_info(uid, amount)
             kb = InlineKeyboardMarkup([[btn("Hỗ Trợ", "🔔", callback_data="dep_support")]])
-            if q.message.photo:
-                return await q.edit_message_media(media=InputMediaPhoto(media=qr_url, caption=caption, parse_mode=ParseMode.HTML), reply_markup=kb)
-            else:
+            qr_photo = await fetch_qr_image(qr_url)
+            # Gửi QR mới trước; chỉ xóa menu cũ sau khi gửi thành công để không mất giao diện nếu API lỗi.
+            sent = await ctx.bot.send_photo(
+                chat_id=uid, photo=qr_photo, caption=caption,
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+            try:
                 await q.message.delete()
-                return await ctx.bot.send_photo(chat_id=uid, photo=qr_url, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
-        except Exception as e: pass
-        return
+            except Exception:
+                pass
+            return sent
+        except Exception as e:
+            print(f"Nút nạp QR lỗi uid={uid}, data={d}: {type(e).__name__}: {e}")
+            try:
+                await q.answer("Không tạo được QR. Vui lòng thử lại.", show_alert=True)
+            except Exception:
+                pass
+            return
 
     if d.startswith("mt_toggle_") or d in ["mt_turnoff_all", "mt_turnon_all"]:
         return await handle_mt_toggle_callback(update, ctx)
