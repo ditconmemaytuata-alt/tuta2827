@@ -6,6 +6,7 @@ import hashlib
 import csv
 import traceback
 import html
+from urllib.parse import urlencode
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -634,7 +635,8 @@ def generate_transfer_content(user_id):
 
 def get_deposit_info(user_id, amount=0):
     content = generate_transfer_content(user_id)
-    qr_url = f"https://img.vietqr.io/image/{BANK_ID}-{ACCOUNT_NO}-qr_only.png?amount={amount}&addInfo={content}&accountName={ACCOUNT_NAME}"
+    qr_params = urlencode({"amount": int(amount), "addInfo": content, "accountName": ACCOUNT_NAME})
+    qr_url = f"https://img.vietqr.io/image/{BANK_ID}-{ACCOUNT_NO}-qr_only.png?{qr_params}"
     
     caption = (
         f'{ce("💳")} <b>THÔNG TIN NẠP TIỀN</b>\n\n'
@@ -654,7 +656,7 @@ def deposit_menu_content(uid):
         [btn("100.000đ", "💵", "dep_100000"), btn("200.000đ", "💵", "dep_200000"), btn("500.000đ", "💵", "dep_500000")],
         [btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000"), btn("5.000.000đ", "💰", "dep_5000000")],
         [btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000"), btn("50.000.000đ", "💎", "dep_50000000")],
-        [btn("100.000.000đ", "💎", "dep_100000000"), btn("Hỗ Trợ", "🔔", "dep_support")]
+        [btn("Hỗ Trợ", "🔔", "dep_support")]
     ])
     
     caption = (
