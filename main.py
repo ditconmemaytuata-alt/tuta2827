@@ -706,7 +706,21 @@ def build_vietqr_payload(amount: int, content: str) -> str:
 
 def make_local_qr(amount: int, content: str) -> BytesIO:
     import qrcode
-    img = qrcode.make(build_vietqr_payload(amount, content))
+    qr = qrcode.QRCode(box_size=10, border=4)
+    qr.add_data(build_vietqr_payload(amount, content))
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white").get_image().convert("RGB")
+    img = img.resize((600, 600))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.name = "deposit_qr.png"
+    buf.seek(0)
+    return buf
+
+def _reencode_image(raw: bytes) -> BytesIO:
+    """Mở ảnh bằng Pillow rồi lưu lại thành PNG RGB chuẩn để Telegram xử lý được."""
+    from PIL import Image
+    img = Image.open(BytesIO(raw)).convert("RGB")
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.name = "deposit_qr.png"
@@ -714,18 +728,37 @@ def make_local_qr(amount: int, content: str) -> BytesIO:
     return buf
 
 async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content=""):
-    """Gửi QR: 1) tải từ VietQR, 2) lỗi thì tự vẽ QR trên server, 3) cuối cùng gửi bằng URL."""
+    """Gửi QR theo nhiều bước dự phòng; bước nào lỗi thì in log rồi thử bước kế tiếp."""
+    kw = dict(chat_id=chat_id, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+    raw = None
+    # 1) Ảnh gốc từ VietQR
     try:
-        photo = await fetch_qr_image(qr_url)
+        raw = (await fetch_qr_image(qr_url)).getvalue()
+        bio = BytesIO(raw); bio.name = "deposit_qr.png"
+        return await bot.send_photo(photo=bio, **kw)
     except Exception as e:
-        print(f"fetch_qr_image lỗi: {type(e).__name__}: {e}")
+        print(f"[QR bước 1 - ảnh VietQR] {type(e).__name__}: {e}")
+    # 2) Chuẩn hoá lại ảnh VietQR bằng Pillow
+    if raw:
         try:
-            photo = make_local_qr(amount, content)
-        except Exception as e2:
-            print(f"make_local_qr lỗi: {type(e2).__name__}: {e2}")
-            photo = qr_url
-    return await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption,
-                                reply_markup=kb, parse_mode=ParseMode.HTML)
+            return await bot.send_photo(photo=_reencode_image(raw), **kw)
+        except Exception as e:
+            print(f"[QR bước 2 - chuẩn hoá ảnh] {type(e).__name__}: {e}")
+    # 3) Tự vẽ QR VietQR trên server
+    try:
+        return await bot.send_photo(photo=make_local_qr(amount, content), **kw)
+    except Exception as e:
+        print(f"[QR bước 3 - QR tự vẽ] {type(e).__name__}: {e}")
+    # 4) Gửi dạng file ảnh (document)
+    if raw:
+        try:
+            bio = BytesIO(raw); bio.name = "deposit_qr.png"
+            return await bot.send_document(document=bio, **kw)
+        except Exception as e:
+            print(f"[QR bước 4 - document] {type(e).__name__}: {e}")
+    # 5) Cuối cùng: gửi thông tin chuyển khoản dạng chữ để khách vẫn nạp được
+    return await bot.send_message(chat_id=chat_id, text=caption, reply_markup=kb,
+                                  parse_mode=ParseMode.HTML)
 
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
