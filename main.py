@@ -16,7 +16,7 @@ import html
 import traceback
 
 # ============================================================
-# CUSTOM EMOJI MAPPING
+# CUSTOM EMOJI MAPPING (CẬP NHẬT THEO DANH SÁCH CỦA BẠN)
 # ============================================================
 CUSTOM_EMOJI = {
     "🥰": "5238188302279909462", "👋": "5235701688014217208", "🙂": "5238185738184435219",
@@ -75,7 +75,7 @@ CUSTOM_EMOJI = {
     "game_icon_3": "5361741454685256344", "game_icon_4": "5422439311196834318",
     "game_icon_5": "5406683434124859552", "game_icon_6": "5416041192905265756",
     "game_icon_7": "5460755126761312667", "🪙": "5379773896352355687",
-    # ---------- EMOJI MỚI THÊM ----------
+    # ---------- EMOJI MỚI THÊM TỪ DANH SÁCH CỦA BẠN ----------
     "🎲": "5280816565657300091", "💡": "5262844652964303985", "🤑": "5427107837568360763",
     "🖥": "5282843764451195532", "💻": "5193177581888755275", "🔋": "5307905813451397794",
     "⛏": "5197371802136892976", "↗️": "5429651785352501917", "↔️": "5271837459783638319",
@@ -94,6 +94,11 @@ CUSTOM_EMOJI = {
     "🤜": "5375161616872520280", "✈️": "5456216132308462012", "🧪": "5294451377425106537",
     "💃": "5373112999076699207", "ℹ️": "5334544901428229844", "©": "5323442290708985472",
     "🫦": "5395444514028529554", "😧": "5237721297600912488",
+    # Bổ sung từ danh sách mới
+    "✔️": "5206607081334906820", "⚡️": "5456140674028019486", "🛡": "5251203410396458957", 
+    "🔍": "5231012545799666522", "📩": "5472239203590888751", "🐷": "5417831807720642261",
+    "🛒": "5440841102871517055", "🔗": "5440410042773824003", "🪙": "5382164415019768638",
+    "🎁": "5442939099906325301", "💱": "5377336227533969892"
 }
 
 # Emoji chưa có ID premium riêng -> dùng tạm emoji premium gần nghĩa nhất cho ICON NÚT BẤM
@@ -154,7 +159,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 ADMIN_IDS = [5633649201, 7884394252]
 BOT_USERNAME = "Jav88gamebot"
-ROOM_LINK = "https://t.me/Jav88gamebot"
+ROOM_LINK = "https://t.me/jav88sanhu" # Đã cập nhật link
 MIN_WITHDRAW = 50000
 LOG_GROUP_ID = -1004375247819
 
@@ -708,7 +713,7 @@ async def safe_answer(q, text=None, alert=False):
         pass
 
 # ============================================================
-# ===== [MỚI] TÍCH LŨY NẠP ====================================
+# ===== [SỬA LỖI] TÍCH LŨY NẠP ============================
 # ============================================================
 MILESTONES = [
     {"moc": 1, "nap": 50_000, "cuoc": 1_000_000, "gift": 20_000},
@@ -793,14 +798,14 @@ def get_tich_luy_text(uid):
         f'• Chưa sử dụng: {", ".join(chua_dung) if chua_dung else "Chưa có"}\n\n'
         f'🎁 <b>Code chưa sử dụng:</b>\n'
         f'• {chr(10).join(chua_dung) if chua_dung else "Chưa có code khả dụng."}\n\n'
-        f'💡 Khi đạt mốc mới, bấm 🔄 Làm mới để nhận code ngay.'
+        f'💡 Khi đạt mốc mới, bot sẽ tự động gửi code. Bấm 🔄 Làm mới để cập nhật giao diện.'
     )
     
     kb = InlineKeyboardMarkup([[btn("Làm mới", "🔄", callback_data="acc_tich_luy_refresh")]])
     return msg, kb
 
 async def auto_gen_tich_luy_codes():
-    """Chạy lúc 23:59 hoặc khi user làm mới, tự động tạo code cho user đạt mốc"""
+    """Chạy ngầm định kỳ để tự động tạo và gửi code khi user đạt mốc"""
     today_str = get_vietnam_time().strftime("%Y-%m-%d")
     # Lấy tất cả user đã nạp hôm nay
     users = query("SELECT DISTINCT user_id FROM deposit_history WHERE status='success' AND right(\"time\",10)=%s", (get_vietnam_date(),)) or []
@@ -4629,8 +4634,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await q.message.reply_text(tl_text, reply_markup=tl_kb, parse_mode=ParseMode.HTML)
         
     if d == "acc_tich_luy_refresh":
-        await q.answer("🔄 Đang kiểm tra và tạo code...")
-        await auto_gen_tich_luy_codes()
+        # Chỉ làm mới giao diện, KHÔNG tạo code ở đây nữa (đã có background task lo)
+        await q.answer("🔄 Đang cập nhật...")
         tl_text, tl_kb = get_tich_luy_text(uid)
         try:
             await q.message.edit_text(tl_text, reply_markup=tl_kb, parse_mode=ParseMode.HTML)
@@ -4996,14 +5001,11 @@ _bg_tasks = []
 async def auto_settle_tich_luy_loop(bot):
     while True:
         try:
-            now = get_vietnam_time()
-            # Chạy vào lúc 23:59 hoặc khi qua ngày mới (00:00)
-            if now.hour == 23 and now.minute == 59 or now.hour == 0 and now.minute == 0:
-                await auto_gen_tich_luy_codes()
-                await asyncio.sleep(60) # Tránh chạy lặp lại trong cùng 1 phút
+            # Chạy liên tục mỗi 60s để check và gửi code tích lũy ngay khi đạt mốc
+            await auto_gen_tich_luy_codes()
         except Exception as e:
             print(f"Lỗi auto_settle_tich_luy_loop: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
 
 async def main():
     global _bot_instance
