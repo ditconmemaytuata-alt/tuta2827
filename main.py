@@ -24,7 +24,7 @@ from aiohttp import web
 # ============================================================
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "EFXZKSPYCENBKFJIAF39GDPI2DƯ30N1PMPHRKJYCIFARAHK7XUET6T0CYQQO5MEB") # Lấy từ biến môi trường
+SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằng biến môi trường; không hardcode khóa bí mật
 
 ADMIN_IDS = [5633649201, 7884394252]
 BOT_USERNAME = "Jav88gamebot"
@@ -2044,7 +2044,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                         pass
 
                 try:
-                    new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML)
+                    new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap')]]))
                     stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
                     print(f"Lỗi gửi thống kê: {e}")
@@ -2444,6 +2444,12 @@ async def bet_group_handler(update: Update, ctx, choice: str, amount=None):
 
     success, message = await place_bet_in_group(ctx.bot, user_id, group_id, choice, amount, username)
     await update.effective_message.reply_text(message, parse_mode=ParseMode.HTML)
+    # Báo riêng về bot để người chơi nhận xác nhận kể cả khi nhóm bị trôi tin.
+    if success:
+        try:
+            await ctx.bot.send_message(chat_id=user_id, text=message, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            print(f"Không gửi được xác nhận cược riêng uid={user_id}: {e}")
 
 async def group_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
@@ -5181,6 +5187,27 @@ async def sepay_webhook(request):
         except Exception as e:
             print(f"SePay Webhook: Lỗi gửi log group: {e}")
 
+        # Báo trực tiếp tới toàn bộ admin khi webhook xác nhận nạp thành công.
+        user_row = query("SELECT bank, stk, name, balance FROM users WHERE user_id=%s", (user_id,)) or [(None, None, None, 0)]
+        bank, stk, account_name, current_balance = user_row[0]
+        admin_notice = (
+            f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG</b>\n'
+            f'🆔 ID: <code>{user_id}</code>\n'
+            f'👤 Username: <code>không có trong webhook</code>\n'
+            f'💵 Số tiền: <code>+{fmt_money(amount)}đ</code>\n'
+            f'🏦 Ngân hàng: <code>{html.escape(str(bank or "Chưa liên kết"))}</code>\n'
+            f'💳 STK: <code>{html.escape(str(stk or "—"))}</code>\n'
+            f'👥 Chủ TK: <code>{html.escape(str(account_name or "—"))}</code>\n'
+            f'💰 Số dư mới: <code>{fmt_money(int(current_balance or 0))}đ</code>\n'
+            f'🧾 Mã giao dịch: <code>{html.escape(str(ref_code or "—"))}</code>\n'
+            f'⏰ Thời gian: <code>{now_str}</code>'
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await _bot_instance.send_message(admin_id, admin_notice, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                print(f"Không gửi được thông báo nạp cho admin {admin_id}: {e}")
+
         # Tặng khuyến mãi 10% (gửi nút cho user)
         bonus_amount = int(amount * 0.10)
         if bonus_amount > 0:
@@ -5478,6 +5505,133 @@ async def admin_user_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 application = ApplicationBuilder().token(TOKEN).build()
 
+# ============================================================
+# BỘ CÔNG CỤ ADMIN: hồ sơ đầy đủ, xuất báo cáo CSV, resetbank
+# ============================================================
+def _report_keyboard(uid):
+    return InlineKeyboardMarkup([
+        [btn("FULL THÔNG TIN + LỊCH SỬ", "📊", callback_data=f"admreport_{uid}_all_today" )],
+        [btn("LỊCH SỬ NẠP", "📥", callback_data=f"admreport_{uid}_nap_today"), btn("LỊCH SỬ RÚT", "📤", callback_data=f"admreport_{uid}_rut_today")],
+        [btn("LỊCH SỬ NHẬP CODE", "🎟", callback_data=f"admreport_{uid}_code_today"), btn("LỊCH SỬ CƯỢC", "🎲", callback_data=f"admreport_{uid}_cuoc_today")],
+        [btn("TẤT CẢ THỜI GIAN", "🗓", callback_data=f"admreport_{uid}_all_all")],
+        [btn("NGÀY KHÁC", "📅", callback_data=f"admreport_{uid}_date")],
+    ])
+
+@admin_only
+async def fulluser_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        uid = int(ctx.args[0])
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text("Cú pháp: /fulluser ID", parse_mode=ParseMode.HTML)
+    row = query("SELECT balance, refs, refed, bank, stk, name, last_checkin, last_withdraw, total_bet, bank_linked FROM users WHERE user_id=%s", (uid,))
+    if not row:
+        return await update.effective_message.reply_text("Không tìm thấy người dùng này.")
+    u = row[0]
+    try:
+        tg_user = await ctx.bot.get_chat(uid)
+        username_text = f"@{tg_user.username}" if getattr(tg_user, "username", None) else (getattr(tg_user, "full_name", None) or "Chưa lấy được")
+    except Exception:
+        username_text = "Chưa lấy được (user chưa mở bot/Telegram không trả dữ liệu)"
+    deps = _sum("SELECT COALESCE(SUM(amount),0) FROM deposit_history WHERE user_id=%s AND status='success'", (uid,))
+    wds = _sum("SELECT COALESCE(SUM(amount),0) FROM withdraw_history WHERE user_id=%s AND status='success'", (uid,))
+    msg = (f"📋 <b>HỒ SƠ NGƯỜI DÙNG</b>\n🆔 ID: <code>{uid}</code>\n👤 Tên/@username: <code>{html.escape(str(username_text))}</code>\n"
+           f"💰 Số dư: <code>{fmt_money(int(u[0] or 0))}đ</code>\n📥 Tổng nạp thành công: <code>{fmt_money(int(deps))}đ</code>\n"
+           f"📤 Tổng rút thành công: <code>{fmt_money(int(wds))}đ</code>\n🎲 Tổng cược: <code>{fmt_money(int(u[8] or 0))}đ</code>\n"
+           f"👥 Người giới thiệu: <code>{u[1] or 0}</code> | Được giới thiệu bởi: <code>{u[2] or 0}</code>\n"
+           f"🏦 Ngân hàng: <code>{html.escape(str(u[3] or 'Chưa liên kết'))}</code>\n💳 STK: <code>{html.escape(str(u[4] or '—'))}</code>\n"
+           f"👤 Chủ TK: <code>{html.escape(str(u[5] or '—'))}</code>\n🔗 Trạng thái liên kết: <code>{'Đã liên kết' if u[9] else 'Chưa liên kết'}</code>\n"
+           f"🗓 Check-in cuối: <code>{html.escape(str(u[6] or '—'))}</code>\n⏱ Rút gần nhất: <code>{html.escape(str(u[7] or '—'))}</code>")
+    await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=_report_keyboard(uid))
+
+@admin_only
+async def resetbank_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        uid = int(ctx.args[0])
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text("Cú pháp: /resetbank ID\nLệnh này gỡ thông tin ngân hàng đã liên kết, không xóa số dư.")
+    if not (query("SELECT 1 FROM users WHERE user_id=%s", (uid,)) or []):
+        return await update.effective_message.reply_text("Không tìm thấy người dùng.")
+    query("UPDATE users SET bank=NULL, stk=NULL, name=NULL, bank_linked=0 WHERE user_id=%s", (uid,))
+    await update.effective_message.reply_text(f"✅ Đã gỡ liên kết ngân hàng của ID {uid}. Số dư và lịch sử giao dịch được giữ nguyên. Người dùng có thể liên kết lại bằng /lienket.")
+    try:
+        await ctx.bot.send_message(uid, "🔄 Admin đã đặt lại liên kết ngân hàng của bạn. Bạn có thể liên kết lại bằng /lienket [Ngân_hàng] [STK] [Chủ_TK].")
+    except Exception:
+        pass
+
+async def admin_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS:
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    await q.answer()
+    parts = q.data.split("_")
+    # admreport_UID_KIND_PERIOD; ID là số nên split an toàn.
+    try:
+        uid = int(parts[1]); kind = parts[2]; period = parts[3] if len(parts) > 3 else "today"
+    except Exception:
+        return
+    if kind == "date":
+        ctx.user_data["report_wait_date"] = uid
+        return await q.message.reply_text("Nhập ngày cần xuất theo định dạng DD/MM/YYYY, ví dụ 28/10/2026. Gửi /huy để hủy.")
+    today = get_vietnam_date()
+    if period == "today":
+        date_filter = ctx.user_data.get("report_date") or today
+    else:
+        date_filter = None
+    if kind == "all":
+        rows = query("SELECT amount,note,time FROM history WHERE user_id=%s ORDER BY id DESC", (uid,)) or []
+        if date_filter:
+            rows = [r for r in rows if date_filter in str(r[2])]
+        headers = ["user_id", "amount", "note", "time"]
+        data = [(uid, *r) for r in rows]
+    elif kind == "nap":
+        sql = "SELECT amount, status, time, ref_code FROM deposit_history WHERE user_id=%s"
+        args = [uid]
+        if date_filter: sql += " AND time LIKE %s"; args.append(f"%{date_filter}%")
+        sql += " ORDER BY id DESC"
+        rows = query(sql, tuple(args)) or []; headers = ["user_id", "amount", "status", "time", "ref_code"]; data = [(uid,*r) for r in rows]
+    elif kind == "rut":
+        sql = "SELECT amount, status, time, admin_id, admin_note FROM withdraw_history WHERE user_id=%s"
+        args = [uid]
+        if date_filter: sql += " AND time LIKE %s"; args.append(f"%{date_filter}%")
+        sql += " ORDER BY id DESC"
+        rows = query(sql, tuple(args)) or []; headers = ["user_id", "amount", "status", "time", "admin_id", "admin_note"]; data = [(uid,*r) for r in rows]
+    elif kind == "code":
+        rows = query("SELECT code,used_date FROM code_usage WHERE user_id=%s ORDER BY used_date DESC", (uid,)) or []
+        if date_filter: rows = [r for r in rows if date_filter in str(r[1])]
+        headers = ["user_id", "code", "used_date"]; data = [(uid,*r) for r in rows]
+    elif kind == "cuoc":
+        rows = query("SELECT amount,note,time FROM history WHERE user_id=%s AND amount<0 AND note ILIKE '%cược%' ORDER BY id DESC", (uid,)) or []
+        if date_filter: rows = [r for r in rows if date_filter in str(r[2])]
+        headers = ["user_id", "amount", "note", "time"]; data = [(uid,*r) for r in rows]
+    else:
+        return
+    out = BytesIO()
+    import io
+    import csv as _csv
+    # UTF-8 BOM giúp Excel hiển thị tiếng Việt chính xác.
+    wrapper = io.TextIOWrapper(out, encoding="utf-8-sig", newline="")
+    writer = _csv.writer(wrapper); writer.writerow(headers); writer.writerows(data); wrapper.flush(); out.seek(0)
+    out.name = f"bao_cao_{kind}_{uid}_{(date_filter or 'tat_ca').replace('/', '-')}.csv"
+    await q.message.reply_document(document=out, filename=out.name, caption=f"📊 Báo cáo {kind.upper()} của ID {uid} | {date_filter or 'Tất cả thời gian'} | {len(data)} dòng")
+
+async def report_date_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = ctx.user_data.get("report_wait_date")
+    if not uid:
+        return
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    if update.effective_message.text.strip().lower() == "/huy":
+        ctx.user_data.pop("report_wait_date", None)
+        return await update.effective_message.reply_text("Đã hủy chọn ngày.")
+    try:
+        date_obj = datetime.strptime(update.effective_message.text.strip(), "%d/%m/%Y")
+        date_filter = date_obj.strftime("%d/%m/%Y")
+    except ValueError:
+        return await update.effective_message.reply_text("Ngày không hợp lệ. Hãy nhập DD/MM/YYYY, ví dụ 28/10/2026.")
+    ctx.user_data.pop("report_wait_date", None)
+    ctx.user_data["report_date"] = date_filter
+    await update.effective_message.reply_text(f"Đã chọn ngày {date_filter}. Mở /fulluser {uid}, sau đó bấm nút loại lịch sử (các nút ‘hôm nay’ sẽ dùng ngày vừa chọn). Để quay lại hôm nay, chọn lại NGÀY KHÁC và nhập ngày hôm nay.")
+
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("lienket", lien_ket))
 application.add_handler(CommandHandler("rut", rut))
@@ -5541,6 +5695,9 @@ application.add_handler(CommandHandler("baotritc", baotri_tong_cong_cmd))
 application.add_handler(CommandHandler("tatroom", tatroom_cmd))
 
 application.add_handler(CommandHandler("admin", admin_help_cmd))
+application.add_handler(CommandHandler("fulluser", fulluser_cmd))
+application.add_handler(CommandHandler("resetbank", resetbank_cmd))
+application.add_handler(CallbackQueryHandler(admin_report_callback, pattern=r"^admreport_"))
 application.add_handler(CommandHandler("baotrigame", baotrigame_cmd))
 application.add_handler(CommandHandler("trangthai", trangthai_cmd))
 application.add_handler(CommandHandler("user", user_cmd))
@@ -5558,6 +5715,7 @@ application.add_handler(CommandHandler("topcuoc", topcuoc_cmd))
 application.add_handler(CallbackQueryHandler(admin_user_callback, pattern=r"^admuser_"))
 
 application.add_handler(CallbackQueryHandler(handle_callback))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, report_date_input), group=-1)
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
 
 _bg_tasks = []
