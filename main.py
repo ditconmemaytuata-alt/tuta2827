@@ -370,6 +370,10 @@ CREATE TABLE IF NOT EXISTS giftcodes (
     created_at TEXT
 )
 """)
+# Theo dõi mốc/ngày riêng biệt để chống tạo code trùng khi nhiều lần bấm làm mới
+query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS milestone INTEGER")
+query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS claim_date DATE")
+query("CREATE UNIQUE INDEX IF NOT EXISTS uq_tichluy_user_milestone_day ON giftcodes(bound_user, milestone, claim_date) WHERE ctype='TICHLUY' AND bound_user IS NOT NULL AND milestone IS NOT NULL AND claim_date IS NOT NULL")
 
 query("CREATE TABLE IF NOT EXISTS history (user_id BIGINT, amount BIGINT, note TEXT, time TEXT)")
 query("ALTER TABLE history ADD COLUMN IF NOT EXISTS id SERIAL")
@@ -754,7 +758,7 @@ def get_tich_luy_text(uid):
         thieu_nap = MILESTONES[0]["nap"] - dep_today
         thieu_cuoc = MILESTONES[0]["cuoc"] - bet_today
 
-    codes_today = query("SELECT code, used FROM giftcodes WHERE bound_user=%s AND ctype='TICHLUY' AND created_at LIKE %s", (uid, f"%{today_str}%")) or []
+    codes_today = query("SELECT code, used FROM giftcodes WHERE bound_user=%s AND ctype='TICHLUY' AND claim_date=%s ORDER BY milestone", (uid, get_vietnam_time().date())) or []
     da_dung = [c[0] for c in codes_today if c[1] == 1]
     chua_dung = [c[0] for c in codes_today if c[1] == 0]
 
@@ -801,38 +805,57 @@ def get_tich_luy_text(uid):
         f'💡 Khi đạt mốc mới, bot sẽ tự động gửi code. Bấm 🔄 Làm mới để cập nhật giao diện.'
     )
     
-    kb = InlineKeyboardMarkup([[btn("Làm mới", "🔄", callback_data="acc_tich_luy_refresh")]])
+    kb = InlineKeyboardMarkup([[btn("Làm mới", "🔄", callback_data=f"acc_tich_luy_refresh_{uid}")]])
     return msg, kb
 
 async def auto_gen_tich_luy_codes():
-    """Chạy ngầm định kỳ để tự động tạo và gửi code khi user đạt mốc"""
-    today_str = get_vietnam_time().strftime("%Y-%m-%d")
-    # Lấy tất cả user đã nạp hôm nay
-    users = query("SELECT DISTINCT user_id FROM deposit_history WHERE status='success' AND right(\"time\",10)=%s", (get_vietnam_date(),)) or []
-    for u in users:
-        uid = u[0]
+    """Tạo tối đa một code cho mỗi user/mốc/ngày; không được gọi từ nút làm mới."""
+    today = get_vietnam_time().date()
+    today_str = today.strftime("%Y-%m-%d")
+
+    # Code tích lũy chưa dùng sẽ hết hạn và bị dọn sau 00:00 giờ Việt Nam.
+    query("DELETE FROM giftcodes WHERE ctype='TICHLUY' AND used=0 AND expiry IS NOT NULL AND expiry <= %s",
+          (get_vietnam_time(),))
+
+    users = query(
+        'SELECT DISTINCT user_id FROM deposit_history '
+        "WHERE status='success' AND right(\"time\",10)=%s",
+        (get_vietnam_date(),)
+    ) or []
+
+    for (uid,) in users:
         dep_today = deposited_today(uid)
         bet_today, _ = get_bet_stats(uid)
-        
         for m in MILESTONES:
-            if dep_today >= m["nap"] and bet_today >= m["cuoc"]:
-                # Kiểm tra xem đã tạo code mốc này chưa
-                exist = query("SELECT 1 FROM giftcodes WHERE bound_user=%s AND ctype='TICHLUY' AND reward=%s AND created_at LIKE %s", (uid, m["gift"], f"%{today_str}%"))
-                if not exist:
-                    code = gen_gift_code("TICHLUY")
-                    expiry = get_vietnam_time() + timedelta(days=1) # Đến 00:00 ngày mai
-                    expiry = expiry.replace(hour=0, minute=0, second=0, microsecond=0)
-                    query("INSERT INTO giftcodes (code, ctype, reward, wager, expiry, bound_user, used, created_by, created_at) VALUES (%s,'TICHLUY',%s,3,%s,%s,0,0,%s)",
-                          (code, m["gift"], expiry, uid, get_vietnam_datetime_db()))
-                    try:
-                        if _bot_instance:
-                            await _bot_instance.send_message(uid, 
-                                f'{ce("🎁")} <b>CHÚC MỪNG BẠN ĐẠT MỐC {m["moc"]} TÍCH LŨY NẠP!</b>\n'
-                                f'Mã code của bạn: <code>{code}</code>\n'
-                                f'Giá trị: <b>{fmt_money(m["gift"])}đ</b> (Yêu cầu x3 vòng cược)\n'
-                                f'Vui lòng nhập code trước 00:00 hôm nay!', 
-                                parse_mode=ParseMode.HTML)
-                    except: pass
+            if dep_today < m["nap"] or bet_today < m["cuoc"]:
+                continue
+
+            # Chống race condition: unique index + ON CONFLICT đảm bảo mỗi mốc chỉ tạo 1 code/ngày.
+            code = gen_gift_code("TICHLUY")
+            expiry = (get_vietnam_time() + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            inserted = query(
+                "INSERT INTO giftcodes "
+                "(code, ctype, reward, wager, expiry, bound_user, used, created_by, created_at, milestone, claim_date) "
+                "VALUES (%s,'TICHLUY',%s,3,%s,%s,0,0,%s,%s,%s) "
+                "ON CONFLICT DO NOTHING RETURNING code",
+                (code, m["gift"], expiry, uid, get_vietnam_datetime_db(), m["moc"], today)
+            )
+            if not inserted:
+                continue
+            try:
+                if _bot_instance:
+                    await _bot_instance.send_message(
+                        uid,
+                        f'{ce("🎁")} <b>CHÚC MỪNG BẠN ĐẠT MỐC {m["moc"]} TÍCH LŨY NẠP!</b>\n'
+                        f'Mã code của bạn: <code>{code}</code>\n'
+                        f'Giá trị: <b>{fmt_money(m["gift"])}đ</b> (Yêu cầu x3 vòng cược)\n'
+                        f'Code hết hạn lúc 00:00 ngày mai theo giờ Việt Nam.',
+                        parse_mode=ParseMode.HTML
+                    )
+            except Exception as e:
+                print(f"Không gửi được code tích lũy cho {uid}: {e}")
 
 # ============================================================
 # ===== [MỚI] VIP ============================================
@@ -2074,6 +2097,10 @@ def choices_conflict(c1, c2):
     return False
 
 async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""):
+    if check_mt('mt_taixiu_room') and user_id not in ADMIN_IDS:
+        return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
+    if is_game_banned(user_id, 1):
+        return False, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!'
     if not room_betting_enabled.get(group_id, True):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
@@ -2140,6 +2167,10 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
     return True, msg
 
 async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
+    if check_mt('mt_taixiu_room') and user_id not in ADMIN_IDS:
+        return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
+    if is_game_banned(user_id, 1):
+        return False, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!'
     if not room_betting_enabled.get(group_id, True):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
@@ -4633,13 +4664,23 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         tl_text, tl_kb = get_tich_luy_text(uid)
         return await q.message.reply_text(tl_text, reply_markup=tl_kb, parse_mode=ParseMode.HTML)
         
-    if d == "acc_tich_luy_refresh":
-        # Chỉ làm mới giao diện, KHÔNG tạo code ở đây nữa (đã có background task lo)
+    if d == "acc_tich_luy_refresh" or d.startswith("acc_tich_luy_refresh_"):
+        # Làm mới chỉ đọc dữ liệu; không phát sinh code. Chỉ chủ panel được làm mới.
+        if d.startswith("acc_tich_luy_refresh_"):
+            try:
+                owner_id = int(d.rsplit("_", 1)[1])
+            except (ValueError, IndexError):
+                return await q.answer("Nút không hợp lệ.", show_alert=True)
+            if uid != owner_id:
+                return await q.answer("Đây không phải bảng tích lũy của bạn.", show_alert=True)
+        elif q.message and q.message.chat.type != "private":
+            return await q.answer("Vui lòng mở bảng tích lũy riêng trong bot.", show_alert=True)
         await q.answer("🔄 Đang cập nhật...")
         tl_text, tl_kb = get_tich_luy_text(uid)
         try:
             await q.message.edit_text(tl_text, reply_markup=tl_kb, parse_mode=ParseMode.HTML)
-        except: pass
+        except Exception as e:
+            print(f"Không thể cập nhật bảng tích lũy: {e}")
         return
 
     if d == "acc_ket_sat":
@@ -4929,6 +4970,262 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.answer()
 
+
+# ============================================================
+# ADMIN TOOLS: help, per-game maintenance, bot status and user tools
+# ============================================================
+ADMIN_GAMES = {
+    "room": ("mt_taixiu_room", 1, "Tài Xỉu Room"),
+    "xx": ("mt_xucxac_don", 2, "Xúc Xắc Đơn"),
+    "lh": ("mt_longho", 3, "Long Hổ"),
+    "mp": ("mt_minipoker", 4, "Mini Poker"),
+    "bcr": ("mt_baccarat", 5, "Baccarat"),
+    "xd4": ("mt_xocdia4", 7, "Xóc Đĩa 4 Vị"),
+    "md5": ("mt_taixiumd5", 8, "Tài Xỉu MD5"),
+    "bc": ("mt_baucua", 9, "Bầu Cua"),
+    "xd6": ("mt_xocdia6", 10, "Xóc Đĩa 6 Vị"),
+}
+ADMIN_FEATURES = {"nap": ("mt_nap", "Nạp tiền"), "rut": ("mt_rut", "Rút tiền")}
+GAME_ALIAS = {"tx":"room", "taixiu":"room", "xucxac":"xx", "longho":"lh", "minipoker":"mp",
+              "baccarat":"bcr", "xocdia4":"xd4", "txmd5":"md5", "baucua":"bc", "xocdia6":"xd6",
+              "naptien":"nap", "ruttien":"rut"}
+
+def _admin_norm(value):
+    value = (value or "").strip().lower()
+    return GAME_ALIAS.get(value, value)
+
+def _admin_mt_lines():
+    rows = []
+    for alias, (key, _gid, name) in ADMIN_GAMES.items():
+        rows.append(f'{"🔴 BẢO TRÌ" if check_mt(key) else "🟢 HOẠT ĐỘNG"} <code>{alias}</code> — {name}')
+    for alias, (key, name) in ADMIN_FEATURES.items():
+        rows.append(f'{"🔴 BẢO TRÌ" if check_mt(key) else "🟢 HOẠT ĐỘNG"} <code>{alias}</code> — {name}')
+    return "\n".join(rows)
+
+@admin_only
+async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🛠 <b>BẢNG LỆNH QUẢN TRỊ</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        "<b>🧰 Bảo trì</b>\n"
+        "<code>/baotrigame xx lh on</code> — bảo trì nhiều game\n"
+        "<code>/baotrigame all on|off</code> — bảo trì/mở tất cả game + nạp/rút\n"
+        "<code>/baotrigame games on|off</code> — tất cả game\n"
+        "<code>/baotrigame nap rut on|off</code> — nạp/rút\n"
+        "<code>/baotriht</code>, <code>/baotriall on|off</code>, <code>/baotritc on|off</code> — bảo trì hệ thống hiện có\n"
+        "<code>/trangthai</code> — tổng quan bot\n\n"
+        "<b>👥 Người dùng</b>\n<code>/user ID</code> — hồ sơ; <code>/timuser từ_khóa</code> — tìm user\n"
+        "<code>/ban ID</code> / <code>/unban ID</code> — khóa/mở tài khoản\n"
+        "<code>/camgame ID game</code> / <code>/mogame ID game|all</code> — khóa/mở game\n"
+        "<code>/camtn ID nap|rut</code> / <code>/motn ID nap|rut|all</code> — khóa/mở nạp/rút\n"
+        "<code>/dsban</code> — danh sách tài khoản bị khóa\n\n"
+        "<b>💰 Số dư & giao dịch</b>\n<code>/add ID số_tiền</code>, <code>/sub ID số_tiền</code>, <code>/setsd ID số_tiền</code>\n"
+        "<code>/naptien ID số_tiền</code> — nạp tay; <code>/dsnap</code> / <code>/dsrut</code> — danh sách chờ\n\n"
+        "<b>📊 Thống kê / code</b>\n<code>/stats</code>, <code>/all</code>, <code>/thongke</code>, <code>/tong</code>, <code>/check ID</code>, <code>/hisall</code>\n"
+        "<code>/top [n]</code>, <code>/topcuoc [n]</code>, <code>/taocode</code>, <code>/taocodeall</code>, <code>/xoacode</code>, <code>/taogift</code>, <code>/dsgift</code>, <code>/xoagift</code>\n"
+        "<code>/send nội_dung</code>, <code>/rep ID nội_dung</code> — thông báo/liên hệ user\n\n"
+        "<b>Trạng thái bảo trì</b> (🔴 bảo trì, 🟢 hoạt động):\n" + _admin_mt_lines()
+    )
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def baotrigame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    args = ctx.args or []
+    msg = update.effective_message
+    if len(args) < 2 or args[-1].lower() not in ("on", "off"):
+        return await msg.reply_text("Cú pháp: <code>/baotrigame [game...] on|off</code>\nGame: room xx lh mp bcr xd4 md5 bc xd6; tính năng: nap rut; nhóm: games all\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
+    action = args[-1].lower()
+    value = "1" if action == "on" else "0"
+    keys, names, invalid = [], [], []
+    for raw in args[:-1]:
+        key = _admin_norm(raw)
+        if key == "all":
+            keys.extend(v[0] for v in ADMIN_GAMES.values()); names.extend(v[2] for v in ADMIN_GAMES.values())
+            keys.extend(v[0] for v in ADMIN_FEATURES.values()); names.extend(v[1] for v in ADMIN_FEATURES.values())
+        elif key == "games":
+            keys.extend(v[0] for v in ADMIN_GAMES.values()); names.extend(v[2] for v in ADMIN_GAMES.values())
+        elif key in ADMIN_GAMES:
+            keys.append(ADMIN_GAMES[key][0]); names.append(ADMIN_GAMES[key][2])
+        elif key in ADMIN_FEATURES:
+            keys.append(ADMIN_FEATURES[key][0]); names.append(ADMIN_FEATURES[key][1])
+        else:
+            invalid.append(raw)
+    if invalid:
+        return await msg.reply_text("Không nhận diện: <code>" + html.escape(", ".join(invalid)) + "</code>", parse_mode=ParseMode.HTML)
+    for key in set(keys):
+        set_setting(key, value)
+    state = "ĐÃ BẬT BẢO TRÌ" if value == "1" else "ĐÃ MỞ LẠI"
+    await msg.reply_text(f"🛠 <b>{state}</b>\n" + html.escape(", ".join(dict.fromkeys(names))) + "\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
+
+@admin_only
+async def trangthai_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    def scalar(sql, args=()):
+        rows = query(sql, args) or []
+        return int(rows[0][0] or 0) if rows else 0
+    total_users = scalar("SELECT COUNT(*) FROM users")
+    total_balance = scalar("SELECT COALESCE(SUM(balance),0) FROM users")
+    banned_users = scalar("SELECT COUNT(*) FROM banned")
+    pending_deposits = scalar("SELECT COUNT(*) FROM deposit_history WHERE status='pending'")
+    pending_withdrawals = scalar("SELECT COUNT(*) FROM withdraw_history WHERE status='pending'")
+    text = ("📊 <b>TRẠNG THÁI BOT</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"Bảo trì hệ thống: <b>{'🔴 BẬT' if is_system_maintenance() else '🟢 TẮT'}</b>\n"
+            f"Bảo trì toàn bộ: <b>{'🔴 BẬT' if is_total_maintenance() else '🟢 TẮT'}</b>\n"
+            f"Tổng user: <code>{total_users}</code> | Bị khóa: <code>{banned_users}</code>\n"
+            f"Tổng số dư: <code>{fmt_money(total_balance)}đ</code>\n"
+            f"Nạp chờ: <code>{pending_deposits}</code> | Rút chờ: <code>{pending_withdrawals}</code>\n\n"
+            "<b>Game / tính năng</b>\n" + _admin_mt_lines())
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0])
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text("Cú pháp: <code>/user ID</code>", parse_mode=ParseMode.HTML)
+    rows = query("SELECT balance, refs, bank, stk, name, total_bet FROM users WHERE user_id=%s", (target,))
+    if not rows:
+        return await update.effective_message.reply_text("Không tìm thấy user.")
+    bal, refs, bank, stk, name, total_bet = rows[0]
+    dep = total_deposited(target)
+    text = (f"👤 <b>HỒ SƠ USER</b> <code>{target}</code>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"Trạng thái: <b>{'🔴 BỊ KHÓA' if is_banned(target) else '🟢 Hoạt động'}</b>\n"
+            f"Số dư: <code>{fmt_money(int(bal or 0))}đ</code>\nTổng nạp: <code>{fmt_money(dep)}đ</code>\n"
+            f"Tổng cược: <code>{fmt_money(int(total_bet or 0))}đ</code>\nSố lượt mời: <code>{refs or 0}</code>\n"
+            f"Ngân hàng: <code>{html.escape(str(bank or '-'))}</code>\nSTK: <code>{html.escape(str(stk or '-'))}</code>\n"
+            f"Tên: <code>{html.escape(str(name or '-'))}</code>")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 Khóa", callback_data=f"admuser_ban_{target}"), InlineKeyboardButton("🔓 Mở khóa", callback_data=f"admuser_unban_{target}")]])
+    await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def timuser_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        return await update.effective_message.reply_text("Cú pháp: <code>/timuser ID/STK/tên</code>", parse_mode=ParseMode.HTML)
+    kw = " ".join(ctx.args).strip(); like = f"%{kw}%"
+    rows = query("SELECT user_id,balance,bank,stk,name FROM users WHERE CAST(user_id AS TEXT) LIKE %s OR COALESCE(stk,'') LIKE %s OR COALESCE(name,'') ILIKE %s ORDER BY balance DESC LIMIT 15", (like, like, like)) or []
+    if not rows:
+        return await update.effective_message.reply_text("Không tìm thấy user phù hợp.")
+    text = "🔎 <b>KẾT QUẢ TÌM USER</b>\n\n" + "\n".join(f"<code>{r[0]}</code> | {fmt_money(int(r[1] or 0))}đ | {html.escape(str(r[2] or '-'))} {html.escape(str(r[3] or '-'))} | {html.escape(str(r[4] or '-'))}" for r in rows)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def camgame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0]); game = _admin_norm(ctx.args[1]); gid = ADMIN_GAMES[game][1]
+    except (IndexError, ValueError, KeyError):
+        return await update.effective_message.reply_text("Cú pháp: <code>/camgame ID room|xx|lh|mp|bcr|xd4|md5|bc|xd6</code>", parse_mode=ParseMode.HTML)
+    query("INSERT INTO banned_games(user_id,game_id) VALUES(%s,%s) ON CONFLICT DO NOTHING", (target,gid))
+    await update.effective_message.reply_text(f"Đã cấm user <code>{target}</code> chơi {html.escape(ADMIN_GAMES[game][2])}.", parse_mode=ParseMode.HTML)
+
+@admin_only
+async def mogame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0]); game = _admin_norm(ctx.args[1])
+        if game != "all" and game not in ADMIN_GAMES: raise ValueError
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text("Cú pháp: <code>/mogame ID game|all</code>", parse_mode=ParseMode.HTML)
+    if game == "all": query("DELETE FROM banned_games WHERE user_id=%s", (target,)); label = "tất cả game"
+    else: query("DELETE FROM banned_games WHERE user_id=%s AND game_id=%s", (target, ADMIN_GAMES[game][1])); label = ADMIN_GAMES[game][2]
+    await update.effective_message.reply_text(f"Đã gỡ cấm {html.escape(label)} cho <code>{target}</code>.", parse_mode=ParseMode.HTML)
+
+@admin_only
+async def camtn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0]); feature = _admin_norm(ctx.args[1])
+        if feature not in ("nap", "rut"): raise ValueError
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text("Cú pháp: <code>/camtn ID nap|rut</code>", parse_mode=ParseMode.HTML)
+    query("INSERT INTO banned_features(user_id,feature) VALUES(%s,%s) ON CONFLICT DO NOTHING", (target, feature))
+    await update.effective_message.reply_text(f"Đã khóa {feature.upper()} cho <code>{target}</code>.", parse_mode=ParseMode.HTML)
+
+@admin_only
+async def motn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0]); feature = _admin_norm(ctx.args[1])
+        if feature not in ("nap", "rut", "all"): raise ValueError
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text("Cú pháp: <code>/motn ID nap|rut|all</code>", parse_mode=ParseMode.HTML)
+    if feature == "all": query("DELETE FROM banned_features WHERE user_id=%s", (target,))
+    else: query("DELETE FROM banned_features WHERE user_id=%s AND feature=%s", (target, feature))
+    await update.effective_message.reply_text(f"Đã mở khóa {feature.upper()} cho <code>{target}</code>.", parse_mode=ParseMode.HTML)
+
+@admin_only
+async def dsban_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = query("SELECT b.user_id,COALESCE(u.balance,0) FROM banned b LEFT JOIN users u ON u.user_id=b.user_id ORDER BY b.user_id LIMIT 100") or []
+    text = "🚫 <b>USER BỊ KHÓA</b>\n\n" + ("\n".join(f"<code>{r[0]}</code> | {fmt_money(int(r[1] or 0))}đ" for r in rows) if rows else "Chưa có user bị khóa.")
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def dsrut_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = query("SELECT w.user_id,w.amount,w.time,u.bank,u.stk,u.name FROM withdraw_history w LEFT JOIN users u ON u.user_id=w.user_id WHERE w.status='pending' ORDER BY w.id LIMIT 10") or []
+    if not rows:
+        return await update.effective_message.reply_text("✅ Không có yêu cầu rút đang chờ.")
+    for uid_, amount, time_, bank, stk, name in rows:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Duyệt", callback_data=f"ok_{uid_}_{amount}"), InlineKeyboardButton("❌ Từ chối", callback_data=f"no_{uid_}_{amount}")]])
+        await update.effective_message.reply_text(f"📤 <b>RÚT CHỜ DUYỆT</b>\nID: <code>{uid_}</code>\nSố tiền: <code>{fmt_money(int(amount or 0))}đ</code>\nNgân hàng: <code>{html.escape(str(bank or '-'))}</code>\nSTK: <code>{html.escape(str(stk or '-'))}</code>\nTên: <code>{html.escape(str(name or '-'))}</code>\nThời gian: {html.escape(str(time_ or '-'))}", reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def dsnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = query("SELECT user_id,amount,time FROM deposit_history WHERE status='pending' ORDER BY id LIMIT 10") or []
+    if not rows:
+        return await update.effective_message.reply_text("✅ Không có yêu cầu nạp đang chờ.")
+    for uid_, amount, time_ in rows:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Duyệt", callback_data=f"app_dep_{uid_}_{amount}"), InlineKeyboardButton("❌ Từ chối", callback_data=f"rej_dep_{uid_}_{amount}")]])
+        await update.effective_message.reply_text(f"📥 <b>NẠP CHỜ DUYỆT</b>\nID: <code>{uid_}</code>\nSố tiền: <code>{fmt_money(int(amount or 0))}đ</code>\nThời gian: {html.escape(str(time_ or '-'))}", reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def setsd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0]); raw = ctx.args[1].lower().replace(",", "").replace(".", "").replace("đ", "")
+        mult = 1000 if raw.endswith("k") else (1000000 if raw.endswith("m") else 1)
+        amount = int(float(raw[:-1]) * mult) if mult != 1 else int(raw)
+        if amount < 0: raise ValueError
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text("Cú pháp: <code>/setsd ID số_tiền</code> (vd 500k)", parse_mode=ParseMode.HTML)
+    if not query("SELECT 1 FROM users WHERE user_id=%s", (target,)):
+        return await update.effective_message.reply_text("Không tìm thấy user.")
+    old = get_balance(target); diff = amount - old
+    if diff: add_money(target, diff, "Admin điều chỉnh số dư")
+    await update.effective_message.reply_text(f"Đã cập nhật <code>{target}</code>: {fmt_money(old)}đ → {fmt_money(amount)}đ", parse_mode=ParseMode.HTML)
+
+@admin_only
+async def top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try: n = max(1, min(50, int(ctx.args[0]))) if ctx.args else 10
+    except ValueError: n = 10
+    rows = query("SELECT user_id,balance FROM users ORDER BY balance DESC LIMIT %s", (n,)) or []
+    text = f"🏆 <b>TOP {n} SỐ DƯ</b>\n\n" + ("\n".join(f"{i}. <code>{r[0]}</code> — {fmt_money(int(r[1] or 0))}đ" for i,r in enumerate(rows,1)) or "Chưa có dữ liệu.")
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def topcuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try: n = max(1, min(50, int(ctx.args[0]))) if ctx.args else 10
+    except ValueError: n = 10
+    rows = query("SELECT user_id,COALESCE(total_bet,0) FROM users ORDER BY total_bet DESC NULLS LAST LIMIT %s", (n,)) or []
+    text = f"🔥 <b>TOP {n} TỔNG CƯỢC</b>\n\n" + ("\n".join(f"{i}. <code>{r[0]}</code> — {fmt_money(int(r[1] or 0))}đ" for i,r in enumerate(rows,1)) or "Chưa có dữ liệu.")
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def admin_user_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS:
+        return await q.answer("Không có quyền!", show_alert=True)
+    try: action, target = q.data.split("_")[1:3]; target = int(target)
+    except (ValueError, IndexError): return await q.answer("Nút không hợp lệ.", show_alert=True)
+    if action == "ban":
+        query("INSERT INTO banned(user_id) VALUES(%s) ON CONFLICT DO NOTHING", (target,)); msg = "Đã khóa tài khoản."
+    elif action == "unban":
+        query("DELETE FROM banned WHERE user_id=%s", (target,)); msg = "Đã mở khóa tài khoản."
+    else: return await q.answer()
+    await q.answer(msg, show_alert=True)
+    rows = query("SELECT balance,refs,bank,stk,name,total_bet FROM users WHERE user_id=%s", (target,))
+    if rows:
+        bal, refs, bank, stk, name, total_bet = rows[0]
+        text = (f"👤 <b>HỒ SƠ USER</b> <code>{target}</code>\n"
+                f"Trạng thái: <b>{'🔴 BỊ KHÓA' if is_banned(target) else '🟢 Hoạt động'}</b>\n"
+                f"Số dư: <code>{fmt_money(int(bal or 0))}đ</code>\nTổng nạp: <code>{fmt_money(total_deposited(target))}đ</code>\n"
+                f"Tổng cược: <code>{fmt_money(int(total_bet or 0))}đ</code>")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 Khóa", callback_data=f"admuser_ban_{target}"), InlineKeyboardButton("🔓 Mở khóa", callback_data=f"admuser_unban_{target}")]])
+        try: await q.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception: pass
+
+
 application = ApplicationBuilder().token(TOKEN).build()
 
 application.add_handler(CommandHandler("start", start))
@@ -4992,6 +5289,23 @@ application.add_handler(CommandHandler("baotriht", baotri_he_thong_cmd))
 application.add_handler(CommandHandler("baotriall", baotri_hethong_cmd))
 application.add_handler(CommandHandler("baotritc", baotri_tong_cong_cmd))
 application.add_handler(CommandHandler("tatroom", tatroom_cmd))
+
+application.add_handler(CommandHandler("admin", admin_help_cmd))
+application.add_handler(CommandHandler("baotrigame", baotrigame_cmd))
+application.add_handler(CommandHandler("trangthai", trangthai_cmd))
+application.add_handler(CommandHandler("user", user_cmd))
+application.add_handler(CommandHandler("timuser", timuser_cmd))
+application.add_handler(CommandHandler("camgame", camgame_cmd))
+application.add_handler(CommandHandler("mogame", mogame_cmd))
+application.add_handler(CommandHandler("camtn", camtn_cmd))
+application.add_handler(CommandHandler("motn", motn_cmd))
+application.add_handler(CommandHandler("dsban", dsban_cmd))
+application.add_handler(CommandHandler("dsrut", dsrut_cmd))
+application.add_handler(CommandHandler("dsnap", dsnap_cmd))
+application.add_handler(CommandHandler("setsd", setsd_cmd))
+application.add_handler(CommandHandler("top", top_cmd))
+application.add_handler(CommandHandler("topcuoc", topcuoc_cmd))
+application.add_handler(CallbackQueryHandler(admin_user_callback, pattern=r"^admuser_"))
 
 application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
