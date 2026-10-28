@@ -1,29 +1,4 @@
-bạn sửa phần ‘nhận thưởng’ ở phần tài khoản thành như này nhé ‘. 🎁 TRUNG TÂM NHẬN THƯỞNG
-Theo dõi tiến độ và khoản thưởng dự kiến của bạn
-
-🎯 HOÀN CƯỢC NGÀY
-Doanh số: 0
-❌ Chưa đạt mốc tối thiểu 100.000đ
-⏳ Còn 06:03:02
-
-🚀 HOÀN CƯỢC TUẦN
-Doanh số: 0
-❌ Chưa đạt mốc tối thiểu 100.000đ
-⏳ Còn 4 ngày 06:03:02
-
-📉 HOÀN THUA NGÀY
-Thua ròng: 0
-❌ Chưa đạt mốc tối thiểu 100.000đ
-⏳ Còn 06:03:02
-
-📆 HOÀN THUA TUẦN
-Thua ròng: 0
-❌ Chưa đạt mốc tối thiểu 100.000đ
-⏳ Còn 4 ngày 06:03:02
-
-📌 Ngày chốt lúc 23:59. Tuần chung toàn hệ thống: Thứ Hai 00:00 — Chủ Nhật 23:59.
-💡 Khi có khoản thưởng đã chốt, nút Nhận thưởng sẽ tự động xuất hiện bên dưới.
-🧾 Số liệu chỉ tính các giao dịch và cược hợp lệ đã hoàn tất. cho emonj premium vào nhé khi đến cuối ngày sẽ tự động chốt thường và có nút nhận ở dưới nhé cứ hoàn 2% cho tổng cược ngày nhé và tổng cược tuần sẽ cuối tuần sẽ tổng kết lại và nhận của cuối tuần nhé gửi toàn bộ code hoàn chỉnh cho tôi from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
 import psycopg2
@@ -350,6 +325,47 @@ CREATE TABLE IF NOT EXISTS tich_luy_nap (
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_bet BIGINT DEFAULT 0")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS rate_bonus INTEGER DEFAULT NULL")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_linked INTEGER DEFAULT 0")
+query("ALTER TABLE users ADD COLUMN IF NOT EXISTS vip_spent BIGINT DEFAULT 0")
+query("""
+CREATE TABLE IF NOT EXISTS bet_daily (
+    user_id BIGINT,
+    day DATE,
+    bet BIGINT DEFAULT 0,
+    win BIGINT DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS rewards (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    rtype TEXT,
+    period TEXT,
+    base BIGINT DEFAULT 0,
+    amount BIGINT DEFAULT 0,
+    claimed INTEGER DEFAULT 0,
+    created_at TEXT,
+    claimed_at TEXT,
+    UNIQUE (user_id, rtype, period)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS giftcodes (
+    code TEXT PRIMARY KEY,
+    ctype TEXT,
+    reward BIGINT,
+    wager INTEGER DEFAULT 1,
+    expiry TIMESTAMPTZ,
+    require_deposit INTEGER DEFAULT 0,
+    required_amount BIGINT DEFAULT 0,
+    bound_user BIGINT,
+    used INTEGER DEFAULT 0,
+    used_by BIGINT,
+    used_at TEXT,
+    created_by BIGINT,
+    created_at TEXT
+)
+""")
 
 query("CREATE TABLE IF NOT EXISTS history (user_id BIGINT, amount BIGINT, note TEXT, time TEXT)")
 # Thêm cột id tự tăng để sắp xếp lịch sử đúng thứ tự (cột time là chữ nên ORDER BY time bị sai)
@@ -468,6 +484,8 @@ def add_money(uid, amt, note):
     now_str = get_vietnam_datetime_db()
     query("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amt, uid))
     query("INSERT INTO history(user_id, amount, note, time) VALUES(%s,%s,%s,%s)", (uid, amt, note, now_str))
+    if amt > 0 and note.startswith(WIN_NOTE_PREFIXES):
+        record_daily(uid, win=amt)
 
 def sub_money(uid, amt, note="withdraw"):
     get_user(uid)
@@ -477,8 +495,10 @@ def sub_money(uid, amt, note="withdraw"):
     now_str = get_vietnam_datetime_db()
     query("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amt, uid))
     query("INSERT INTO history(user_id, amount, note, time) VALUES(%s,%s,%s,%s)", (uid, -amt, note, now_str))
-    if note != "Rút tiền" and note != "withdraw" and "Admin" not in note and "Chuyển tiền" not in note:
+    if (note != "Rút tiền" and note != "withdraw" and "Admin" not in note
+            and "Chuyển tiền" not in note and not note.startswith("Mua giftcode")):
         query("UPDATE users SET total_bet=total_bet+%s WHERE user_id=%s", (amt, uid))
+        record_daily(uid, bet=amt)
         update_bet_progress(uid, amt)
     return True
 
@@ -593,6 +613,961 @@ def deposit_menu_content(uid):
 
 def format_money(amount):
     return f"{amount:,}".replace(",", ".")
+
+# ============================================================
+# ===== [MỚI] TIỆN ÍCH CÀI ĐẶT / THỐNG KÊ CƯỢC THEO NGÀY ======
+# ============================================================
+def get_setting(key, default=None):
+    res = query("SELECT value FROM settings WHERE key=%s", (key,))
+    return res[0][0] if res else default
+
+def set_setting(key, value):
+    query("INSERT INTO settings(key, value) VALUES(%s, %s) "
+          "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (key, str(value)))
+
+WIN_NOTE_PREFIXES = ("Thắng", "Nổ hũ", "Hoàn tiền Long Hổ", "Hoàn tiền Baccarat")
+
+def record_daily(uid, bet=0, win=0):
+    """Ghi cược / tiền thắng theo ngày (giờ Việt Nam) để tính hoàn cược - hoàn thua."""
+    day = get_vietnam_time().date()
+    query(
+        "INSERT INTO bet_daily(user_id, day, bet, win) VALUES(%s,%s,%s,%s) "
+        "ON CONFLICT (user_id, day) DO UPDATE SET "
+        "bet=bet_daily.bet+EXCLUDED.bet, win=bet_daily.win+EXCLUDED.win",
+        (uid, day, bet, win))
+
+def backfill_bet_daily():
+    """Chạy 1 lần: dựng bảng bet_daily từ lịch sử cũ (8 ngày gần nhất)."""
+    if get_setting('bet_daily_backfill') == '1':
+        return
+    sql = """
+    INSERT INTO bet_daily(user_id, day, bet, win)
+    SELECT user_id, d,
+           COALESCE(SUM(CASE WHEN amount<0 AND note LIKE 'Cược%' THEN -amount ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN amount>0 AND (note LIKE 'Thắng%' OR note LIKE 'Nổ hũ%'
+                     OR note LIKE 'Hoàn tiền Long Hổ%' OR note LIKE 'Hoàn tiền Baccarat%')
+                     THEN amount ELSE 0 END),0)
+    FROM (
+        SELECT user_id, amount, note,
+               CASE WHEN "time" ~ '[0-9]{2}/[0-9]{2}/[0-9]{4}$'
+                    THEN to_date(right("time",10),'DD/MM/YYYY') END AS d
+        FROM history
+    ) h
+    WHERE d >= (current_date - 8)
+    GROUP BY user_id, d
+    ON CONFLICT (user_id, day) DO NOTHING
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        conn.commit()
+        set_setting('bet_daily_backfill', '1')
+        print("✅ Đã dựng bet_daily từ lịch sử cũ")
+    except Exception as e:
+        conn.rollback()
+        print(f"Backfill bet_daily lỗi: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+def week_start(d):
+    return d - timedelta(days=d.weekday())
+
+def period_stats(uid, d1, d2):
+    res = query("SELECT COALESCE(SUM(bet),0), COALESCE(SUM(win),0) FROM bet_daily "
+                "WHERE user_id=%s AND day BETWEEN %s AND %s", (uid, d1, d2))
+    if not res:
+        return 0, 0
+    return int(res[0][0] or 0), int(res[0][1] or 0)
+
+def get_bet_stats(uid):
+    """(cược hôm nay, cược tuần này)"""
+    today = get_vietnam_time().date()
+    ws = week_start(today)
+    day_bet, _ = period_stats(uid, today, today)
+    week_bet, _ = period_stats(uid, ws, ws + timedelta(days=6))
+    return day_bet, week_bet
+
+def deposited_today(uid):
+    today_str = get_vietnam_date()
+    res = query("SELECT COALESCE(SUM(amount),0) FROM deposit_history "
+                "WHERE user_id=%s AND status='success' AND right(\"time\",10)=%s", (uid, today_str))
+    return int(res[0][0] or 0) if res else 0
+
+def total_deposited(uid):
+    res = query("SELECT COALESCE(SUM(amount),0) FROM deposit_history WHERE user_id=%s AND status='success'", (uid,))
+    return int(res[0][0] or 0) if res else 0
+
+def fmt_duration(minutes):
+    if minutes >= 1440 and minutes % 1440 == 0:
+        return f"{minutes // 1440} ngày"
+    if minutes >= 60 and minutes % 60 == 0:
+        return f"{minutes // 60} tiếng"
+    return f"{minutes} phút"
+
+async def safe_answer(q, text=None, alert=False):
+    try:
+        await q.answer(text, show_alert=alert) if text else await q.answer()
+    except Exception:
+        pass
+
+# ============================================================
+# ===== [MỚI] VIP ============================================
+# ============================================================
+VIP_POINT_BET = 300000
+# (cấp, emoji, tên, điểm yêu cầu, 1 điểm = ? đ)
+VIP_LEVELS = [
+    (0, "🥉", "Đồng", 0, 0),
+    (1, "🥈", "Bạc", 10, 100),
+    (2, "🥇", "Vàng", 50, 200),
+    (3, "⭐", "Bạch Kim", 100, 300),
+    (4, "💎", "Kim Cương", 500, 400),
+    (5, "🏆", "Cao Thủ", 1000, 500),
+    (6, "⚔️", "Chiến Tướng", 5000, 600),
+    (7, "💎", "Đại Tướng", 10000, 700),
+    (8, "👑", "Huyền Thoại", 50000, 800),
+    (9, "💰", "Chí Tôn", 100000, 1000),
+]
+
+def get_vip_level(points):
+    lvl = 0
+    for item in VIP_LEVELS:
+        if points >= item[3]:
+            lvl = item[0]
+    return lvl
+
+def vip_info(uid):
+    get_user(uid)
+    res = query("SELECT COALESCE(total_bet,0), COALESCE(vip_spent,0) FROM users WHERE user_id=%s", (uid,))
+    total_bet, spent = (int(res[0][0]), int(res[0][1])) if res else (0, 0)
+    points = total_bet // VIP_POINT_BET
+    lvl = get_vip_level(points)
+    redeemable = max(0, points - spent) if lvl >= 1 else 0
+    return {"points": points, "lvl": lvl, "spent": spent,
+            "redeemable": redeemable, "rate": VIP_LEVELS[lvl][4]}
+
+def vip_screen(uid):
+    info = vip_info(uid)
+    lvl = info["lvl"]
+    _, icon, name, _, _ = VIP_LEVELS[lvl]
+    if lvl < 9:
+        nxt = VIP_LEVELS[lvl + 1]
+        progress = f'{info["points"]}/{nxt[3]} up VIP {nxt[0]}'
+    else:
+        progress = f'{info["points"]} (cấp tối đa)'
+
+    level_lines = "\n".join(f'VIP {v[0]}: {ce(v[1])} ({v[2]})' for v in VIP_LEVELS)
+    need_lines = "\n".join(f'VIP {v[0]}: {v[3]}' for v in VIP_LEVELS[1:])
+    rate_lines = "\n".join(f'VIP {v[0]}: 1 điểm = {fmt_money(v[4])}' for v in VIP_LEVELS[1:])
+
+    text = (
+        f'{ce("👑")} <b>Cấp VIP hiện tại:</b> {ce(icon)} ({name})\n'
+        f'{ce("🚀")} <b>Điểm VIP:</b> <b>{progress}</b>\n'
+        f'{ce("🖐")} <b>Số điểm VIP có thể đổi:</b> <b>{fmt_money(info["redeemable"])}</b>\n\n'
+        f'Với mỗi <b>300K</b> tiền cược, bạn nhận <b>1 điểm VIP</b>.\n'
+        f'Điểm này dùng để xét tăng cấp VIP và đổi thưởng.\n\n'
+        f'{ce("💎")} Tỉ lệ quy đổi: đạt VIP 1 để mở đổi điểm (VIP 1: 1 điểm = 100đ)\n\n'
+        f'{ce("🏆")} <b>CẤP VIP VÀ BIỂU TƯỢNG</b>\n{level_lines}\n\n'
+        f'{ce("📌")} <b>ĐIỂM YÊU CẦU ĐỂ ĐẠT CẤP VIP</b>\n{need_lines}\n\n'
+        f'{ce("💎")} <b>TỈ LỆ QUY ĐỔI ĐIỂM</b>\n{rate_lines}\n\n'
+        f'{ce("❤️")} <b>Cách đổi điểm VIP</b>\n'
+        f'<code>/doidiemvip [số điểm]</code>\n'
+        f'VD: <code>/doidiemvip 100</code>'
+    )
+    kb = InlineKeyboardMarkup([[btn("Đổi điểm VIP", "🪙", callback_data="vip_doi")]])
+    return text, kb
+
+def vip_exchange(uid, pts):
+    """Đổi điểm VIP -> tiền. Trả về (ok, html)."""
+    info = vip_info(uid)
+    if info["lvl"] < 1:
+        return False, f'{ce("❌")} Bạn cần đạt <b>VIP 1</b> (10 điểm VIP) để mở tính năng đổi điểm.'
+    if pts <= 0:
+        return False, f'{ce("❌")} Số điểm đổi phải lớn hơn 0.'
+    if pts > info["redeemable"]:
+        return False, (f'{ce("❌")} Bạn chỉ có thể đổi tối đa <b>{fmt_money(info["redeemable"])}</b> điểm VIP.')
+    r = query(
+        "UPDATE users SET vip_spent=COALESCE(vip_spent,0)+%s WHERE user_id=%s "
+        "AND (COALESCE(total_bet,0)/%s - COALESCE(vip_spent,0)) >= %s RETURNING vip_spent",
+        (pts, uid, VIP_POINT_BET, pts))
+    if not r:
+        return False, f'{ce("❌")} Không đủ điểm VIP để đổi, vui lòng thử lại.'
+    money = pts * info["rate"]
+    add_money(uid, money, f"Đổi {pts} điểm VIP (VIP {info['lvl']})")
+    return True, (
+        f'{ce("🎉")} <b>ĐỔI ĐIỂM VIP THÀNH CÔNG!</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🖐")} Điểm đã đổi: <code>{fmt_money(pts)}</code>\n'
+        f'{ce("💎")} Tỉ lệ: <code>1 điểm = {fmt_money(info["rate"])}đ</code> (VIP {info["lvl"]})\n'
+        f'{ce("💰")} Nhận được: <code>+{fmt_money(money)}đ</code>\n'
+        f'{ce("🏆")} Điểm còn lại: <code>{fmt_money(info["redeemable"] - pts)}</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>'
+    )
+
+async def doi_diem_vip_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg_obj = update.effective_message
+    uid = update.effective_user.id
+    if is_banned(uid):
+        return
+    args = ctx.args or []
+    info = vip_info(uid)
+    if not args:
+        return await msg_obj.reply_text(
+            f'{ce("💎")} <b>Cách đổi điểm VIP:</b>\n'
+            f'<code>/doidiemvip [số điểm]</code>\n'
+            f'VD: <code>/doidiemvip 100</code> hoặc <code>/doidiemvip all</code>\n\n'
+            f'{ce("🖐")} Điểm có thể đổi: <b>{fmt_money(info["redeemable"])}</b>',
+            parse_mode=ParseMode.HTML)
+    arg = args[0].lower()
+    if arg in ("all", "max"):
+        pts = info["redeemable"]
+    else:
+        try:
+            pts = int(arg.replace(",", "").replace(".", ""))
+        except ValueError:
+            return await msg_obj.reply_text(f'{ce("❌")} Số điểm không hợp lệ! VD: <code>/doidiemvip 100</code>', parse_mode=ParseMode.HTML)
+    ok, text = vip_exchange(uid, pts)
+    await msg_obj.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def vip_exchange_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE, d: str):
+    q = update.callback_query
+    uid = q.from_user.id
+    info = vip_info(uid)
+    if d == "vip_doi":
+        if info["lvl"] < 1:
+            return await safe_answer(q, "Bạn cần đạt VIP 1 (10 điểm VIP) để mở đổi điểm!", True)
+        if info["redeemable"] <= 0:
+            return await safe_answer(q, "Bạn chưa có điểm VIP nào để đổi!", True)
+        await safe_answer(q)
+        money = info["redeemable"] * info["rate"]
+        kb = InlineKeyboardMarkup([[btn(f"Đổi tất cả {fmt_money(info['redeemable'])} điểm", "🪙", callback_data="vip_doi_all")]])
+        return await q.message.reply_text(
+            f'{ce("🪙")} <b>ĐỔI ĐIỂM VIP</b>\n'
+            f'{ce("🖐")} Điểm có thể đổi: <b>{fmt_money(info["redeemable"])}</b>\n'
+            f'{ce("💎")} Tỉ lệ: <code>1 điểm = {fmt_money(info["rate"])}đ</code>\n'
+            f'{ce("💰")} Tổng nhận: <code>{fmt_money(money)}đ</code>\n\n'
+            f'Đổi một phần: <code>/doidiemvip [số điểm]</code>',
+            reply_markup=kb, parse_mode=ParseMode.HTML)
+    # vip_doi_all
+    ok, text = vip_exchange(uid, info["redeemable"])
+    await safe_answer(q)
+    try:
+        await q.message.edit_text(text, parse_mode=ParseMode.HTML)
+    except Exception:
+        await q.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# ============================================================
+# ===== [MỚI] TRUNG TÂM NHẬN THƯỞNG ==========================
+# ============================================================
+MIN_REWARD_BASE = 100000
+# (mốc tối thiểu, % hoàn) - hoàn thua theo bậc
+LOSS_TIERS_DAY = [(1_000_000_000, 12), (100_000_000, 8), (10_000_000, 6), (1_000_000, 4), (100_000, 2)]
+LOSS_TIERS_WEEK = [(1_000_000_000, 5), (100_000_000, 3), (10_000_000, 2.5), (1_000_000, 2), (100_000, 1)]
+
+RTYPE_LABEL = {
+    "cuoc_ngay": ("HOÀN CƯỢC NGÀY", "🔥"),
+    "cuoc_tuan": ("HOÀN CƯỢC TUẦN", "🚀"),
+    "thua_ngay": ("HOÀN THUA NGÀY", "📉"),
+    "thua_tuan": ("HOÀN THUA TUẦN", "🗓"),
+}
+
+def get_rebate_pct(kind):
+    """kind: 'ngay' | 'tuan' -> % hoàn cược (mặc định 2%)."""
+    try:
+        return float(get_setting(f"rebate_{kind}_pct", "2"))
+    except (TypeError, ValueError):
+        return 2.0
+
+def fmt_pct(p):
+    return f"{p:g}"
+
+def reward_calc(rtype, bet, win):
+    """Trả về (doanh số/thua ròng, tiền hoàn dự kiến)."""
+    if rtype.startswith("cuoc"):
+        base = bet
+        if base < MIN_REWARD_BASE:
+            return base, 0
+        pct = get_rebate_pct("ngay" if rtype == "cuoc_ngay" else "tuan")
+        return base, int(base * pct / 100)
+    base = max(0, bet - win)
+    if base < MIN_REWARD_BASE:
+        return base, 0
+    tiers = LOSS_TIERS_DAY if rtype == "thua_ngay" else LOSS_TIERS_WEEK
+    for threshold, pct in tiers:
+        if base >= threshold:
+            return base, int(base * pct / 100)
+    return base, 0
+
+def fmt_remaining(delta):
+    total = max(0, int(delta.total_seconds()))
+    days, rem = divmod(total, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    if days:
+        return f"{days} ngày {h:02d}:{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+def _end_of_day(d):
+    return VIETNAM_TZ.localize(datetime.combine(d, datetime.max.time().replace(microsecond=0)))
+
+def fmt_period(rtype, period):
+    try:
+        d = datetime.strptime(period, "%Y-%m-%d").date()
+    except Exception:
+        return period
+    if rtype.endswith("ngay"):
+        return d.strftime("%d/%m")
+    return f"{d.strftime('%d/%m')} - {(d + timedelta(days=6)).strftime('%d/%m')}"
+
+def _reward_card(rtype, label, value, amount, remain):
+    title, icon = RTYPE_LABEL[rtype]
+    if amount > 0:
+        status = f'{ce("✅")} Đạt mốc • Dự kiến hoàn: <b>{fmt_money(amount)}đ</b>'
+    else:
+        status = f'{ce("❌")} Chưa đạt mốc tối thiểu <b>{fmt_money(MIN_REWARD_BASE)}đ</b>'
+    return (f'<blockquote>{ce(icon)} <b>{title}</b>\n'
+            f'{label}: {fmt_money(value)}\n'
+            f'{status}\n'
+            f'{ce("⌛")} Còn {remain}</blockquote>')
+
+def reward_center(uid):
+    now = get_vietnam_time()
+    today = now.date()
+    ws = week_start(today)
+    we = ws + timedelta(days=6)
+    d_bet, d_win = period_stats(uid, today, today)
+    w_bet, w_win = period_stats(uid, ws, we)
+    day_left = fmt_remaining(_end_of_day(today) - now)
+    week_left = fmt_remaining(_end_of_day(we) - now)
+
+    cards = []
+    for rtype, bet, win, left, label in (
+        ("cuoc_ngay", d_bet, d_win, day_left, "Doanh số"),
+        ("cuoc_tuan", w_bet, w_win, week_left, "Doanh số"),
+        ("thua_ngay", d_bet, d_win, day_left, "Thua ròng"),
+        ("thua_tuan", w_bet, w_win, week_left, "Thua ròng"),
+    ):
+        value, amount = reward_calc(rtype, bet, win)
+        cards.append(_reward_card(rtype, label, value, amount, left))
+
+    pending = query("SELECT rtype, period, amount FROM rewards WHERE user_id=%s AND claimed=0 AND amount>0 "
+                    "ORDER BY id", (uid,)) or []
+    text = (
+        f'{ce("🎁")} <b>TRUNG TÂM NHẬN THƯỞNG</b>\n'
+        f'<i>Theo dõi tiến độ và khoản thưởng dự kiến của bạn</i>\n\n'
+        + "\n\n".join(cards) + "\n\n"
+    )
+    kb = None
+    if pending:
+        total = sum(int(p[2]) for p in pending)
+        text += f'{ce("🎉")} <b>THƯỞNG ĐÃ CHỐT - CHỜ NHẬN</b>\n'
+        for rtype, period, amount in pending[:10]:
+            text += f'• {RTYPE_LABEL[rtype][0].capitalize()} ({fmt_period(rtype, period)}): <code>+{fmt_money(int(amount))}đ</code>\n'
+        if len(pending) > 10:
+            text += f'• ... và {len(pending) - 10} khoản khác\n'
+        text += "\n"
+        kb = InlineKeyboardMarkup([[btn(f"Nhận thưởng +{fmt_money(total)}đ", "🎉", callback_data="rw_claim")]])
+    text += (
+        f'{ce("📌")} Ngày chốt lúc <b>23:59</b>. Tuần chung toàn hệ thống: <b>Thứ Hai 00:00 — Chủ Nhật 23:59</b>.\n'
+        f'{ce("💡")} Khi có khoản thưởng đã chốt, nút <b>Nhận thưởng</b> sẽ tự động xuất hiện bên dưới.\n'
+        f'{ce("📜")} Số liệu chỉ tính các giao dịch và cược hợp lệ đã hoàn tất.'
+    )
+    return text, kb
+
+async def claim_rewards(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    rows = query(
+        "UPDATE rewards SET claimed=1, claimed_at=%s WHERE user_id=%s AND claimed=0 AND amount>0 "
+        "RETURNING rtype, period, amount", (get_vietnam_datetime_db(), uid))
+    if not rows:
+        return await safe_answer(q, "Hiện chưa có khoản thưởng nào đã chốt để nhận!", True)
+    total = sum(int(r[2]) for r in rows)
+    add_money(uid, total, "Nhận thưởng hoàn trả")
+    await safe_answer(q)
+    lines = "\n".join(
+        f'• {RTYPE_LABEL[r[0]][0].capitalize()} ({fmt_period(r[0], r[1])}): <code>+{fmt_money(int(r[2]))}đ</code>'
+        for r in rows)
+    text = (
+        f'{ce("🎉")} <b>NHẬN THƯỞNG THÀNH CÔNG!</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n{lines}\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("💰")} Tổng nhận: <code>+{fmt_money(total)}đ</code>\n'
+        f'{ce("💎")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>'
+    )
+    try:
+        await q.message.edit_text(text, parse_mode=ParseMode.HTML)
+    except Exception:
+        await q.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+def event_screen(uid, kind):
+    """Màn hình EVENT (hoàn cược / hoàn thua) với số liệu thật."""
+    today = get_vietnam_time().date()
+    ws = week_start(today)
+    is_day = kind.endswith("ngay")
+    bet, win = period_stats(uid, today, today) if is_day else period_stats(uid, ws, ws + timedelta(days=6))
+    rtype = {"hc_ngay": "cuoc_ngay", "hc_tuan": "cuoc_tuan", "ht_ngay": "thua_ngay", "ht_tuan": "thua_tuan"}[kind]
+    value, amount = reward_calc(rtype, bet, win)
+    when = "ngày" if is_day else "tuần"
+    notice = (f'{ce("📌")} Chỉ tính cược đã có kết quả. Cược đang chờ, bị hủy hoặc được hoàn tiền không tính vào doanh số.\n'
+              if kind.startswith("hc") else
+              f'{ce("📌")} Nếu kết quả nhỏ hơn hoặc bằng 0 thì không phát sinh hoàn thua.\n')
+    if kind.startswith("hc"):
+        pct = get_rebate_pct("ngay" if is_day else "tuan")
+        title = f'{ce("📈" if is_day else "📉")} <b>HOÀN CƯỢC {when.upper()}</b>\n<i>(Hoàn {fmt_pct(pct)}% tổng cược {when})</i>\n'
+        body = (f'{ce("💰")} <b>Mốc tối thiểu:</b> doanh số từ {fmt_money(MIN_REWARD_BASE)}đ\n'
+                f'{ce("💰")} <b>Tỉ lệ hoàn:</b> {fmt_pct(pct)}% tổng cược {when}\n')
+        label = "Kỳ hôm nay" if is_day else "Kỳ tuần này"
+    else:
+        tiers = LOSS_TIERS_DAY if is_day else LOSS_TIERS_WEEK
+        names = {1_000_000_000: "Mốc 1 Tỷ trở lên", 100_000_000: "Mốc 100M - dưới 1 Tỷ",
+                 10_000_000: "Mốc 10M - dưới 100M", 1_000_000: "Mốc 1M - dưới 10M", 100_000: "Mốc 100K - dưới 1M"}
+        title = (f'{ce("💸")} <b>HOÀN THUA {when.upper()}</b>\n'
+                 f'<i>(Thua ròng = Tổng cược - Tổng tiền thắng trong {when})</i>\n')
+        body = "".join(f'{ce("💰")} <b>{names[t]}:</b> Hoàn {fmt_pct(p)}%\n' for t, p in reversed(tiers))
+        label = "Kỳ hôm nay" if is_day else "Kỳ tuần này"
+    text = (
+        f'{title}━━━━━━━━━━━━━━━━━━━━━\n{body}━━━━━━━━━━━━━━━━━━━━━\n{notice}'
+        f'{ce("⏰")} Số liệu chốt {"23:59 mỗi ngày" if is_day else "Chủ Nhật 23:59"}, thưởng tự động có tại <b>Tài khoản → Nhận thưởng</b>.\n\n'
+        f'{ce("📊")} {label}: <code>{fmt_money(value)}</code>\n'
+        f'{ce("🎁")} Dự kiến hoàn: <code>{fmt_money(amount)}</code>'
+    )
+    kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data=f"ev_nhan_{kind}")]])
+    return text, kb
+
+# ---------- CHỐT THƯỞNG TỰ ĐỘNG ----------
+def _insert_reward(uid, rtype, period, base, amount):
+    if amount <= 0:
+        return False
+    r = query(
+        "INSERT INTO rewards(user_id, rtype, period, base, amount, claimed, created_at) "
+        "VALUES(%s,%s,%s,%s,%s,0,%s) ON CONFLICT (user_id, rtype, period) DO NOTHING RETURNING id",
+        (uid, rtype, period, base, amount, get_vietnam_datetime_db()))
+    return bool(r)
+
+def settle_day_sync(day):
+    """Chốt thưởng cho ngày `day`; nếu là Chủ Nhật thì chốt luôn tuần. Trả về {uid: [(rtype, period, amount)]}."""
+    created = {}
+
+    def _add(uid_, rtype, period, base, amount):
+        if _insert_reward(uid_, rtype, period, base, amount):
+            created.setdefault(uid_, []).append((rtype, period, amount))
+
+    rows = query("SELECT user_id, bet, win FROM bet_daily WHERE day=%s", (day,)) or []
+    for uid_, bet, win in rows:
+        for rtype in ("cuoc_ngay", "thua_ngay"):
+            base, amount = reward_calc(rtype, int(bet or 0), int(win or 0))
+            _add(uid_, rtype, day.isoformat(), base, amount)
+
+    if day.weekday() == 6:  # Chủ Nhật -> tổng kết tuần
+        ws = week_start(day)
+        wrows = query("SELECT user_id, SUM(bet), SUM(win) FROM bet_daily WHERE day BETWEEN %s AND %s GROUP BY user_id",
+                      (ws, day)) or []
+        for uid_, bet, win in wrows:
+            for rtype in ("cuoc_tuan", "thua_tuan"):
+                base, amount = reward_calc(rtype, int(bet or 0), int(win or 0))
+                _add(uid_, rtype, ws.isoformat(), base, amount)
+    return created
+
+async def settle_due(bot):
+    today = get_vietnam_time().date()
+    yesterday = today - timedelta(days=1)
+    last = get_setting('rw_last_day')
+    if last == yesterday.isoformat():
+        return
+    try:
+        last_d = datetime.strptime(last, "%Y-%m-%d").date() if last else yesterday - timedelta(days=1)
+    except Exception:
+        last_d = yesterday - timedelta(days=1)
+    if (yesterday - last_d).days > 8:
+        last_d = yesterday - timedelta(days=8)
+    d = last_d + timedelta(days=1)
+    while d <= yesterday:
+        created = await asyncio.to_thread(settle_day_sync, d)
+        set_setting('rw_last_day', d.isoformat())
+        print(f"✅ Đã chốt thưởng ngày {d.isoformat()}: {len(created)} người")
+        for uid_, items in created.items():
+            total = sum(i[2] for i in items)
+            lines = "\n".join(f'• {RTYPE_LABEL[i[0]][0].capitalize()} ({fmt_period(i[0], i[1])}): <code>+{fmt_money(i[2])}đ</code>' for i in items)
+            kb = InlineKeyboardMarkup([[btn(f"Nhận thưởng +{fmt_money(total)}đ", "🎉", callback_data="rw_claim")]])
+            try:
+                await bot.send_message(
+                    uid_,
+                    f'{ce("🎁")} <b>THƯỞNG ĐÃ CHỐT!</b>\n━━━━━━━━━━━━━━━━━━━━━\n{lines}\n━━━━━━━━━━━━━━━━━━━━━\n'
+                    f'{ce("💰")} Tổng: <code>+{fmt_money(total)}đ</code>\nBấm nút bên dưới để nhận thưởng.',
+                    reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+        d += timedelta(days=1)
+
+async def reward_settle_loop(bot):
+    while True:
+        try:
+            await settle_due(bot)
+        except Exception as e:
+            print(f"Lỗi chốt thưởng: {e}")
+            traceback.print_exc()
+        await asyncio.sleep(60)
+
+@admin_only
+async def sethoancuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    args = ctx.args or []
+    if len(args) < 2 or args[0].lower() not in ("ngay", "tuan"):
+        return await update.effective_message.reply_text(
+            f'{ce("📌")} <b>Hoàn cược hiện tại:</b> ngày <code>{fmt_pct(get_rebate_pct("ngay"))}%</code> | '
+            f'tuần <code>{fmt_pct(get_rebate_pct("tuan"))}%</code>\n'
+            f'Đổi: <code>/sethoancuoc ngay 2</code> hoặc <code>/sethoancuoc tuan 2</code>',
+            parse_mode=ParseMode.HTML)
+    try:
+        pct = float(args[1].replace(",", "."))
+        if pct < 0 or pct > 100:
+            raise ValueError
+    except ValueError:
+        return await update.effective_message.reply_text(f'{ce("❌")} Tỉ lệ % không hợp lệ!', parse_mode=ParseMode.HTML)
+    set_setting(f"rebate_{args[0].lower()}_pct", pct)
+    await update.effective_message.reply_text(
+        f'{ce("✅")} Đã đặt hoàn cược {args[0].lower()} = <code>{fmt_pct(pct)}%</code>', parse_mode=ParseMode.HTML)
+
+# ============================================================
+# ===== [MỚI] GIFTCODE 5 LOẠI ================================
+# ============================================================
+GIFT_TYPES = {
+    "TANTHU":  {"name": "Code Tân Thủ",  "icon": "🎁", "fmt": "JAV88-TANTHU-xxxxxxx"},
+    "CODEMUA": {"name": "Code Mua",      "icon": "🛒", "fmt": "JAV88-CODEMUA-xxxxxxx"},
+    "GIOVANG": {"name": "Code Giờ Vàng", "icon": "⏰", "fmt": "JAV88-GIOVANG-xxxxxxx"},
+    "NAP":     {"name": "Code Nạp",      "icon": "💳", "fmt": "JAV88-1234567-ABCDEFG"},
+    "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "JAV88-TRIAN-xxxxxxx"},
+}
+GIFT_BUY_EXPIRE_DAYS = 30
+_DIGITS = "0123456789"
+_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ALNUM = _LETTERS + _DIGITS
+
+def _rand(chars, n):
+    return ''.join(random.choice(chars) for _ in range(n))
+
+def gen_gift_code(ctype):
+    while True:
+        if ctype == "NAP":
+            code = f"JAV88-{_rand(_DIGITS, 7)}-{_rand(_LETTERS, 7)}"
+        else:
+            code = f"JAV88-{ctype}-{_rand(_ALNUM, 7)}"
+        if not query("SELECT 1 FROM giftcodes WHERE code=%s", (code,)):
+            return code
+
+def add_wager_requirement(uid, bonus_amount, required_bet):
+    """Cộng dồn yêu cầu cược (không ghi đè yêu cầu cũ chưa hoàn thành)."""
+    ex = query("SELECT required_bet FROM user_bonus WHERE user_id=%s", (uid,))
+    if ex and (ex[0][0] or 0) > 0:
+        query("UPDATE user_bonus SET bonus_amount=bonus_amount+%s, required_bet=required_bet+%s WHERE user_id=%s",
+              (bonus_amount, required_bet, uid))
+    else:
+        query("DELETE FROM user_bonus WHERE user_id=%s", (uid,))
+        query("INSERT INTO user_bonus (user_id, bonus_amount, required_bet, current_bet, created_at) VALUES (%s,%s,%s,0,%s)",
+              (uid, bonus_amount, required_bet, get_vietnam_datetime_db()))
+
+async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
+    """Nhập giftcode loại mới. Trả về True nếu mã thuộc hệ thống giftcode mới (đã xử lý xong)."""
+    msg = update.effective_message
+    row = query("SELECT ctype, reward, wager, expiry, require_deposit, required_amount, bound_user, used "
+                "FROM giftcodes WHERE code=%s", (code_str,))
+    if not row:
+        return False
+    ctype, reward, wager, expiry, require_deposit, required_amount, bound_user, used = row[0]
+    gname = GIFT_TYPES.get(ctype, {}).get("name", "Giftcode")
+
+    if bound_user and int(bound_user) != uid:
+        await msg.reply_text(f'{ce("❌")} Mã quà tặng không tồn tại hoặc không dành cho tài khoản của bạn.', parse_mode=ParseMode.HTML)
+        return True
+    if used:
+        await msg.reply_text(f'{ce("❌")} Mã này đã được sử dụng!', parse_mode=ParseMode.HTML)
+        return True
+    if expiry and get_vietnam_time() > expiry:
+        await msg.reply_text(f'{ce("❌")} Mã này đã hết hạn sử dụng!', parse_mode=ParseMode.HTML)
+        return True
+
+    if require_deposit:
+        dep = deposited_today(uid)
+        if dep < (required_amount or 0):
+            await msg.reply_text(
+                f'{ce("⚠️")} <b>CHƯA ĐỦ ĐIỀU KIỆN NHẬP CODE!</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("🔑")} Mã: <code>{code_str}</code>\n'
+                f'{ce("💰")} Giá trị code: <code>{fmt_money(int(reward))}đ</code>\n'
+                f'{ce("💳")} Cần nạp trong ngày: <code>{fmt_money(int(required_amount))}đ</code>\n'
+                f'{ce("📥")} Hôm nay bạn đã nạp: <code>{fmt_money(dep)}đ</code>\n'
+                f'{ce("📌")} Còn thiếu: <code>{fmt_money(int(required_amount) - dep)}đ</code>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'Nạp đủ số tiền trên trong hôm nay rồi nhập lại mã nhé!',
+                parse_mode=ParseMode.HTML)
+            return True
+
+    claimed = query("UPDATE giftcodes SET used=1, used_by=%s, used_at=%s WHERE code=%s AND used=0 RETURNING code",
+                    (uid, get_vietnam_datetime_db(), code_str))
+    if not claimed:
+        await msg.reply_text(f'{ce("❌")} Mã này đã được sử dụng!', parse_mode=ParseMode.HTML)
+        return True
+
+    reward = int(reward)
+    wager = int(wager or 0)
+    add_money(uid, reward, f"Giftcode {gname}: {code_str}")
+    required_bet = reward * wager
+    if required_bet > 0:
+        add_wager_requirement(uid, reward, required_bet)
+    await msg.reply_text(
+        f'{ce("🎉")} <b>NHẬN CODE THÀNH CÔNG!</b> {ce("🎉")}\n'
+        f'┏━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+        f'┃ {ce("🔑")} <b>Loại:</b> {gname}\n'
+        f'┃ {ce("🔑")} <b>Mã code:</b> <code>{code_str}</code>\n'
+        f'┃ {ce("💰")} <b>Đã nhận:</b> <code>+{fmt_money(reward)}đ</code>\n'
+        f'┃ {ce("🎯")} <b>Vòng cược yêu cầu:</b> <code>x{wager}</code>\n'
+        f'┃ {ce("📊")} <b>Tổng cược cần:</b> <code>{fmt_money(required_bet)}đ</code>\n'
+        f'┗━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
+        f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>',
+        parse_mode=ParseMode.HTML)
+    return True
+
+# ---------- MUA GIFTCODE (tự động, không cần admin duyệt) ----------
+async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg_obj = update.effective_message
+    uid = update.effective_user.id
+    if is_banned(uid):
+        return
+    args = ctx.args or []
+    usage = (
+        f'{ce("🛒")} <b>Mua giftcode theo cú pháp:</b>\n'
+        f'<code>/muagift [số lượng] [giá trị mỗi code]</code>\n'
+        f'VD: <code>/muagift 5 20000</code> hoặc <code>/muagift 3 5000</code>\n\n'
+        f'{ce("⚠️")} Phí 5%. Mệnh giá mỗi code tối thiểu 1.000đ. Cần tổng nạp >50k.\n'
+        f'{ce("🎯")} Code mua chỉ cần cược <b>x1</b> vòng. Code được gửi ngay sau khi mua.'
+    )
+    if len(args) < 2:
+        return await msg_obj.reply_text(usage, parse_mode=ParseMode.HTML)
+    try:
+        qty = int(args[0])
+        value = int(args[1].replace(",", "").replace(".", ""))
+    except ValueError:
+        return await msg_obj.reply_text(f'{ce("❌")} Số lượng hoặc giá trị không hợp lệ!\n\n' + usage, parse_mode=ParseMode.HTML)
+    if qty < 1 or qty > 20:
+        return await msg_obj.reply_text(f'{ce("❌")} Mỗi lần chỉ mua từ 1 đến 20 code!', parse_mode=ParseMode.HTML)
+    if value < 1000 or value > 10_000_000:
+        return await msg_obj.reply_text(f'{ce("❌")} Mệnh giá mỗi code từ 1.000đ đến 10.000.000đ!', parse_mode=ParseMode.HTML)
+    if total_deposited(uid) <= 50000:
+        return await msg_obj.reply_text(f'{ce("⚠️")} Bạn cần có tổng nạp trên <b>50.000đ</b> mới được mua giftcode!', parse_mode=ParseMode.HTML)
+
+    cost = qty * value
+    fee = int(cost * 0.05)
+    total = cost + fee
+    if get_balance(uid) < total:
+        return await msg_obj.reply_text(
+            f'{ce("❌")} Số dư không đủ! Cần <code>{fmt_money(total)}đ</code> (gồm phí 5% = {fmt_money(fee)}đ).',
+            parse_mode=ParseMode.HTML)
+    if not sub_money(uid, total, f"Mua giftcode {qty} code x {fmt_money(value)}đ"):
+        return await msg_obj.reply_text(f'{ce("❌")} Số dư không đủ!', parse_mode=ParseMode.HTML)
+
+    expiry = get_vietnam_time() + timedelta(days=GIFT_BUY_EXPIRE_DAYS)
+    codes = []
+    try:
+        for _ in range(qty):
+            code = gen_gift_code("CODEMUA")
+            query("INSERT INTO giftcodes (code, ctype, reward, wager, expiry, require_deposit, required_amount, "
+                  "bound_user, used, created_by, created_at) VALUES (%s,'CODEMUA',%s,1,%s,0,0,NULL,0,%s,%s)",
+                  (code, value, expiry, uid, get_vietnam_datetime_db()))
+            codes.append(code)
+    except Exception as e:
+        print(f"Lỗi tạo CODEMUA: {e}")
+    if len(codes) < qty:  # hoàn tiền phần chưa tạo được
+        miss = qty - len(codes)
+        refund = miss * value + int(miss * value * 0.05)
+        add_money(uid, refund, "Hoàn tiền mua giftcode lỗi")
+    if not codes:
+        return await msg_obj.reply_text(f'{ce("❌")} Lỗi hệ thống, đã hoàn tiền. Vui lòng thử lại!', parse_mode=ParseMode.HTML)
+
+    code_lines = "\n".join(f'{i}. <code>{c}</code>' for i, c in enumerate(codes, 1))
+    await msg_obj.reply_text(
+        f'{ce("✅")} <b>MUA GIFTCODE THÀNH CÔNG!</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🛒")} Số lượng: <code>{len(codes)}</code>\n'
+        f'{ce("💰")} Giá trị mỗi code: <code>{fmt_money(value)}đ</code>\n'
+        f'{ce("💳")} Phí 5%: <code>{fmt_money(int(len(codes) * value * 0.05))}đ</code>\n'
+        f'{ce("🎯")} Vòng cược khi nhập: <code>x1</code>\n'
+        f'{ce("⏰")} Hạn dùng: <code>{GIFT_BUY_EXPIRE_DAYS} ngày</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🔑")} <b>Danh sách code:</b>\n{code_lines}\n\n'
+        f'{ce("📌")} Nhập code bằng lệnh <code>/code [mã]</code> hoặc gửi thẳng mã cho bot.\n'
+        f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>',
+        parse_mode=ParseMode.HTML)
+
+# ---------- ADMIN: TẠO GIFTCODE NHIỀU LOẠI ----------
+def parse_money_text(s):
+    s = s.lower().replace(",", "").replace(".", "").replace("đ", "").replace(" ", "")
+    mult = 1
+    if s.endswith("k"):
+        mult, s = 1000, s[:-1]
+    elif s.endswith("m"):
+        mult, s = 1_000_000, s[:-1]
+    return int(s) * mult
+
+def gift_summary(st):
+    t = GIFT_TYPES[st["ctype"]]
+    lines = [f'{ce("🔑")} Loại: <b>{t["name"]}</b> <code>({t["fmt"]})</code>']
+    if "require_deposit" in st:
+        if st["require_deposit"]:
+            lines.append(f'{ce("💳")} Yêu cầu nạp trong ngày: <b>{fmt_money(st.get("required_amount", 0))}đ</b>' if "required_amount" in st
+                         else f'{ce("💳")} Yêu cầu nạp: <b>Có</b>')
+        else:
+            lines.append(f'{ce("💳")} Yêu cầu nạp: <b>Không</b>')
+    if "wager" in st:
+        lines.append(f'{ce("🎯")} Vòng cược: <b>x{st["wager"]}</b>')
+    if "reward" in st:
+        lines.append(f'{ce("💰")} Giá trị: <b>{fmt_money(st["reward"])}đ</b>')
+    if "duration" in st:
+        lines.append(f'{ce("⏰")} Hạn dùng: <b>{fmt_duration(st["duration"])}</b>')
+    if "qty" in st:
+        lines.append(f'{ce("📦")} Số lượng: <b>{st["qty"]}</b>')
+    return "\n".join(lines)
+
+def _cancel_kb(extra_rows=None):
+    rows = list(extra_rows or [])
+    rows.append([btn("Hủy", "❌", callback_data="gcn_cancel")])
+    return InlineKeyboardMarkup(rows)
+
+@admin_only
+async def gift_flow_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    pending_inputs.pop(uid, None)
+    rows = []
+    for key, t in GIFT_TYPES.items():
+        rows.append([btn(f'{t["name"]} ({t["fmt"]})', t["icon"], callback_data=f"gcn_type_{key}")])
+    await update.effective_message.reply_text(
+        f'{ce("🎁")} <b>TẠO GIFTCODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("✍️")} Chọn <b>loại code</b> cần tạo:',
+        reply_markup=_cancel_kb(rows), parse_mode=ParseMode.HTML)
+
+async def handle_gift_flow_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE, d: str):
+    q = update.callback_query
+    uid = q.from_user.id
+    if uid not in ADMIN_IDS:
+        return await safe_answer(q, "❌ Không có quyền!", True)
+    await safe_answer(q)
+
+    async def _edit(text, kb=None):
+        try:
+            await q.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await q.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+    if d == "gcn_cancel":
+        pending_inputs.pop(uid, None)
+        return await _edit(f'{ce("🚫")} Đã hủy tạo giftcode.')
+
+    if d.startswith("gcn_type_"):
+        ctype = d[len("gcn_type_"):]
+        if ctype not in GIFT_TYPES:
+            return
+        st = {"flow": "gift", "step": "ask_req", "ctype": ctype}
+        pending_inputs[uid] = st
+        kb = _cancel_kb([[btn("Có yêu cầu nạp", "💳", callback_data="gcn_req_1"),
+                          btn("Không yêu cầu", "🚫", callback_data="gcn_req_0")]])
+        return await _edit(
+            f'{ce("🎁")} <b>TẠO GIFTCODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n{gift_summary(st)}\n━━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("✍️")} Người dùng có cần <b>nạp tiền trong ngày</b> mới được nhập code không?', kb)
+
+    st = pending_inputs.get(uid)
+    if not st or st.get("flow") != "gift":
+        return await q.message.reply_text(f'{ce("⚠️")} Phiên tạo code đã hết hạn, hãy gõ /taogift để tạo lại.', parse_mode=ParseMode.HTML)
+
+    if d in ("gcn_req_1", "gcn_req_0") and st["step"] == "ask_req":
+        st["require_deposit"] = 1 if d == "gcn_req_1" else 0
+        if st["require_deposit"]:
+            st["step"] = "req_amount"
+            return await _edit(
+                f'{ce("🎁")} <b>TẠO GIFTCODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n{gift_summary(st)}\n━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("✍️")} Nhập <b>số tiền phải nạp trong ngày</b> để được nhập code:\nVD: <code>50000</code> hoặc <code>50k</code>\n'
+                f'<i>(Gõ "huy" để hủy)</i>')
+        st["step"] = "wager"
+        return await _edit(
+            f'{ce("🎁")} <b>TẠO GIFTCODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n{gift_summary(st)}\n━━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("✍️")} Nhập <b>số vòng cược</b> của code:\nVD: <code>2</code> (x2 vòng cược)\n<i>(Gõ "huy" để hủy)</i>')
+
+    if d in ("gcn_bind_0", "gcn_bind_1") and st["step"] == "ask_bind":
+        if d == "gcn_bind_0":
+            st["bound_user"] = None
+            return await _finalize_gift(q.message, uid, st)
+        st["step"] = "bind_id"
+        return await _edit(
+            f'{ce("🎁")} <b>TẠO GIFTCODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n{gift_summary(st)}\n━━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("✍️")} Nhập <b>ID tài khoản</b> được phép nhập code:\n<i>(Gõ "huy" để hủy)</i>')
+
+def _create_gift_codes(st, admin_id):
+    expiry = get_vietnam_time() + timedelta(minutes=st["duration"])
+    codes = []
+    for _ in range(st["qty"]):
+        code = gen_gift_code(st["ctype"])
+        query("INSERT INTO giftcodes (code, ctype, reward, wager, expiry, require_deposit, required_amount, "
+              "bound_user, used, created_by, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s)",
+              (code, st["ctype"], st["reward"], st["wager"], expiry, st.get("require_deposit", 0),
+               st.get("required_amount", 0), st.get("bound_user"), admin_id, get_vietnam_datetime_db()))
+        codes.append(code)
+    return codes, expiry
+
+async def _finalize_gift(message, uid, st):
+    pending_inputs.pop(uid, None)
+    try:
+        codes, expiry = await asyncio.to_thread(_create_gift_codes, st, uid)
+    except Exception as e:
+        print(f"Lỗi tạo giftcode: {e}")
+        return await message.reply_text(f'{ce("❌")} Lỗi khi tạo code, vui lòng thử lại!', parse_mode=ParseMode.HTML)
+    t = GIFT_TYPES[st["ctype"]]
+    bound = st.get("bound_user")
+    head = (
+        f'{ce("🎉")} <b>TẠO {len(codes)} {t["name"].upper()} THÀNH CÔNG!</b> {ce("🎉")}\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("💰")} <b>Giá trị mỗi code:</b> <code>{fmt_money(st["reward"])}đ</code>\n'
+        f'{ce("🎯")} <b>Vòng cược:</b> <code>x{st["wager"]}</code>\n'
+        f'{ce("⏰")} <b>Hạn dùng:</b> <code>{fmt_duration(st["duration"])}</code> <i>(đến {expiry.strftime("%d/%m/%Y %H:%M")})</i>\n'
+        + (f'{ce("💳")} <b>Yêu cầu nạp trong ngày:</b> <code>{fmt_money(st["required_amount"])}đ</code>\n' if st.get("require_deposit")
+           else f'{ce("💳")} <b>Yêu cầu nạp:</b> Không\n')
+        + (f'{ce("🔒")} <b>Chỉ tài khoản:</b> <code>{bound}</code>\n' if bound else f'{ce("🔓")} <b>Tài khoản nhập:</b> Tất cả\n')
+        + '━━━━━━━━━━━━━━━━━━━━━\n'
+    )
+    body = "\n".join(f'{i}. <code>{c}</code>' for i, c in enumerate(codes, 1))
+    full = head + f'{ce("🔑")} <b>Danh sách code:</b>\n{body}\n\n{ce("📌")} Nhập bằng <code>/code [mã]</code> hoặc gửi thẳng mã cho bot.'
+    if len(full) > 3900:
+        bio = BytesIO("\n".join(codes).encode("utf-8"))
+        bio.name = f"giftcode_{st['ctype']}.txt"
+        await message.reply_text(head + f'{ce("📎")} Danh sách {len(codes)} code ở file đính kèm.', parse_mode=ParseMode.HTML)
+        await message.reply_document(document=bio)
+    else:
+        await message.reply_text(full, parse_mode=ParseMode.HTML)
+
+async def handle_gift_flow_text(update: Update, uid: int, st: dict, text: str):
+    msg = update.effective_message
+    if text.lower() in ("huy", "hủy", "cancel"):
+        pending_inputs.pop(uid, None)
+        await msg.reply_text(f'{ce("🚫")} Đã hủy tạo giftcode.', parse_mode=ParseMode.HTML)
+        return True
+    step = st.get("step")
+
+    async def _err(t):
+        await msg.reply_text(f'{ce("❌")} {t}', parse_mode=ParseMode.HTML)
+        return True
+
+    async def _ask(t, kb=None):
+        await msg.reply_text(
+            f'{ce("🎁")} <b>TẠO GIFTCODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n{gift_summary(st)}\n━━━━━━━━━━━━━━━━━━━━━\n{t}',
+            reply_markup=kb, parse_mode=ParseMode.HTML)
+        return True
+
+    if step in ("ask_req", "ask_bind"):
+        return await _err('Vui lòng bấm nút ở tin nhắn phía trên, hoặc gõ <code>huy</code> để hủy.')
+
+    if step == "req_amount":
+        try:
+            val = parse_money_text(text)
+        except ValueError:
+            return await _err('Số tiền không hợp lệ! VD: <code>50000</code> hoặc <code>50k</code>')
+        if val < 1000:
+            return await _err('Số tiền nạp tối thiểu là 1.000đ. Nhập lại:')
+        st["required_amount"] = val
+        st["step"] = "wager"
+        return await _ask(f'{ce("✍️")} Nhập <b>số vòng cược</b> của code:\nVD: <code>2</code> (x2 vòng cược)\n<i>(Gõ "huy" để hủy)</i>')
+
+    if step == "wager":
+        try:
+            wager = int(text.lower().replace("x", "").strip())
+        except ValueError:
+            return await _err('Vui lòng nhập số hợp lệ! VD: <code>2</code>')
+        if wager < 0 or wager > 100:
+            return await _err('Số vòng cược từ 0 đến 100. Nhập lại:')
+        st["wager"] = wager
+        st["step"] = "reward"
+        return await _ask(f'{ce("✍️")} Nhập <b>giá trị code</b> (VNĐ):\nVD: <code>50000</code> hoặc <code>50k</code>')
+
+    if step == "reward":
+        try:
+            val = parse_money_text(text)
+        except ValueError:
+            return await _err('Giá trị không hợp lệ! VD: <code>50000</code> hoặc <code>50k</code>')
+        if val < 1000:
+            return await _err('Giá trị tối thiểu là 1.000đ. Nhập lại:')
+        st["reward"] = val
+        st["step"] = "duration"
+        return await _ask(
+            f'{ce("✍️")} Nhập <b>hạn sử dụng</b> của code:\n• <code>1n</code> = 1 ngày\n• <code>1h</code> = 1 tiếng\n• <code>1p</code> = 1 phút\nVD: <code>7n</code>')
+
+    if step == "duration":
+        minutes = parse_duration(text)
+        if not minutes or minutes <= 0:
+            return await _err('Định dạng không hợp lệ! Nhập <code>1n</code> (ngày), <code>1h</code> (giờ) hoặc <code>1p</code> (phút).')
+        st["duration"] = minutes
+        st["step"] = "qty"
+        return await _ask(f'{ce("✍️")} Nhập <b>số lượng code</b> cần tạo (1 - 100):')
+
+    if step == "qty":
+        try:
+            qty = int(text.strip())
+        except ValueError:
+            return await _err('Vui lòng nhập số hợp lệ!')
+        if qty < 1 or qty > 100:
+            return await _err('Số lượng từ 1 đến 100. Nhập lại:')
+        st["qty"] = qty
+        st["step"] = "ask_bind"
+        kb = _cancel_kb([[btn("Tất cả tài khoản", "🔓", callback_data="gcn_bind_0"),
+                          btn("Chỉ định tài khoản", "🔒", callback_data="gcn_bind_1")]])
+        return await _ask(f'{ce("✍️")} Code này cho <b>tất cả tài khoản</b> nhập hay <b>chỉ định 1 tài khoản</b>?', kb)
+
+    if step == "bind_id":
+        try:
+            target = int(text.strip())
+        except ValueError:
+            return await _err('ID không hợp lệ! Nhập số ID Telegram của tài khoản.')
+        if not query("SELECT 1 FROM users WHERE user_id=%s", (target,)):
+            return await _err('ID này chưa từng dùng bot. Nhập lại ID khác:')
+        st["bound_user"] = target
+        await _finalize_gift(msg, uid, st)
+        return True
+
+    pending_inputs.pop(uid, None)
+    return False
+
+async def handle_pending_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    st = pending_inputs.get(uid)
+    if not st:
+        return False
+    text = (update.effective_message.text or "").strip()
+    if st.get("flow") == "gift":
+        return await handle_gift_flow_text(update, uid, st, text)
+    pending_inputs.pop(uid, None)
+    return False
+
+@admin_only
+async def xoagift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        return await update.effective_message.reply_text(f'{ce("❌")} <b>Cú pháp:</b> <code>/xoagift [mã]</code>', parse_mode=ParseMode.HTML)
+    code_str = ctx.args[0].strip().upper()
+    r = query("DELETE FROM giftcodes WHERE code=%s RETURNING reward", (code_str,))
+    if not r:
+        return await update.effective_message.reply_text(f'{ce("❌")} Code <code>{code_str}</code> không tồn tại!', parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text(f'{ce("✅")} Đã xóa code <code>{code_str}</code> ({fmt_money(int(r[0][0]))}đ)', parse_mode=ParseMode.HTML)
+
+@admin_only
+async def dsgift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = query("SELECT code, ctype, reward, wager, used, bound_user, expiry FROM giftcodes ORDER BY expiry DESC LIMIT 30") or []
+    if not rows:
+        return await update.effective_message.reply_text(f'{ce("📌")} Chưa có giftcode nào.', parse_mode=ParseMode.HTML)
+    lines = []
+    for code, ctype, reward, wager, used, bound, expiry in rows:
+        st = "đã dùng" if used else ("hết hạn" if expiry and get_vietnam_time() > expiry else "còn")
+        extra = f" | ID {bound}" if bound else ""
+        lines.append(f'<code>{code}</code> | {fmt_money(int(reward))}đ x{wager} | {st}{extra}')
+    await update.effective_message.reply_text(f'{ce("🎁")} <b>30 GIFTCODE GẦN NHẤT</b>\n\n' + "\n".join(lines), parse_mode=ParseMode.HTML)
+
+backfill_bet_daily()
 
 async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
@@ -1722,34 +2697,6 @@ async def chuyen_tien_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await msg_obj.reply_text(f'{ce("❌")} ID hoặc số tiền không hợp lệ!', parse_mode=ParseMode.HTML)
 
-async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg_obj = update.effective_message
-    args = ctx.args or []
-    if len(args) < 2:
-        return await msg_obj.reply_text(
-            f'{ce("🛒")} <b>Mua giftcode theo cú pháp:</b>\n'
-            f'<code>/muagift [số lượng] [giá trị mỗi code]</code>\n'
-            f'VD: <code>/muagift 5 20000</code> hoặc <code>/muagift 3 5000</code>\n\n'
-            f'{ce("⚠️")} Phí 5%. Mệnh giá mỗi code tối thiểu 1.000đ. Cần tổng nạp >50k.',
-            parse_mode=ParseMode.HTML
-        )
-    await msg_obj.reply_text(
-        f'{ce("✅")} Đã ghi nhận yêu cầu mua Giftcode!\nVui lòng chờ Admin duyệt và gửi code.',
-        parse_mode=ParseMode.HTML
-    )
-
-async def doi_diem_vip_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg_obj = update.effective_message
-    args = ctx.args or []
-    if len(args) < 1:
-        return await msg_obj.reply_text(
-            f'{ce("💎")} <b>Cách đổi điểm VIP:</b>\n'
-            f'<code>/doidiemvip [số điểm]</code>\n'
-            f'VD: <code>/doidiemvip 100</code>',
-            parse_mode=ParseMode.HTML
-        )
-    await msg_obj.reply_text(f'{ce("✅")} Yêu cầu đổi điểm VIP đã được ghi nhận. Vui lòng chờ Admin xử lý!', parse_mode=ParseMode.HTML)
-
 async def ls_choi_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg_obj = update.effective_message
     uid = update.effective_user.id
@@ -1989,6 +2936,10 @@ async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     code_str = ctx.args[0].strip().upper()
 
+    # [MỚI] Giftcode JAV88-xxx (5 loại)
+    if await redeem_giftcode(update, uid, code_str):
+        return
+
     codenap_data = query(
         "SELECT reward, required_amount, wager, expiry, used FROM codenap WHERE code=%s",
         (code_str,)
@@ -2152,6 +3103,13 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_reply = update.effective_message
     key = re.sub(r'^[^\w]+', '', txt).strip()
 
+    # [MỚI] Người dùng gửi thẳng mã giftcode trong chat riêng
+    if update.effective_chat.type == "private" and re.fullmatch(r'JAV88-[A-Z0-9]+(?:-[A-Z0-9]+)?', txt.strip().upper()):
+        code_in = txt.strip().upper()
+        if await redeem_giftcode(update, uid, code_in):
+            return
+        return await user_reply.reply_text(f'{ce("❌")} Mã quà tặng không tồn tại.', parse_mode=ParseMode.HTML)
+
     # 1. TÀI KHOẢN
     if key == "TÀI KHOẢN":
         get_user(uid)
@@ -2164,8 +3122,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         tong_nap = nap_res[0][0] if nap_res and nap_res[0][0] else 0
         rut_res = query("SELECT SUM(amount) FROM withdraw_history WHERE user_id=%s AND status='success'", (uid,))
         tong_rut = rut_res[0][0] if rut_res and rut_res[0][0] else 0
-        cuoc_res = query("SELECT SUM(amount) FROM history WHERE user_id=%s AND amount < 0 AND note LIKE '%%Cược%%' AND time LIKE %s", (uid, f"%{today_str}%"))
-        cuoc_hom_nay = abs(cuoc_res[0][0]) if cuoc_res and cuoc_res[0][0] else 0
+        cuoc_hom_nay, cuoc_tuan = get_bet_stats(uid)
 
         kb = InlineKeyboardMarkup([
             [btn("LS nạp", "📈", callback_data="acc_ls_nap"), btn("LS rút", "📉", callback_data="acc_ls_rut")],
@@ -2183,7 +3140,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'{ce("👑")} Cấp VIP: <code>{vip_name}</code>\n\n'
             f'{ce("📊")} <b>THỐNG KÊ</b>\n'
             f'• Cược hôm nay: {fmt_money(cuoc_hom_nay)}\n'
-            f'• Cược tuần này: 0\n'
+            f'• Cược tuần này: {fmt_money(cuoc_tuan)}\n'
             f'• Tổng cược: {fmt_money(u[5] or 0)}\n'
             f'• Tổng nạp: {fmt_money(tong_nap)}\n'
             f'• Tổng rút: {fmt_money(tong_rut)}\n\n'
@@ -2462,192 +3419,24 @@ async def handle_group_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await main_handler(update, ctx)
 
-def gen_codenap():
-    digits = ''.join(random.choice("0123456789") for _ in range(7))
-    letters = ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(7))
-    return f"{digits}-ECHCUTO-{letters}"
-
 def parse_duration(s):
     s = s.lower().strip()
     if s.endswith("n"):
         try:
-            days = int(s[:-1])
-            return days * 24 * 60
+            return int(s[:-1]) * 24 * 60
         except:
             return None
     if s.endswith("h"):
         try:
-            hours = int(s[:-1])
-            return hours * 60
+            return int(s[:-1]) * 60
         except:
             return None
     if s.endswith("p"):
         try:
-            minutes = int(s[:-1])
-            return minutes
+            return int(s[:-1])
         except:
             return None
     return None
-
-async def handle_pending_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid not in pending_inputs:
-        return False
-
-    state = pending_inputs[uid]
-    step = state.get("step")
-    text = update.effective_message.text.strip()
-
-    if step == "reward":
-        try:
-            reward = int(text.replace(",", "").replace(".", "").replace("đ", "").strip())
-            if reward < 1000:
-                await update.effective_message.reply_text(
-                    f'{ce("❌")} Trị giá tối thiểu là 1,000đ. Vui lòng nhập lại:',
-                    parse_mode=ParseMode.HTML)
-                return True
-            state["reward"] = reward
-            state["step"] = "amount"
-            await update.effective_message.reply_text(
-                f'{ce("✅")} Trị giá: <code>{fmt_money(reward)}đ</code>\n\n'
-                f'{ce("🎁")} <b>BƯỚC 2/4</b>\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("✍️")} Vui lòng nhập <b>số tiền cần nạp</b> để sử dụng code:\n'
-                f'VD: <code>50000</code> (nạp 50,000đ để dùng code)',
-                parse_mode=ParseMode.HTML)
-        except ValueError:
-            await update.effective_message.reply_text(
-                f'{ce("❌")} Vui lòng nhập số hợp lệ!',
-                parse_mode=ParseMode.HTML)
-        return True
-
-    if step == "amount":
-        try:
-            required_amount = int(text.replace(",", "").replace(".", "").replace("đ", "").strip())
-            if required_amount < 10000:
-                await update.effective_message.reply_text(
-                    f'{ce("❌")} Số tiền nạp tối thiểu là 10,000đ. Vui lòng nhập lại:',
-                    parse_mode=ParseMode.HTML)
-                return True
-            state["required_amount"] = required_amount
-            state["step"] = "wager"
-            await update.effective_message.reply_text(
-                f'{ce("✅")} Số tiền cần nạp: <code>{fmt_money(required_amount)}đ</code>\n\n'
-                f'{ce("🎁")} <b>BƯỚC 3/4</b>\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("✍️")} Vui lòng nhập <b>số vòng cược yêu cầu</b> (x):\n'
-                f'VD: <code>2</code> (x2 vòng cược)',
-                parse_mode=ParseMode.HTML)
-        except ValueError:
-            await update.effective_message.reply_text(
-                f'{ce("❌")} Vui lòng nhập số hợp lệ!',
-                parse_mode=ParseMode.HTML)
-        return True
-
-    if step == "wager":
-        try:
-            wager = int(text.replace("x", "").replace("X", "").strip())
-            if wager < 1:
-                await update.effective_message.reply_text(
-                    f'{ce("❌")} Số vòng cược tối thiểu là 1. Vui lòng nhập lại:',
-                    parse_mode=ParseMode.HTML)
-                return True
-            state["wager"] = wager
-            state["step"] = "duration"
-            await update.effective_message.reply_text(
-                f'{ce("✅")} Số vòng cược: <code>x{wager}</code>\n\n'
-                f'{ce("🎁")} <b>BƯỚC 4/4</b>\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("✍️")} Vui lòng nhập <b>hạn sử dụng code</b>:\n'
-                f'• <code>1n</code> = 1 ngày\n'
-                f'• <code>1h</code> = 1 tiếng\n'
-                f'• <code>1p</code> = 1 phút\n'
-                f'VD: <code>7n</code> (7 ngày)',
-                parse_mode=ParseMode.HTML)
-        except ValueError:
-            await update.effective_message.reply_text(
-                f'{ce("❌")} Vui lòng nhập số hợp lệ!',
-                parse_mode=ParseMode.HTML)
-        return True
-
-    if step == "duration":
-        duration_minutes = parse_duration(text)
-        if duration_minutes is None:
-            await update.effective_message.reply_text(
-                f'{ce("❌")} Định dạng không hợp lệ!\n'
-                f'Vui lòng nhập: <code>1n</code> (1 ngày), <code>1h</code> (1 tiếng), <code>1p</code> (1 phút)',
-                parse_mode=ParseMode.HTML)
-            return True
-
-        code_str = state["code"]
-        reward = state["reward"]
-        required_amount = state["required_amount"]
-        wager = state["wager"]
-
-        expiry_time = get_vietnam_time() + timedelta(minutes=duration_minutes)
-        expiry_str = expiry_time.strftime("%d/%m/%Y %H:%M")
-
-        query(
-            "INSERT INTO codenap (code, reward, required_amount, wager, expiry, used, created_by, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, 0, %s, %s)",
-            (code_str, reward, required_amount, wager, expiry_str, uid, get_vietnam_datetime_db())
-        )
-
-        if duration_minutes >= 1440:
-            duration_text = f"{duration_minutes // 1440} ngày"
-        elif duration_minutes >= 60:
-            duration_text = f"{duration_minutes // 60} tiếng"
-        else:
-            duration_text = f"{duration_minutes} phút"
-
-        await update.effective_message.reply_text(
-            f'{ce("🎉")} <b>TẠO CODE NẠP THÀNH CÔNG!</b> {ce("🎉")}\n'
-            f'┏━━━━━━━━━━━━━━━━━━━━━━━━━\n'
-            f'┃ {ce("🔑")} <b>Mã code:</b>\n'
-            f'┃ <code>{code_str}</code>\n'
-            f'┃\n'
-            f'┃ {ce("💰")} <b>Trị giá:</b> <code>{fmt_money(reward)}đ</code>\n'
-            f'┃\n'
-            f'┃ {ce("💳")} <b>Số tiền cần nạp:</b> <code>{fmt_money(required_amount)}đ</code>\n'
-            f'┃\n'
-            f'┃ {ce("🎯")} <b>Vòng cược yêu cầu:</b> <code>x{wager}</code>\n'
-            f'┃\n'
-            f'┃ {ce("⏰")} <b>Hạn sử dụng:</b> <code>{duration_text}</code>\n'
-            f'┃ <i>(Hết hạn: {expiry_str})</i>\n'
-            f'┗━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
-            f'{ce("📌")} <b>Hướng dẫn sử dụng:</b>\n'
-            f'• Nạp đủ <code>{fmt_money(required_amount)}đ</code> với nội dung <code>Ndech {uid}</code>\n'
-            f'• Sau khi nạp, dùng lệnh <code>/code {code_str}</code> để nhận thưởng\n'
-            f'• Cần cược đủ <code>x{wager}</code> vòng trước khi rút',
-            parse_mode=ParseMode.HTML
-        )
-
-        del pending_inputs[uid]
-        return True
-
-    return False
-
-async def codenap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid not in ADMIN_IDS:
-        return await update.effective_message.reply_text(
-            f'{ce("❌")} Bạn không có quyền sử dụng lệnh này!',
-            parse_mode=ParseMode.HTML)
-
-    code_str = gen_codenap()
-    pending_inputs[uid] = {
-        "step": "reward",
-        "code": code_str,
-    }
-
-    await update.effective_message.reply_text(
-        f'{ce("🎁")} <b>TẠO CODE NẠP - BƯỚC 1/4</b>\n'
-        f'━━━━━━━━━━━━━━━━━━━━━\n'
-        f'{ce("🔑")} <b>Mã code:</b> <code>{code_str}</code>\n'
-        f'━━━━━━━━━━━━━━━━━━━━━\n\n'
-        f'{ce("✍️")} Vui lòng nhập <b>trị giá của code</b> (số tiền VNĐ):\n'
-        f'VD: <code>50000</code> (50,000đ)',
-        parse_mode=ParseMode.HTML)
 
 # ================= ADMIN COMMANDS =================
 @admin_only
@@ -3653,6 +4442,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d == "game_list" or d.startswith(("gm_", "gc_", "gb_")):
         return await handle_game_callbacks(update, ctx, d)
 
+    # ===== [MỚI] GIFTCODE ADMIN / VIP / NHẬN THƯỞNG =====
+    if d.startswith("gcn_"):
+        return await handle_gift_flow_callback(update, ctx, d)
+    if d in ("vip_doi", "vip_doi_all"):
+        return await vip_exchange_callback(update, ctx, d)
+    if d == "rw_claim":
+        return await claim_rewards(update, ctx)
+
     # ===== TÀI KHOẢN =====
     if d == "acc_ls_nap":
         await q.answer()
@@ -3692,7 +4489,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d == "acc_nhan_thuong":
         await q.answer()
-        return await q.message.reply_text(f'{ce("🎉")} Bạn không có phần thưởng nào đang chờ duyệt.', parse_mode=ParseMode.HTML)
+        rw_text, rw_kb = reward_center(uid)
+        return await q.message.reply_text(rw_text, reply_markup=rw_kb, parse_mode=ParseMode.HTML)
 
     if d == "acc_chuyen_tien":
         await q.answer()
@@ -3700,16 +4498,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d == "acc_vip":
         await q.answer()
-        res = query("SELECT total_bet FROM users WHERE user_id=%s", (uid,))
-        total_bet = (res[0][0] or 0) if res else 0
-        vip_name, points = get_vip_info(total_bet)
-        return await q.message.reply_text(
-            f'{ce("👑")} <b>THÔNG TIN VIP</b>\n\n'
-            f'{ce("💎")} Cấp hiện tại: <b>{vip_name}</b>\n'
-            f'{ce("📊")} Điểm VIP: <b>{points}</b>\n\n'
-            f'{ce("💡")} Cứ mỗi 300.000đ cược hợp lệ bạn sẽ nhận được 1 điểm VIP.\n'
-            f'Đổi điểm VIP bằng lệnh: <code>/doidiemvip [số điểm]</code>',
-            parse_mode=ParseMode.HTML)
+        vip_text, vip_kb = vip_screen(uid)
+        return await q.message.reply_text(vip_text, reply_markup=vip_kb, parse_mode=ParseMode.HTML)
 
     if d == "acc_fan_cung":
         await q.answer("Tính năng đang được cập nhật!", show_alert=True)
@@ -3764,75 +4554,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ===== EVENT =====
     if d.startswith("ev_"):
-        await q.answer()
-        if d == "ev_hc_ngay":
-            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_hc_ngay")]])
-            return await q.message.reply_text(
-                f'{ce("📈")} <b>HOÀN CƯỢC NGÀY</b>\n'
-                f'<i>(Tích lũy càng nhiều - Hoàn càng cao)</i>\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 0.20%\n'
-                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 0.30%\n'
-                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 0.40%\n'
-                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 0.60%\n'
-                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 0.80%\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("📌")} Chỉ tính cược đã có kết quả. Cược đang chờ, bị hủy hoặc được hoàn tiền không tính vào doanh số.\n'
-                f'{ce("⏰")} Số liệu chốt cuối ngày.\n\n'
-                f'{ce("📊")} Kỳ hôm nay: <code>0</code>\n'
-                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
-                reply_markup=kb, parse_mode=ParseMode.HTML)
-        if d == "ev_hc_tuan":
-            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_hc_tuan")]])
-            return await q.message.reply_text(
-                f'{ce("📉")} <b>HOÀN CƯỢC TUẦN</b>\n'
-                f'<i>(Thưởng duy trì hoạt động cả tuần)</i>\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 0.80%\n'
-                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 0.40%\n'
-                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 0.30%\n'
-                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 0.20%\n'
-                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 0.15%\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("📌")} Chỉ tính cược đã có kết quả. Cược đang chờ, bị hủy hoặc được hoàn tiền không tính vào doanh số.\n'
-                f'{ce("⏰")} Số liệu chốt cuối tuần.\n\n'
-                f'{ce("📊")} Kỳ tuần này: <code>0</code>\n'
-                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
-                reply_markup=kb, parse_mode=ParseMode.HTML)
-        if d == "ev_ht_ngay":
-            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_ht_ngay")]])
-            return await q.message.reply_text(
-                f'{ce("💸")} <b>HOÀN THUA NGÀY</b>\n'
-                f'<i>(Tổng thua ròng = Tổng nạp thành công - Tổng rút thành công trong ngày)</i>\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 2%\n'
-                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 4%\n'
-                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 6%\n'
-                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 8%\n'
-                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 12%\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("📌")} Nếu kết quả nhỏ hơn hoặc bằng 0 thì không phát sinh hoàn thua.\n'
-                f'{ce("⏰")} Chốt số liệu cuối ngày.\n\n'
-                f'{ce("📊")} Kỳ hôm nay: <code>0</code>\n'
-                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
-                reply_markup=kb, parse_mode=ParseMode.HTML)
-        if d == "ev_ht_tuan":
-            kb = InlineKeyboardMarkup([[btn("Nhận Thưởng", "🎁", callback_data="ev_nhan_ht_tuan")]])
-            return await q.message.reply_text(
-                f'{ce("💸")} <b>HOÀN THUA TUẦN</b>\n'
-                f'<i>(Tổng thua ròng = Tổng nạp thành công - Tổng rút thành công trong tuần)</i>\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("💰")} <b>Mốc 100K - dưới 1M:</b> Hoàn 1%\n'
-                f'{ce("💰")} <b>Mốc 1M - dưới 10M:</b> Hoàn 2%\n'
-                f'{ce("💰")} <b>Mốc 10M - dưới 100M:</b> Hoàn 2.5%\n'
-                f'{ce("💰")} <b>Mốc 100M - dưới 1 Tỷ:</b> Hoàn 3%\n'
-                f'{ce("💰")} <b>Mốc 1 Tỷ - 10 Tỷ:</b> Hoàn 5%\n'
-                f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{ce("📌")} Nếu kết quả nhỏ hơn hoặc bằng 0 thì không phát sinh hoàn thua.\n'
-                f'{ce("⏰")} Chốt số liệu cuối tuần.\n\n'
-                f'{ce("📊")} Kỳ tuần này: <code>0</code>\n'
-                f'{ce("🎁")} Dự kiến hoàn: <code>0</code>',
-                reply_markup=kb, parse_mode=ParseMode.HTML)
+        if not d.startswith("ev_nhan_") or d == "ev_nhan_vip":
+            await q.answer()
+        if d in ("ev_hc_ngay", "ev_hc_tuan", "ev_ht_ngay", "ev_ht_tuan"):
+            ev_text, ev_kb = event_screen(uid, d[3:])
+            return await q.message.reply_text(ev_text, reply_markup=ev_kb, parse_mode=ParseMode.HTML)
         if d == "ev_nhan_vip":
             return await q.message.reply_text(f'{ce("👑")} <b>NHẬN THƯỞNG VIP</b>\n\nCấp hiện tại: Đồng\nĐiểm VIP: 0\n\nMốc VIP 1: Thưởng 10.000 - Cần thêm 10 điểm\n...\n\nKhi đạt mốc VIP mới, nút Nhận thưởng VIP sẽ xuất hiện!', parse_mode=ParseMode.HTML)
         if d == "ev_tuong_tac":
@@ -3842,8 +4568,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         # Xử lý nút Nhận Thưởng
         if d.startswith("ev_nhan_"):
-            await q.answer("Hệ thống đang cập nhật dữ liệu, bạn chưa có thưởng để nhận!", show_alert=True)
-            return
+            return await claim_rewards(update, ctx)
 
     # ===== NẠP TIỀN =====
     if d.startswith("paid_dep_"):
@@ -4136,7 +4861,11 @@ application.add_handler(CommandHandler("kmnap", kmnap_cmd))
 application.add_handler(CommandHandler("kmnapvc", kmnapvc_cmd))
 application.add_handler(CommandHandler("checkprogressadmin", admin_check_bet_progress_cmd))
 application.add_handler(CommandHandler("resetprogress", reset_progress))
-application.add_handler(CommandHandler("codenap", codenap_cmd))
+application.add_handler(CommandHandler("codenap", gift_flow_start))
+application.add_handler(CommandHandler("taogift", gift_flow_start))
+application.add_handler(CommandHandler("xoagift", xoagift_cmd))
+application.add_handler(CommandHandler("dsgift", dsgift_cmd))
+application.add_handler(CommandHandler("sethoancuoc", sethoancuoc_cmd))
 application.add_handler(CommandHandler("baotri", baotri_cmd))
 application.add_handler(CommandHandler("baotriht", baotri_he_thong_cmd))
 application.add_handler(CommandHandler("baotriall", baotri_hethong_cmd))
@@ -4146,11 +4875,14 @@ application.add_handler(CommandHandler("tatroom", tatroom_cmd))
 application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
 
+_bg_tasks = []
+
 async def main():
     global _bot_instance
     await application.initialize()
     await application.start()
     _bot_instance = application.bot
+    _bg_tasks.append(asyncio.create_task(reward_settle_loop(application.bot)))
     for gid in GROUP_IDS:
         try:
             room_betting_enabled[gid] = True
@@ -4169,58 +4901,4 @@ if __name__ == "__main__":
         print("🛑 Bot đã dừng.")
     except Exception as e:
         print(f"❌ Lỗi: {e}")
-        traceback.print_exc() và bạn sửa phần ‘ VIP’ trong tài khoản thành như này nhé 👑 Cấp VIP hiện tại: 🥉 (Đồng)
-🚀 Điểm VIP: 0/10 up VIP 1
-🖐 Số điểm VIP có thể đổi: 0
-
-Với mỗi 300K tiền cược, bạn nhận 1 điểm VIP.
-Điểm này dùng để xét tăng cấp VIP và đổi thưởng.
-
-💎 Tỉ lệ quy đổi: đạt VIP 1 để mở đổi điểm (VIP 1: 1 điểm = 100đ)
-
-🏆 CẤP VIP VÀ BIỂU TƯỢNG
-VIP 0: 🥉 (Đồng)
-VIP 1: 🥈 (Bạc)
-VIP 2: 🥇 (Vàng)
-VIP 3: ⭐ (Bạch Kim)
-VIP 4: 💎 (Kim Cương)
-VIP 5: 🏆 (Cao Thủ)
-VIP 6: ⚔️ (Chiến Tướng)
-VIP 7: 💎 (Đại Tướng)
-VIP 8: 👑 (Huyền Thoại)
-VIP 9: 💰 (Chí Tôn)
-
-📌 ĐIỂM YÊU CẦU ĐỂ ĐẠT CẤP VIP
-VIP 1: 10
-VIP 2: 50
-VIP 3: 100
-VIP 4: 500
-VIP 5: 1000
-VIP 6: 5000
-VIP 7: 10000
-VIP 8: 50000
-VIP 9: 100000
-
-💎 TỈ LỆ QUY ĐỔI ĐIỂM
-VIP 1: 1 điểm = 100
-VIP 2: 1 điểm = 200
-VIP 3: 1 điểm = 300
-VIP 4: 1 điểm = 400
-VIP 5: 1 điểm = 500
-VIP 6: 1 điểm = 600
-VIP 7: 1 điểm = 700
-VIP 8: 1 điểm = 800
-VIP 9: 1 điểm = 1.000
-
-❤️ Cách đổi điểm VIP
-/doidiemvip [số điểm]
-VD: /doidiemvip 100              bạn thêm phần code của game như sau
-bạn làm lệnh cho admin tạo từng loại code nhé
-JAV88-TANTHU-7chữ và số
-JAV88-CODEMUA-7chữ và số
-JAV88-GIOVANG-7 chữ và số
-JAV88-7số-7chữ 
-JAV88-TRIAN-7số chữ
-và thêm lệnh để admin có yêu cầu nạp để nhập code hay không và khi người dùng nhập code mà chưa nạp bot sẽ báo giá trị của code là bao nhiêu tiền và yêu cầu số tiền nạp trong ngày để nhập code 
-và số thêm lệnh để admin chọn loại code cần tạo nhé và hiện để admin nhập số vòng cược cho code và giá trị code và hạn sử dụng nhé và nhập số lượng tạo mã code nhé và có nút để có chọn tài khoản nhập code chỉ định không kiểu là admin cho tài khoản nào nhập code thì mã code chỉ nhập được trong tài khoản đó lưu ý JAV88-CODEMUA-7chữ và số' code này là dành khi người dùng mua nhé code này chỉ x1 vòng cược khi người dùng mua sẽ tự động gửi code cho người dùng ngay không cần admin duyệt 
-khi bấm nút nhận thưởng hay vip sẽ hiện ra như vậy bạn thêm tính năng theo hình ảnh nhé 
+        traceback.print_exc()
