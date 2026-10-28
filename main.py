@@ -636,7 +636,7 @@ def generate_transfer_content(user_id):
 def get_deposit_info(user_id, amount=0):
     content = generate_transfer_content(user_id)
     qr_params = urlencode({"amount": int(amount), "addInfo": content, "accountName": ACCOUNT_NAME})
-    qr_url = f"https://img.vietqr.io/image/{BANK_ID}-{ACCOUNT_NO}-qr_only.png?{qr_params}"
+    qr_url = f"https://img.vietqr.io/image/{BANK_ID}-{ACCOUNT_NO}-compact2.png?{qr_params}"
     
     caption = (
         f'{ce("💳")} <b>THÔNG TIN NẠP TIỀN</b>\n\n'
@@ -645,22 +645,31 @@ def get_deposit_info(user_id, amount=0):
         f'{ce("💰")} STK: <code>{ACCOUNT_NO}</code>\n'
         f'{ce("✍️")} Nội dung: <code>{content}</code>\n'
         f'{ce("💰")} Số tiền: <code>{fmt_money(amount)}đ</code>\n\n'
-        f'{ce("⚡")} <i>Lưu ý: Quét mã QR để tự động điền nội dung. Hệ thống cộng tiền tự động sau 1-3 phút.</i>'
+        f'{ce("⚡")} <i>Lưu ý: Quét mã QR để tự điền số tiền và nội dung chuyển khoản. Chỉ cộng tiền tự động khi hệ thống xác nhận được giao dịch.</i>'
     )
     return qr_url, caption, content
 
 async def fetch_qr_image(qr_url: str) -> BytesIO:
-    """Tải ảnh QR từ VietQR về trước khi gửi Telegram, tránh lỗi Telegram tự tải URL."""
-    timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(qr_url) as response:
-            if response.status != 200:
-                body = (await response.text())[:300]
-                raise RuntimeError(f"VietQR trả HTTP {response.status}: {body}")
+    """Tải QR VietQR về bộ nhớ; kiểm tra phản hồi để báo lỗi rõ ràng."""
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; TelegramBot/1.0)"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(qr_url, allow_redirects=True) as response:
             content_type = response.headers.get("Content-Type", "")
             data = await response.read()
-            if not data or ("image" not in content_type.lower() and not data.startswith(b"\x89PNG")):
-                raise RuntimeError(f"VietQR không trả về ảnh hợp lệ (Content-Type: {content_type})")
+            if response.status != 200:
+                detail = data[:250].decode("utf-8", errors="replace")
+                raise RuntimeError(f"VietQR HTTP {response.status}; Content-Type={content_type}; body={detail}")
+            # Một số CDN trả ảnh với Content-Type không chuẩn; chấp nhận các định dạng ảnh phổ biến.
+            is_image = (
+                "image/" in content_type.lower()
+                or data.startswith(b"\x89PNG\r\n\x1a\n")
+                or data.startswith(b"\xff\xd8\xff")
+                or data.startswith((b"GIF87a", b"GIF89a", b"RIFF"))
+            )
+            if not data or not is_image:
+                detail = data[:200].decode("utf-8", errors="replace")
+                raise RuntimeError(f"VietQR không trả về ảnh; Content-Type={content_type}; body={detail}")
     photo = BytesIO(data)
     photo.name = "deposit_qr.png"
     photo.seek(0)
