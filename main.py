@@ -1,22 +1,62 @@
+import os
+import re
+import random
+import asyncio
+import hashlib
+import csv
+import traceback
+import html
+from datetime import datetime, timedelta
+from io import BytesIO
+
+import psycopg2
+from psycopg2 import extras
+import pytz
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
-import psycopg2
-from psycopg2 import extras
-from datetime import datetime, timedelta
-import os
-import re
-import asyncio
-import random
-import csv
-import hashlib
-from io import BytesIO
-import pytz
-import html
-import traceback
+from aiohttp import web
 
 # ============================================================
-# CUSTOM EMOJI MAPPING (CẬP NHẬT THEO DANH SÁCH CỦA BẠN)
+# CẤU HÌNH CHUNG
+# ============================================================
+TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "EFXZKSPYCENBKFJIAF39GDPI2DƯ30N1PMPHRKJYCIFARAHK7XUET6T0CYQQO5MEB") # Lấy từ biến môi trường
+
+ADMIN_IDS = [5633649201, 7884394252]
+BOT_USERNAME = "Jav88gamebot"
+ROOM_LINK = "https://t.me/jav88sanhu"
+MIN_WITHDRAW = 50000
+LOG_GROUP_ID = -1004375247819
+
+# THÔNG TIN NGÂN HÀNG MỚI
+BANK_ID = "MB"
+ACCOUNT_NO = "007399999"
+ACCOUNT_NAME = "NGO VIET HOANG"
+
+_bot_instance = None
+GROUP_IDS = [-1004375247819]
+
+group_games = {}
+room_betting_enabled = {}
+game_history = {}
+SESSION_COUNTER = {"value": 0}
+pending_inputs = {}
+
+VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
+
+def get_vietnam_time():
+    return datetime.now(VIETNAM_TZ)
+
+def get_vietnam_date():
+    return get_vietnam_time().strftime("%d/%m/%Y")
+
+def get_vietnam_datetime_db():
+    return get_vietnam_time().strftime("%H:%M - %d/%m/%Y")
+
+# ============================================================
+# CUSTOM EMOJI MAPPING (CẬP NHẬT THEO DANH SÁCH MỚI)
 # ============================================================
 CUSTOM_EMOJI = {
     "🥰": "5238188302279909462", "👋": "5235701688014217208", "🙂": "5238185738184435219",
@@ -52,7 +92,7 @@ CUSTOM_EMOJI = {
     "🍬": "5404573776253825754", "🏅": "5204271353565300127", "➖": "5382261056078881010",
     "📈": "5244837092042750681", "📉": "5246762912428603768", "✨": "5325547803936572038",
     "✅": "6003745186042089867", "🔓": "5291873529464122510", "🔑": "5278573677900752088",
-    "✔️": "5780463361175066565", "🆘": "5429262837409138106", "✏️": "5395444784611480792",
+    "✔️": "5206607081334906820", "🆘": "5429262837409138106", "✏️": "5395444784611480792",
     "🗓": "5413879192267805083", "🔜": "5440621591387980068", "🚀": "5372917041193828849",
     "☀️": "5373021138316186413", "🌛": "5438362704878250587", "🏆": "5188344996356448758",
     "👑": "5217822164362739968", "🛒": "5400090058030075645", "⏰": "5386415655253730366",
@@ -75,7 +115,7 @@ CUSTOM_EMOJI = {
     "game_icon_3": "5361741454685256344", "game_icon_4": "5422439311196834318",
     "game_icon_5": "5406683434124859552", "game_icon_6": "5416041192905265756",
     "game_icon_7": "5460755126761312667", "🪙": "5379773896352355687",
-    # ---------- EMOJI MỚI THÊM TỪ DANH SÁCH CỦA BẠN ----------
+    # Cập nhật từ danh sách mới
     "🎲": "5280816565657300091", "💡": "5262844652964303985", "🤑": "5427107837568360763",
     "🖥": "5282843764451195532", "💻": "5193177581888755275", "🔋": "5307905813451397794",
     "⛏": "5197371802136892976", "↗️": "5429651785352501917", "↔️": "5271837459783638319",
@@ -94,11 +134,35 @@ CUSTOM_EMOJI = {
     "🤜": "5375161616872520280", "✈️": "5456216132308462012", "🧪": "5294451377425106537",
     "💃": "5373112999076699207", "ℹ️": "5334544901428229844", "©": "5323442290708985472",
     "🫦": "5395444514028529554", "😧": "5237721297600912488",
-    # Bổ sung từ danh sách mới
-    "✔️": "5206607081334906820", "⚡️": "5456140674028019486", "🛡": "5251203410396458957", 
-    "🔍": "5231012545799666522", "📩": "5472239203590888751", "🐷": "5417831807720642261",
-    "🛒": "5440841102871517055", "🔗": "5440410042773824003", "🪙": "5382164415019768638",
-    "🎁": "5442939099906325301", "💱": "5377336227533969892"
+    "🛫": "5463424023734014980", "🧩": "5213306719215577669", "🌱": "5474417568053745249",
+    "🪧": "5429278861932124623", "🗺": "5235794253149394263", "🫴": "5440457429147997980",
+    "🏷️": "5298877105000439431", "📩": "5472239203590888751", "⛏️": "5204006143629744642",
+    "🪂": "5461128651477111908", "🧾": "5204242830687494041", "👛": "5215420556089776398",
+    "🔑": "5307843983102204243", "💶": "5197369495739455200", "💷": "5377775044342599336",
+    "💴": "5197161121106123533", "🪣": "5399909394525737759", "🌎": "5224450179368767019",
+    "🐂": "5411233191765759009", "📇": "5332724926216428039", "🧮": "5303214794336125778",
+    "⏱": "5382194935057372936", "🐳": "5400362079783770689", "🔭": "5379999674193172777",
+    "💼": "5445221832074483553", "🛡": "5197288647275071607", "🪙": "5382164415019768638",
+    "🛒": "5440841102871517055", "🔗": "5440410042773824003", "🎁": "5442939099906325301",
+    "💱": "5377336227533969892", "📊": "5203993413346680064", "🏦": "5238132025323444613",
+    "🪙": "5296339823005557585", "🏅": "5424746623462823358", "💵": "5201873447554145566",
+    "🪙": "5296355151743838259", "🚀": "5188481279963715781", "🎯": "5461009483314517035",
+    "💬": "5235570365094188078", "⛏": "5461047575379466857", "🪙": "5381975814415866082",
+    "⌨️": "5298975240708187753", "💵": "5197434882321567830", "🪙": "5377505475015235101",
+    "🪙": "5377746319601324795", "🪙": "5202064723922670546", "🪙": "5202113974312653146",
+    "🪙": "5377620962390857342", "💵": "5201692367437974073", "🪙": "5199552030615558774",
+    "💳": "5445353829304387411", "✍️": "5197269100878907942", "🗺": "5330320040883411678",
+    "🛫": "5201691993775818138", "💬": "5303138782004924588", "🎯": "5310278924616356636",
+    "🛍": "5294167145079395967", "🧾": "5444856076954520455", "📉": "5429518319243775957",
+    "🛒": "5312361253610475399", "⚖️": "5400250414929041085", "📊": "5190806721286657692",
+    "🍀": "5305699699204837855", "🐷": "5312123810638483121", "💰": "5278467510604160626",
+    "📈": "5197503331215361533", "🚀": "5195033767969839232", "🧮": "5190741648237161191",
+    "💵": "5291914649481007565", "🪙": "5264713049637409446", "💸": "5231005931550030290",
+    "💰": "6307611167296590395", "🍀": "6307395821931335527", "❤️": "6307312246162723113",
+    "👋": "6309717230279986734", "🥰": "6336722047606985714", "🇻🇳": "6114176908415472855",
+    "🎁": "6093579821516854607", "🎁": "6057343663476839832", "🎁": "6057478581284509420",
+    "😘": "6251474231045921194", "🛍": "5278702045883292456", "💱": "5312441427764989435",
+    "🗓": "5274055917766202507", "🧲": "5377535110289576661"
 }
 
 # Emoji chưa có ID premium riêng -> dùng tạm emoji premium gần nghĩa nhất cho ICON NÚT BẤM
@@ -142,39 +206,6 @@ def kbtn(text, emoji=None):
 
 def fmt_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".")
-
-VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
-
-def get_vietnam_time():
-    return datetime.now(VIETNAM_TZ)
-
-def get_vietnam_date():
-    return get_vietnam_time().strftime("%d/%m/%Y")
-
-def get_vietnam_datetime_db():
-    return get_vietnam_time().strftime("%H:%M - %d/%m/%Y")
-
-TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-ADMIN_IDS = [5633649201, 7884394252]
-BOT_USERNAME = "Jav88gamebot"
-ROOM_LINK = "https://t.me/jav88sanhu" # Đã cập nhật link
-MIN_WITHDRAW = 50000
-LOG_GROUP_ID = -1004375247819
-
-BANK_ID = "MB"
-ACCOUNT_NO = "0003456712345"
-ACCOUNT_NAME = "LY THI CHAM"
-
-_bot_instance = None
-GROUP_IDS = [-1004375247819]
-
-group_games = {}
-room_betting_enabled = {}
-game_history = {}
-SESSION_COUNTER = {"value": 0}
-pending_inputs = {}
 
 def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -234,7 +265,8 @@ CREATE TABLE IF NOT EXISTS deposit_history (
     amount BIGINT,
     admin_id BIGINT,
     status TEXT DEFAULT 'pending',
-    time TEXT
+    time TEXT,
+    ref_code TEXT
 )
 """)
 query("""
@@ -370,7 +402,6 @@ CREATE TABLE IF NOT EXISTS giftcodes (
     created_at TEXT
 )
 """)
-# Theo dõi mốc/ngày riêng biệt để chống tạo code trùng khi nhiều lần bấm làm mới
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS milestone INTEGER")
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS claim_date DATE")
 query("CREATE UNIQUE INDEX IF NOT EXISTS uq_tichluy_user_milestone_day ON giftcodes(bound_user, milestone, claim_date) WHERE ctype='TICHLUY' AND bound_user IS NOT NULL AND milestone IS NOT NULL AND claim_date IS NOT NULL")
@@ -379,6 +410,9 @@ query("CREATE TABLE IF NOT EXISTS history (user_id BIGINT, amount BIGINT, note T
 query("ALTER TABLE history ADD COLUMN IF NOT EXISTS id SERIAL")
 query("CREATE TABLE IF NOT EXISTS banned (user_id BIGINT PRIMARY KEY)")
 query("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+
+# Thêm cột ref_code nếu chưa có
+query("ALTER TABLE deposit_history ADD COLUMN IF NOT EXISTS ref_code TEXT")
 
 maintenance_keys = ['mt_taixiu_room', 'mt_xucxac_don', 'mt_longho', 'mt_minipoker', 'mt_baccarat', 'mt_xocdia4', 'mt_taixiumd5', 'mt_baucua', 'mt_xocdia6', 'mt_nap', 'mt_rut']
 for k in maintenance_keys:
@@ -582,19 +616,36 @@ def get_bet_progress_status(user_id: int):
 def gen_code():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-def get_deposit_info(user_id, amount=0):
-    qr_url = f"https://img.vietqr.io/image/{BANK_ID}-{ACCOUNT_NO}-qr_only.png?amount={amount}&addInfo=Ndech%20{user_id}&accountName={ACCOUNT_NAME}"
+# ============================================================
+# HÀM TẠO NỘI DUNG CHUYỂN KHOẢN NGẪU NHIÊN
+# ============================================================
+PREFIX_WORDS = [
+    "anh yeu em", "em yeu anh", "an com chua", "lixi day ne", "chuc mung", "vui ve", "may man",
+    "thanh cong", "phat tai", "loc phat", "tien vao nhu nuoc", "dau tu sinh loi", "choi game vui",
+    "nap tien nhanh", "giao dich an toan", "ho tro 24/7", "khach hang vip", "thanh toan don hang",
+    "mua sam online", "thanh toan hoa don", "chuyen tien mua hang", "nap the dien thoai",
+    "mung sinh nhat", "qua tang", "loi chuc", "tinh cam", "gia dinh", "ban be", "dong nghiep",
+    "doi tac", "khach hang", "nguoi dung", "thanh vien", "dang ky", "xac nhan", "hoan tien"
+]
 
+def generate_transfer_content(user_id):
+    prefix = random.choice(PREFIX_WORDS)
+    return f"{prefix} {user_id}".lower()
+
+def get_deposit_info(user_id, amount=0):
+    content = generate_transfer_content(user_id)
+    qr_url = f"https://img.vietqr.io/image/{BANK_ID}-{ACCOUNT_NO}-qr_only.png?amount={amount}&addInfo={content}&accountName={ACCOUNT_NAME}"
+    
     caption = (
         f'{ce("💳")} <b>THÔNG TIN NẠP TIỀN</b>\n\n'
-        f'{ce("💳")} Ngân hàng: <b>MBBANK</b>\n'
-        f'{ce("👥")} CTK: <b>{ACCOUNT_NAME}</b>\n'
+        f'{ce("🏦")} Ngân hàng: <b>MBBANK</b>\n'
+        f'{ce("👤")} CTK: <b>{ACCOUNT_NAME}</b>\n'
         f'{ce("💰")} STK: <code>{ACCOUNT_NO}</code>\n'
-        f'{ce("✍️")} Nội dung: <code>Ndech {user_id}</code>\n'
+        f'{ce("✍️")} Nội dung: <code>{content}</code>\n'
         f'{ce("💰")} Số tiền: <code>{fmt_money(amount)}đ</code>\n\n'
-        f'{ce("⚡")} <i>Lưu ý: Quét mã QR để tự động điền nội dung. Hệ thống cộng tiền sau 1-3 phút.</i>'
+        f'{ce("⚡")} <i>Lưu ý: Quét mã QR để tự động điền nội dung. Hệ thống cộng tiền tự động sau 1-3 phút.</i>'
     )
-    return qr_url, caption
+    return qr_url, caption, content
 
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
@@ -615,14 +666,14 @@ def deposit_menu_content(uid):
         f'{s3} <b>Bước 3:</b> Chờ 1-3 phút, tiền tự động cộng vào ví {ce("✍️")}\n\n'
         f'{ce("⚡")} <i>Chọn mệnh giá bên dưới để lấy QR có sẵn số tiền hoặc dùng lệnh /nap [số_tiền]</i> {ce("🫵")}'
     )
-    qr_url, _ = get_deposit_info(uid, 0)
+    qr_url, _, _ = get_deposit_info(uid, 0)
     return qr_url, caption, kb
 
 def format_money(amount):
     return f"{amount:,}".replace(",", ".")
 
 # ============================================================
-# ===== [MỚI] TIỆN ÍCH CÀI ĐẶT / THỐNG KÊ CƯỢC THEO NGÀY ======
+# ===== TIỆN ÍCH CÀI ĐẶT / THỐNG KÊ CƯỢC THEO NGÀY ======
 # ============================================================
 def get_setting(key, default=None):
     res = query("SELECT value FROM settings WHERE key=%s", (key,))
@@ -717,7 +768,7 @@ async def safe_answer(q, text=None, alert=False):
         pass
 
 # ============================================================
-# ===== [SỬA LỖI] TÍCH LŨY NẠP ============================
+# ===== TÍCH LŨY NẠP ============================
 # ============================================================
 MILESTONES = [
     {"moc": 1, "nap": 50_000, "cuoc": 1_000_000, "gift": 20_000},
@@ -858,7 +909,7 @@ async def auto_gen_tich_luy_codes():
                 print(f"Không gửi được code tích lũy cho {uid}: {e}")
 
 # ============================================================
-# ===== [MỚI] VIP ============================================
+# ===== VIP ============================================
 # ============================================================
 VIP_POINT_BET = 300000
 VIP_LEVELS = [
@@ -1001,7 +1052,7 @@ async def vip_exchange_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
         await q.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 # ============================================================
-# ===== [MỚI] TRUNG TÂM NHẬN THƯỞNG ==========================
+# ===== TRUNG TÂM NHẬN THƯỞNG ==========================
 # ============================================================
 MIN_REWARD_BASE = 100000
 LOSS_TIERS_DAY = [(1_000_000_000, 12), (100_000_000, 8), (10_000_000, 6), (1_000_000, 4), (100_000, 2)]
@@ -1268,7 +1319,7 @@ async def sethoancuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'{ce("✅")} Đã đặt hoàn cược {args[0].lower()} = <code>{fmt_pct(pct)}%</code>', parse_mode=ParseMode.HTML)
 
 # ============================================================
-# ===== [MỚI] GIFTCODE 5 LOẠI ================================
+# ===== GIFTCODE 5 LOẠI ================================
 # ============================================================
 GIFT_TYPES = {
     "TANTHU":  {"name": "Code Tân Thủ",  "icon": "🎁", "fmt": "JAV88-TANTHU-xxxxxxx"},
@@ -3080,9 +3131,8 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if amount < 10000:
             return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là 10,000đ!', parse_mode=ParseMode.HTML)
 
-        qr_url, caption = get_deposit_info(uid, amount)
+        qr_url, caption, content = get_deposit_info(uid, amount)
         kb = InlineKeyboardMarkup([
-            [btn("Đã Thanh Toán", "🔄", callback_data=f"paid_dep_{amount}")],
             [btn("Hỗ Trợ", "🔔", callback_data="dep_support")]
         ])
         await msg_obj.reply_photo(photo=qr_url, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -4733,95 +4783,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if d.startswith("ev_nhan_"):
             return await claim_rewards(update, ctx)
 
-    if d.startswith("paid_dep_"):
-        try:
-            amount = int(d.split("_")[2])
-            now_str = get_vietnam_datetime_db()
-            query("INSERT INTO deposit_history (user_id, amount, status, time) VALUES (%s, %s, %s, %s)", (uid, amount, 'pending', now_str))
-
-            admin_kb = InlineKeyboardMarkup([
-                [
-                    btn("Duyệt", "✅", callback_data=f"app_dep_{uid}_{amount}"),
-                    btn("Từ chối", "❌", callback_data=f"rej_dep_{uid}_{amount}")
-                ]
-            ])
-            for admin_id in ADMIN_IDS:
-                try:
-                    await ctx.bot.send_message(
-                        chat_id=admin_id,
-                        text=(
-                            f'{ce("🎁")} <b>YÊU CẦU XÁC NHẬN NẠP TIỀN</b>\n'
-                            f'━━━━━━━━━━━━━━━━━━━━━\n'
-                            f'{ce("👥")} <b>ID:</b> <code>{uid}</code>\n'
-                            f'{ce("💰")} <b>Số tiền:</b> <code>{fmt_money(amount)}đ</code>\n'
-                            f'{ce("⏰")} <b>Thời gian:</b> <code>{now_str}</code>'
-                        ),
-                        reply_markup=admin_kb,
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception as e: pass
-
-            await q.answer("✅ Đã gửi yêu cầu xác nhận thanh toán đến Admin!", show_alert=True)
-            if q.message.caption:
-                await q.message.edit_caption(
-                    caption=q.message.caption_html + f"\n\n{ce('✅')} <b>Đã gửi yêu cầu xác nhận thanh toán. Vui lòng chờ Admin duyệt!</b>",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None
-                )
-        except Exception as e:
-            print(f"Lỗi paid_dep: {e}")
-        return
-
-    if d.startswith("app_dep_"):
-        if uid not in ADMIN_IDS: return await q.answer("❌ Không có quyền!", show_alert=True)
-        parts = d.split("_")
-        target_id = int(parts[2])
-        amount = int(parts[3])
-
-        pending = query("SELECT id FROM deposit_history WHERE user_id=%s AND amount=%s AND status='pending' ORDER BY id DESC LIMIT 1", (target_id, amount))
-        if not pending:
-            await q.answer("⚠️ Yêu cầu này đã được xử lý rồi!", show_alert=True)
-            try: await q.edit_message_text(f'{ce("⚠️")} Yêu cầu nạp này đã được xử lý trước đó.', parse_mode=ParseMode.HTML)
-            except: pass
-            return
-        query("UPDATE deposit_history SET status='success', admin_id=%s WHERE id=%s", (uid, pending[0][0]))
-        add_money(target_id, amount, f"Nạp tiền +{amount:,}đ")
-
-        masked_id = str(target_id)
-        if len(masked_id) > 5:
-            masked_id = "*****" + masked_id[5:]
-
-        try:
-            await ctx.bot.send_message(chat_id=LOG_GROUP_ID, text=f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("👥")} ID: <code>{masked_id}</code>\n{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>', parse_mode=ParseMode.HTML)
-        except: pass
-
-        bonus_amount = int(amount * 0.10)
-        if bonus_amount > 0:
-            required_bet = bonus_amount * 2
-            keyboard = InlineKeyboardMarkup([[
-                btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_bonus_{target_id}_{bonus_amount}_{required_bet}"),
-                btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{target_id}")
-            ]])
-            try:
-                await ctx.bot.send_message(target_id,
-                    f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n{ce("💰")} Số tiền nạp: <code>+{fmt_money(amount)}đ</code>\n{ce("💎")} Số dư hiện tại: <code>{fmt_money(get_balance(target_id))}đ</code>\n\n{ce("🎁")} <b>BẠN CÓ MUỐN NHẬN THÊM KHUYẾN MÃI?</b>\n━━━━━━━━━━━━━━━━━━━━━\n{ce("✨")} <b>Thưởng nạp 10%:</b> <code>+{fmt_money(bonus_amount)}đ</code>\n{ce("🎯")} <b>Yêu cầu cược:</b> x2 vòng (<code>{fmt_money(required_bet)}đ</code>)\n{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x2 vòng cược tổng số dư tài khoản\n━━━━━━━━━━━━━━━━━━━━━\n\nVui lòng chọn bên dưới:',
-                    reply_markup=keyboard, parse_mode=ParseMode.HTML)
-            except Exception as e: pass
-
-        await q.edit_message_text(f'{ce("✅")} ĐÃ DUYỆT NẠP ID <code>{target_id}</code> | <code>{fmt_money(amount)}đ</code>', parse_mode=ParseMode.HTML)
-        return
-
-    if d.startswith("rej_dep_"):
-        if uid not in ADMIN_IDS: return await q.answer("❌ Không có quyền!", show_alert=True)
-        parts = d.split("_")
-        target_id = int(parts[2])
-        amount = int(parts[3])
-        query("UPDATE deposit_history SET status='rejected', admin_id=%s WHERE user_id=%s AND amount=%s AND status='pending'", (uid, target_id, amount))
-        try: await ctx.bot.send_message(chat_id=target_id, text=f'{ce("❌")} Yêu cầu nạp <code>{fmt_money(amount)}đ</code> của bạn đã bị từ chối bởi Admin.', parse_mode=ParseMode.HTML)
-        except: pass
-        await q.edit_message_text(f'{ce("❌")} ĐÃ TỪ CHỐI NẠP ID <code>{target_id}</code> | <code>{fmt_money(amount)}đ</code>', parse_mode=ParseMode.HTML)
-        return
-
+    # ===== XỬ LÝ NÚT NẠP TIỀN =====
     if d == "dep_change":
         await q.answer()
         qr_url, caption, kb = deposit_menu_content(uid)
@@ -4842,8 +4804,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await q.answer()
             amount = int(d.split("_")[1])
-            qr_url, caption = get_deposit_info(uid, amount)
-            kb = InlineKeyboardMarkup([[btn("Đã Thanh Toán", "🔄", callback_data=f"paid_dep_{amount}")], [btn("Hỗ Trợ", "🔔", callback_data="dep_support")]])
+            qr_url, caption, content = get_deposit_info(uid, amount)
+            kb = InlineKeyboardMarkup([[btn("Hỗ Trợ", "🔔", callback_data="dep_support")]])
             if q.message.photo:
                 return await q.edit_message_media(media=InputMediaPhoto(media=qr_url, caption=caption, parse_mode=ParseMode.HTML), reply_markup=kb)
             else:
@@ -4970,6 +4932,122 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.answer()
 
+# ============================================================
+# WEBHOOK SEPAY
+# ============================================================
+async def sepay_webhook(request):
+    # Xác thực API Key (Header Authorization: Bearer <API_KEY>)
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer ") or auth_header.split(" ")[1] != SEPAY_API_KEY:
+        print("SePay Webhook: Unauthorized")
+        return web.Response(status=401, text="Unauthorized")
+
+    try:
+        data = await request.json()
+        print(f"SePay Webhook Data: {data}")
+
+        # Lấy thông tin từ webhook
+        content = data.get("content", "")  # Nội dung chuyển khoản
+        amount = int(data.get("transferAmount", 0))  # Số tiền
+        ref_code = data.get("referenceCode", "")  # Mã giao dịch
+
+        if amount <= 0:
+            return web.Response(status=200, text="Amount <= 0")
+
+        # Tìm user_id từ nội dung chuyển khoản
+        # Nội dung có dạng: "anh yeu em 123456" -> tìm số ID ở cuối
+        match = re.search(r'(\d+)$', content.strip())
+        if not match:
+            print(f"SePay Webhook: Không tìm thấy ID trong nội dung: {content}")
+            return web.Response(status=200, text="No ID found")
+
+        user_id = int(match.group(1))
+        get_user(user_id)
+
+        # Kiểm tra giao dịch đã xử lý chưa (dựa vào ref_code)
+        if ref_code:
+            check_dup = query("SELECT 1 FROM deposit_history WHERE ref_code=%s", (ref_code,))
+            if check_dup:
+                print(f"SePay Webhook: Giao dịch {ref_code} đã xử lý")
+                return web.Response(status=200, text="Duplicate")
+
+        # Cộng tiền
+        now_str = get_vietnam_datetime_db()
+        query("INSERT INTO deposit_history (user_id, amount, admin_id, status, time, ref_code) VALUES (%s, %s, %s, %s, %s, %s)",
+              (user_id, amount, 0, 'success', now_str, ref_code))
+        add_money(user_id, amount, f"Nạp tiền tự động (SePay) +{amount:,}đ")
+
+        # Thông báo cho user
+        try:
+            await _bot_instance.send_message(
+                user_id,
+                f'{ce("✅")} <b>NẠP TIỀN TỰ ĐỘNG THÀNH CÔNG!</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>\n'
+                f'{ce("📌")} Nội dung: <code>{content}</code>\n'
+                f'{ce("⏰")} Thời gian: {now_str}\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("💎")} Số dư hiện tại: <code>{fmt_money(get_balance(user_id))}đ</code>',
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            print(f"SePay Webhook: Lỗi gửi tin nhắn cho user {user_id}: {e}")
+
+        # Thông báo cho Admin (Log Group)
+        masked_id = str(user_id)
+        if len(masked_id) > 5:
+            masked_id = "*****" + masked_id[5:]
+        try:
+            await _bot_instance.send_message(
+                LOG_GROUP_ID,
+                f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN TỰ ĐỘNG</b>\n'
+                f'{ce("👥")} ID: <code>{masked_id}</code>\n'
+                f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>\n'
+                f'{ce("📌")} Nội dung: <code>{content}</code>',
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            print(f"SePay Webhook: Lỗi gửi log group: {e}")
+
+        # Tặng khuyến mãi 10% (gửi nút cho user)
+        bonus_amount = int(amount * 0.10)
+        if bonus_amount > 0:
+            required_bet = bonus_amount * 2
+            keyboard = InlineKeyboardMarkup([[
+                btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_bonus_{user_id}_{bonus_amount}_{required_bet}"),
+                btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{user_id}")
+            ]])
+            try:
+                await _bot_instance.send_message(
+                    user_id,
+                    f'{ce("🎁")} <b>BẠN CÓ MUỐN NHẬN THÊM KHUYẾN MÃI?</b>\n'
+                    f'━━━━━━━━━━━━━━━━━━━━━\n'
+                    f'{ce("✨")} <b>Thưởng nạp 10%:</b> <code>+{fmt_money(bonus_amount)}đ</code>\n'
+                    f'{ce("🎯")} <b>Yêu cầu cược:</b> x2 vòng (<code>{fmt_money(required_bet)}đ</code>)\n'
+                    f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x2 vòng cược tổng số dư tài khoản\n'
+                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                    f'Vui lòng chọn bên dưới:',
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                print(f"SePay Webhook: Lỗi gửi khuyến mãi cho user {user_id}: {e}")
+
+        return web.Response(status=200, text="OK")
+
+    except Exception as e:
+        print(f"SePay Webhook Error: {e}")
+        traceback.print_exc()
+        return web.Response(status=500, text="Internal Server Error")
+
+async def start_webhook_server():
+    app = web.Application()
+    app.router.add_post('/sepay_webhook', sepay_webhook)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    print("✅ Webhook server started on port 8080")
 
 # ============================================================
 # ADMIN TOOLS: help, per-game maintenance, bot status and user tools
@@ -5329,6 +5407,9 @@ async def main():
     
     _bg_tasks.append(asyncio.create_task(reward_settle_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(auto_settle_tich_luy_loop(application.bot)))
+    
+    # Khởi động webhook server
+    await start_webhook_server()
     
     for gid in GROUP_IDS:
         try:
