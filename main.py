@@ -650,21 +650,27 @@ def get_deposit_info(user_id, amount=0):
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
     kb = InlineKeyboardMarkup([
-        [btn("10k", "💵", "dep_10000"), btn("20k", "💵", "dep_20000"), btn("50k", "💵", "dep_50000")],
-        [btn("100k", "💵", "dep_100000"), btn("200k", "💵", "dep_200000"), btn("500k", "💵", "dep_500000")],
-        [btn("1m", "💰", "dep_1000000"), btn("2m", "💰", "dep_2000000"), btn("5m", "💰", "dep_5000000")],
-        [btn("10m", "💎", "dep_10000000"), btn("20m", "💎", "dep_20000000"), btn("50m", "💎", "dep_50000000")],
+        [btn("10.000đ", "💵", "dep_10000"), btn("20.000đ", "💵", "dep_20000"), btn("50.000đ", "💵", "dep_50000")],
+        [btn("100.000đ", "💵", "dep_100000"), btn("200.000đ", "💵", "dep_200000"), btn("500.000đ", "💵", "dep_500000")],
+        [btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000"), btn("5.000.000đ", "💰", "dep_5000000")],
+        [btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000"), btn("50.000.000đ", "💎", "dep_50000000")],
         [btn("Hỗ Trợ", "🔔", "dep_support")]
     ])
-    s1 = f'<tg-emoji emoji-id="{CUSTOM_EMOJI["step_1"]}">🔝</tg-emoji>'
-    s2 = f'<tg-emoji emoji-id="{CUSTOM_EMOJI["step_2"]}">🔄</tg-emoji>'
-    s3 = f'<tg-emoji emoji-id="{CUSTOM_EMOJI["step_3"]}">🆕</tg-emoji>'
+    
     caption = (
-        f'{ce("🎁")} <b>Khuyến Mãi 10% NẠP TIỀN SIÊU TỐC</b> {ce("😃")}\n\n'
-        f'{s1} <b>Bước 1:</b> Quét QR hoặc chuyển khoản tới STK\n'
-        f'{s2} <b>Bước 2:</b> Ghi đúng nội dung: <code>Ndech {uid}</code>\n'
-        f'{s3} <b>Bước 3:</b> Chờ 1-3 phút, tiền tự động cộng vào ví {ce("✍️")}\n\n'
-        f'{ce("⚡")} <i>Chọn mệnh giá bên dưới để lấy QR có sẵn số tiền hoặc dùng lệnh /nap [số_tiền]</i> {ce("🫵")}'
+        f'{ce("💵")} <b>CHỌN MỆNH GIÁ NẠP TIỀN</b>\n\n'
+        f'{ce("💎")} Nạp tối thiểu: <b>10.000 đ</b>\n'
+        f'{ce("💎")} Nạp tối đa: <b>100.000.000 đ</b>\n\n'
+        f'Bấm vào mệnh giá bên dưới để nạp tiền qua <b>Chuyển khoản Ngân hàng</b>.\n\n'
+        f'{ce("📌")} <b>CÁCH LẤY THÔNG TIN NẠP:</b>\n\n'
+        f'{ce("✍️")} Gõ lệnh: <code>/nap số_tiền</code>\n'
+        f'Ví dụ: <code>/nap 100000</code> hoặc <code>/nap 100k</code>\n\n'
+        f'{ce("➡️")} Hoặc bấm nút số tiền bên dưới để lấy nhanh.\n\n'
+        f'{ce("⚠️")} <b>LƯU Ý:</b>\n\n'
+        f'{ce("✔️")} Chuyển đúng <b>SỐ TIỀN</b> và <b>NỘI DUNG</b> được cung cấp.\n'
+        f'{ce("✔️")} Mỗi lần nạp cần lấy thông tin <b>MỚI</b>.\n'
+        f'{ce("❌")} Không dùng thông tin cũ cho giao dịch sau.\n'
+        f'{ce("💰")} Nạp tối thiểu: <b>10.000 đ</b>'
     )
     qr_url, _, _ = get_deposit_info(uid, 0)
     return qr_url, caption, kb
