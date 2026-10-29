@@ -13,8 +13,8 @@ from io import BytesIO
 import psycopg2
 from psycopg2 import extras
 import pytz
-from telegram import (Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats)
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+from telegram import (Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ApplicationHandlerStop
 from telegram.constants import ParseMode
 import aiohttp
 from aiohttp import web
@@ -244,6 +244,175 @@ def kbtn(text, emoji=None):
     if emoji:
         text = f"{emoji} {text}"
     return KeyboardButton(text)
+
+# ============================================================
+# ENGINE EMOJI PREMIUM — TỰ ĐỘNG ĐỔI MỌI EMOJI THƯỜNG -> EMOJI PREMIUM
+#  • Mọi tin nhắn / caption gửi qua bot (HTML hoặc văn bản thường) đều được đổi.
+#  • Mọi nút inline có emoji đứng đầu sẽ được chuyển thành icon premium của nút.
+#  • Emoji chưa có bản premium riêng sẽ dùng emoji premium gần nghĩa nhất (bảng ICON_ALIAS).
+# ============================================================
+import functools
+import telegram as _tg
+
+# Bổ sung bảng quy đổi cho các emoji chưa có ID premium riêng (giữ nguyên các biểu tượng
+# mang ý nghĩa game như ♠♥♦♣ và 🦐🐟🐓 của Bầu Cua để không bị sai nghĩa).
+ICON_ALIAS.update({
+    "📅": "🗓", "🎟": "🎁", "🏁": "🚩", "📦": "🛍", "⏸️": "⌛", "⏸": "⌛",
+    "🧰": "🛠", "🔎": "🔭", "📋": "🧾", "📄": "📜", "📝": "✏️", "🤖": "💻",
+    "🛑": "⛔️", "🎃": "🎉", "⚔️": "🔥", "⚔": "🔥", "⚫️": "🔒", "⚪️": "🏳️",
+})
+
+def _norm_emoji(s: str) -> str:
+    return s.replace("\ufe0f", "")
+
+_PREMIUM_MAP = {}
+for _k, _v in CUSTOM_EMOJI.items():
+    if _k.isascii() or _k == "©":
+        continue
+    _PREMIUM_MAP[_norm_emoji(_k)] = _v
+for _k, _target in ICON_ALIAS.items():
+    _eid = CUSTOM_EMOJI.get(_target)
+    if _eid and _norm_emoji(_k) not in _PREMIUM_MAP:
+        _PREMIUM_MAP[_norm_emoji(_k)] = _eid
+
+def _emoji_pattern(key: str) -> str:
+    # Cho phép (tuỳ chọn) ký tự variation selector U+FE0F sau từng ký tự.
+    return "".join(re.escape(ch) + "\ufe0f?" for ch in key)
+
+_EMOJI_ALT = "|".join(_emoji_pattern(k) for k in sorted(_PREMIUM_MAP, key=len, reverse=True))
+# Nhóm 1: thẻ tg-emoji có sẵn (giữ nguyên) | Nhóm 2: thẻ HTML (giữ nguyên) | Nhóm 3: emoji thường
+_EMOJI_RE = re.compile(r"(<tg-emoji\b[^>]*>.*?</tg-emoji>)|(<[^>]+>)|(" + _EMOJI_ALT + r")", re.S)
+_BTN_EMOJI_RE = re.compile(_EMOJI_ALT)
+
+def premiumize(text):
+    """Đổi toàn bộ emoji thường trong chuỗi HTML thành <tg-emoji> premium."""
+    if not text or not isinstance(text, str):
+        return text
+    def _sub(m):
+        if m.group(1) or m.group(2):
+            return m.group(0)
+        raw = m.group(3)
+        eid = _PREMIUM_MAP.get(_norm_emoji(raw))
+        return f'<tg-emoji emoji-id="{eid}">{raw}</tg-emoji>' if eid else raw
+    return _EMOJI_RE.sub(_sub, text)
+
+def _has_plain_emoji(text: str) -> bool:
+    return any(m.group(3) for m in _EMOJI_RE.finditer(text))
+
+def _prep_text(text, parse_mode):
+    """Trả về (text_mới, parse_mode_mới). Văn bản thường sẽ được escape rồi chuyển sang HTML."""
+    pm = getattr(parse_mode, "value", parse_mode)
+    if isinstance(pm, str) and pm.upper() == "HTML":
+        return premiumize(text), parse_mode
+    if pm is None and _has_plain_emoji(text):
+        return premiumize(html.escape(text, quote=False)), "HTML"
+    return text, parse_mode
+
+def _wrap_bot_text_method(name, text_kw, text_pos=None, pm_pos=None):
+    orig = getattr(_tg.Bot, name, None)
+    if orig is None or getattr(orig, "_premium_wrapped", False):
+        return
+    @functools.wraps(orig)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            args = list(args)
+            where = None
+            if text_kw in kwargs:
+                where = "kw"
+            elif text_pos is not None and len(args) > text_pos:
+                where = "pos"
+            if where and not kwargs.get("entities") and not kwargs.get("caption_entities"):
+                val = kwargs[text_kw] if where == "kw" else args[text_pos]
+                # Nếu parse_mode truyền theo vị trí mà không biết vị trí -> bỏ qua để an toàn.
+                extra_pos = text_pos is not None and len(args) > text_pos + 1 and pm_pos is None
+                if isinstance(val, str) and val and not extra_pos:
+                    if "parse_mode" in kwargs:
+                        pm = kwargs["parse_mode"]
+                    elif pm_pos is not None and len(args) > pm_pos:
+                        pm = args[pm_pos]
+                    else:
+                        pm = None
+                    new_val, new_pm = _prep_text(val, pm)
+                    if new_val != val or new_pm is not pm:
+                        if where == "kw":
+                            kwargs[text_kw] = new_val
+                        else:
+                            args[text_pos] = new_val
+                        if "parse_mode" in kwargs or not (pm_pos is not None and len(args) > pm_pos):
+                            kwargs["parse_mode"] = new_pm
+                        else:
+                            args[pm_pos] = new_pm
+        except Exception as _e:
+            print(f"[premium-emoji] bỏ qua do lỗi: {_e}")
+        return await orig(self, *args, **kwargs)
+    wrapper._premium_wrapped = True
+    setattr(_tg.Bot, name, wrapper)
+
+def _prep_media(media):
+    try:
+        cap = getattr(media, "caption", None)
+        if cap and isinstance(cap, str):
+            old_pm = getattr(media, "parse_mode", None)
+            new_cap, new_pm = _prep_text(cap, old_pm)
+            if new_cap != cap:
+                object.__setattr__(media, "caption", new_cap)
+                if new_pm is not old_pm:
+                    object.__setattr__(media, "parse_mode", new_pm)
+    except Exception as _e:
+        print(f"[premium-emoji] media bỏ qua: {_e}")
+
+def _wrap_bot_media_method(name):
+    orig = getattr(_tg.Bot, name, None)
+    if orig is None or getattr(orig, "_premium_wrapped", False):
+        return
+    @functools.wraps(orig)
+    async def wrapper(self, *args, **kwargs):
+        media = kwargs.get("media")
+        if media is not None:
+            if isinstance(media, (list, tuple)):
+                for m in media:
+                    _prep_media(m)
+            else:
+                _prep_media(media)
+        return await orig(self, *args, **kwargs)
+    wrapper._premium_wrapped = True
+    setattr(_tg.Bot, name, wrapper)
+
+_wrap_bot_text_method("send_message", "text", text_pos=1, pm_pos=2)
+_wrap_bot_text_method("edit_message_text", "text", text_pos=0)
+for _m in ("send_photo", "send_document", "send_animation", "send_video", "send_audio",
+           "send_voice", "edit_message_caption", "copy_message"):
+    _wrap_bot_text_method(_m, "caption")
+for _m in ("edit_message_media", "send_media_group"):
+    _wrap_bot_media_method(_m)
+
+from telegram import InlineKeyboardButton as _PTBInlineKeyboardButton
+
+class InlineKeyboardButton(_PTBInlineKeyboardButton):
+    """Nút inline: emoji đứng đầu tự thành icon premium; emoji thường còn sót trong chữ được loại bỏ."""
+    __slots__ = ()
+
+    def __init__(self, text, *args, **kwargs):
+        try:
+            original = text
+            api_kwargs = dict(kwargs.get("api_kwargs") or {})
+            body = str(text).strip()
+            if "icon_custom_emoji_id" not in api_kwargs:
+                m = _BTN_EMOJI_RE.match(body)
+                if m:
+                    eid = _PREMIUM_MAP.get(_norm_emoji(m.group(0)))
+                    rest = body[m.end():].strip()
+                    if eid and rest:
+                        api_kwargs["icon_custom_emoji_id"] = eid
+                        body = rest
+            cleaned = re.sub(r"\s{2,}", " ", _BTN_EMOJI_RE.sub("", body)).strip()
+            text = cleaned or original
+            if api_kwargs:
+                kwargs["api_kwargs"] = api_kwargs
+        except Exception as _e:
+            print(f"[premium-emoji] nút bỏ qua: {_e}")
+        super().__init__(text, *args, **kwargs)
+
 
 def fmt_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".")
@@ -5629,8 +5798,13 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<code>/naptien ID số_tiền</code> — nạp tay; <code>/dsnap</code> / <code>/dsrut</code> — danh sách chờ\n\n"
         "<b>📊 Thống kê / code</b>\n<code>/stats</code>, <code>/all</code>, <code>/thongke</code>, <code>/tong</code>, <code>/check ID</code>, <code>/hisall</code>\n"
         "<code>/top</code> — Top tương tác hôm nay; <code>/topsodu [n]</code> — Top số dư; <code>/topcuoc [n]</code>, <code>/taocode</code>, <code>/taocodeall</code>, <code>/xoacode</code>, <code>/taogift</code>, <code>/dsgift</code>, <code>/xoagift</code>\n"
-        "<code>/fulluser ID</code> — hồ sơ + xuất XLSX lịch sử theo 1–7 ngày/tất cả; <code>/resetbank ID</code> — gỡ liên kết ngân hàng\n"
-        "<code>/fulluser ID</code> — dùng được trong nhóm hoặc chat riêng, mở bảng xuất file theo từng loại dữ liệu và chọn 1–7 ngày/tất cả thời gian.\n"
+        "<b>🔎 Kiểm tra user (dùng được trong nhóm / chat riêng, có thể reply tin nhắn của user thay ID)</b>\n"
+        "<code>/fulluser ID</code> — hồ sơ đầy đủ + bảng nút xem chat / xuất Excel theo ngày\n"
+        "<code>/lsuser ID [kỳ]</code> — biến động số dư; <code>/lsnap</code> nạp; <code>/lsrut</code> rút; <code>/lscuoc</code> cược & thắng\n"
+        "<code>/lscode ID [kỳ]</code> — code đã nhập; <code>/lsgift</code> giftcode đã dùng; <code>/lsmua</code> giftcode đã mua\n"
+        "<code>/tongket ID [kỳ]</code> — tổng kết theo kỳ; <code>/xuatls ID [kỳ]</code> — xuất FULL Excel nhiều sheet\n"
+        "<i>[kỳ] = all | số ngày | DD/MM/YYYY | DD/MM/YYYY - DD/MM/YYYY</i>\n"
+        "<code>/resetbank ID</code> — gỡ liên kết ngân hàng\n"
         "<code>/checktt</code> — xem số tin hợp lệ, thứ hạng và mốc thưởng hôm nay; <code>/top</code> — Top 10 tương tác; <code>/help</code> — hướng dẫn thành viên; <code>/code MÃ</code> — nhập code.\n"
         "<code>/send nội_dung</code>, <code>/rep ID nội_dung</code> — thông báo/liên hệ user\n\n"
         "<b>Trạng thái bảo trì</b> (🔴 bảo trì, 🟢 hoạt động):\n" + _admin_mt_lines()
@@ -6012,46 +6186,796 @@ async def admin_user_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 application = ApplicationBuilder().token(TOKEN).build()
 
 # ============================================================
-# BỘ CÔNG CỤ ADMIN: hồ sơ đầy đủ, xuất báo cáo CSV, resetbank
+# BỘ CÔNG CỤ ADMIN V2 — HỒ SƠ + LỊCH SỬ ĐẦY ĐỦ + XUẤT EXCEL
+#  /fulluser ID        — hồ sơ + bảng nút (xem trong chat hoặc xuất file Excel)
+#  /lsuser ID [kỳ]     — biến động số dư     /lsnap ID [kỳ]  — lịch sử nạp
+#  /lsrut ID [kỳ]      — lịch sử rút         /lscuoc ID [kỳ] — cược & thắng
+#  /lscode ID [kỳ]     — code đã nhập        /lsgift ID [kỳ] — giftcode đã dùng
+#  /lsmua ID [kỳ]      — giftcode đã mua     /tongket ID [kỳ] — tổng kết theo kỳ
+#  /xuatls ID [kỳ]     — xuất FULL Excel nhiều sheet
+#  [kỳ] = all | số ngày (7) | DD/MM/YYYY | DD/MM/YYYY - DD/MM/YYYY
+#  Có thể reply tin nhắn của user thay cho việc nhập ID.
 # ============================================================
-def _report_keyboard(uid):
-    return InlineKeyboardMarkup([
-        [btn("📊 FULL HỒ SƠ + LỊCH SỬ", "📊", callback_data=f"admreport_{uid}_all_pick")],
-        [btn("📥 LỊCH SỬ NẠP", "📥", callback_data=f"admreport_{uid}_nap_pick"),
-         btn("📤 LỊCH SỬ RÚT", "📤", callback_data=f"admreport_{uid}_rut_pick")],
-        [btn("🎟 NHẬP CODE", "🎟", callback_data=f"admreport_{uid}_code_pick"),
-         btn("🎲 LỊCH SỬ CƯỢC", "🎲", callback_data=f"admreport_{uid}_cuoc_pick")],
-        [btn("🛒 GIFTCODE ĐÃ MUA", "🛒", callback_data=f"admreport_{uid}_mua_pick"),
-         btn("🎁 CODE ĐÃ DÙNG", "🎁", callback_data=f"admreport_{uid}_gift_pick")],
-        [btn("🗓 TẤT CẢ THỜI GIAN", "🗓", callback_data=f"admreport_{uid}_all_all")],
-        [btn("📅 CHỌN NGÀY CỤ THỂ", "📅", callback_data=f"admreport_{uid}_date")],
+RP_KINDS = {
+    "all":  ("📊", "FULL HỒ SƠ"),
+    "his":  ("💳", "BIẾN ĐỘNG SỐ DƯ"),
+    "nap":  ("📥", "LỊCH SỬ NẠP"),
+    "rut":  ("📤", "LỊCH SỬ RÚT"),
+    "cuoc": ("🎲", "CƯỢC & THẮNG"),
+    "code": ("🎟", "CODE ĐÃ NHẬP"),
+    "mua":  ("🛒", "GIFTCODE ĐÃ MUA"),
+    "gift": ("🎁", "GIFTCODE ĐÃ DÙNG"),
+}
+RP_PAGE_SIZE = 8
+RP_DATE_RE = re.compile(r"\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{1,2}-\d{1,2}-\d{4}")
+
+def _rp_money(n):
+    try:
+        return fmt_money(int(n or 0))
+    except Exception:
+        return "0"
+
+def _rp_date(value):
+    """Giá trị thời gian trong DB -> date theo giờ Việt Nam."""
+    if isinstance(value, datetime):
+        try:
+            if value.tzinfo:
+                value = value.astimezone(VIETNAM_TZ)
+        except Exception:
+            pass
+        return value.date()
+    return _parse_db_date(value)
+
+def _rp_parse_date_text(s):
+    s = (s or "").strip()
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})", s)
+    if m:
+        try:
+            return datetime(get_vietnam_time().year, int(m.group(2)), int(m.group(1))).date()
+        except ValueError:
+            return None
+    return None
+
+def _rp_token_from_text(text):
+    """'all' | '7' | '29/10/2026' | '01/10 - 29/10' -> token (all / nN / dYYYYMMDD / rYYYYMMDD-YYYYMMDD) hoặc None."""
+    t = (text or "").strip().lower()
+    if not t or t in ("all", "tatca", "tất cả", "tat ca", "tc", "full"):
+        return "all"
+    if t in ("homnay", "hôm nay", "hom nay", "today"):
+        return "n1"
+    if t.isdigit():
+        n = int(t)
+        return f"n{n}" if 1 <= n <= 3650 else None
+    found = RP_DATE_RE.findall(t)
+    dates = [_rp_parse_date_text(x) for x in found]
+    if not dates or any(d is None for d in dates):
+        return None
+    if len(dates) == 1:
+        return "d" + dates[0].strftime("%Y%m%d")
+    if len(dates) == 2:
+        a, b = sorted(dates)
+        return f"r{a.strftime('%Y%m%d')}-{b.strftime('%Y%m%d')}"
+    return None
+
+def _rp_range(token):
+    """token -> (start_date|None, end_date|None, nhãn hiển thị)."""
+    today = get_vietnam_time().date()
+    token = token or "all"
+    try:
+        if token == "all":
+            return None, None, "Tất cả thời gian"
+        if token.startswith("n"):
+            n = max(1, int(token[1:]))
+            start = today - timedelta(days=n - 1)
+            if n == 1:
+                return today, today, f"Hôm nay ({today.strftime('%d/%m/%Y')})"
+            return start, today, f"{n} ngày gần đây ({start.strftime('%d/%m/%Y')} – {today.strftime('%d/%m/%Y')})"
+        if token.startswith("d"):
+            d = datetime.strptime(token[1:], "%Y%m%d").date()
+            return d, d, f"Ngày {d.strftime('%d/%m/%Y')}"
+        if token.startswith("r"):
+            a_s, b_s = token[1:].split("-")
+            a = datetime.strptime(a_s, "%Y%m%d").date()
+            b = datetime.strptime(b_s, "%Y%m%d").date()
+            return a, b, f"{a.strftime('%d/%m/%Y')} – {b.strftime('%d/%m/%Y')}"
+    except Exception:
+        pass
+    return None, None, "Tất cả thời gian"
+
+def _rp_tag(token):
+    token = token or "all"
+    if token == "all":
+        return "all"
+    if token.startswith("n"):
+        return f"{token[1:]}ngay"
+    return token[1:]
+
+def _rp_in_range(value, start, end):
+    if start is None and end is None:
+        return True
+    d = _rp_date(value)
+    if not d:
+        return False
+    if start and d < start:
+        return False
+    if end and d > end:
+        return False
+    return True
+
+def _rp_status(s):
+    s = str(s or "").strip().lower()
+    return {"success": "Thành công", "pending": "Chờ duyệt", "rejected": "Từ chối"}.get(s, (s or "—"))
+
+def _rp_status_icon(label):
+    return {"Thành công": "✅", "Chờ duyệt": "⌛", "Từ chối": "❌"}.get(label, "🔖")
+
+def _rp_admin_label(admin_id):
+    try:
+        a = int(admin_id or 0)
+    except Exception:
+        a = 0
+    return "Tự động / hệ thống" if a == 0 else f"Admin {a}"
+
+def _rp_run(queries):
+    """Chạy nhiều câu SQL trên MỘT kết nối (nhanh hơn, lỗi một câu không làm hỏng các câu khác)."""
+    conn = get_db_connection()
+    out = []
+    try:
+        cur = conn.cursor()
+        for sql, args in queries:
+            try:
+                cur.execute(sql, args if args else None)
+                out.append(cur.fetchall() if cur.description else [])
+            except Exception as e:
+                print(f"[report] SQL lỗi: {e}")
+                conn.rollback()
+                out.append([])
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+    return out
+
+def _rp_user_exists(uid):
+    return bool(query("SELECT 1 FROM users WHERE user_id=%s", (uid,)))
+
+# ------------------------------------------------------------
+# THU THẬP DỮ LIỆU THEO LOẠI
+# ------------------------------------------------------------
+def _rp_collect(kind, uid, start, end):
+    """Trả về dict: headers, rows (mới nhất trước), money_col, sum_cols, extra."""
+    rows, extra = [], {}
+    if kind == "his":
+        raw = query("SELECT id, amount, note, time FROM history WHERE user_id=%s ORDER BY id DESC LIMIT 50000", (uid,)) or []
+        inc = out = 0
+        for r in raw:
+            if not _rp_in_range(r[3], start, end):
+                continue
+            amt = int(r[1] or 0)
+            rows.append((r[0], r[3] or "", amt, r[2] or ""))
+            if amt >= 0:
+                inc += amt
+            else:
+                out += -amt
+        extra = {"in": inc, "out": out}
+        return {"headers": ["#", "Thời gian", "Biến động (đ)", "Nội dung"], "rows": rows,
+                "money_cols": [2], "sum_cols": [], "signed_col": 2, "extra": extra}
+    if kind == "nap":
+        raw = query("SELECT id, amount, status, time, ref_code, admin_id FROM deposit_history WHERE user_id=%s ORDER BY id DESC LIMIT 50000", (uid,)) or []
+        ok = ok_n = pend = 0
+        for r in raw:
+            if not _rp_in_range(r[3], start, end):
+                continue
+            label = _rp_status(r[2]); amt = int(r[1] or 0)
+            rows.append((r[0], r[3] or "", amt, label, r[4] or "", _rp_admin_label(r[5])))
+            if label == "Thành công":
+                ok += amt; ok_n += 1
+            elif label == "Chờ duyệt":
+                pend += amt
+        extra = {"ok": ok, "ok_n": ok_n, "pending": pend}
+        return {"headers": ["#", "Thời gian", "Số tiền (đ)", "Trạng thái", "Mã giao dịch", "Xử lý bởi"], "rows": rows,
+                "money_cols": [2], "sum_cols": [], "extra": extra, "ok_sum_col": 2, "status_col": 3}
+    if kind == "rut":
+        raw = query("SELECT id, amount, status, time, admin_id, admin_note FROM withdraw_history WHERE user_id=%s ORDER BY id DESC LIMIT 50000", (uid,)) or []
+        ok = ok_n = pend = 0
+        for r in raw:
+            if not _rp_in_range(r[3], start, end):
+                continue
+            label = _rp_status(r[2]); amt = int(r[1] or 0)
+            rows.append((r[0], r[3] or "", amt, label, _rp_admin_label(r[4]) if r[4] else "—", r[5] or ""))
+            if label == "Thành công":
+                ok += amt; ok_n += 1
+            elif label == "Chờ duyệt":
+                pend += amt
+        extra = {"ok": ok, "ok_n": ok_n, "pending": pend}
+        return {"headers": ["#", "Thời gian", "Số tiền (đ)", "Trạng thái", "Admin xử lý", "Ghi chú"], "rows": rows,
+                "money_cols": [2], "sum_cols": [], "extra": extra, "ok_sum_col": 2, "status_col": 3}
+    if kind == "cuoc":
+        win_sql = " OR ".join(["note LIKE %s"] * len(WIN_NOTE_PREFIXES))
+        raw = query(
+            "SELECT id, amount, note, time FROM history WHERE user_id=%s AND "
+            "((amount<0 AND note ILIKE 'cược%%') OR (amount>0 AND (" + win_sql + "))) ORDER BY id DESC LIMIT 50000",
+            (uid, *[p + "%" for p in WIN_NOTE_PREFIXES])
+        ) or []
+        bets = wins = nb = nw = 0
+        for r in raw:
+            if not _rp_in_range(r[3], start, end):
+                continue
+            amt = int(r[1] or 0)
+            if amt < 0:
+                rows.append((r[0], r[3] or "", "Cược", -amt, r[2] or "")); bets += -amt; nb += 1
+            else:
+                rows.append((r[0], r[3] or "", "Thắng / Hoàn", amt, r[2] or "")); wins += amt; nw += 1
+        extra = {"bets": bets, "wins": wins, "net": wins - bets, "n_bet": nb, "n_win": nw}
+        return {"headers": ["#", "Thời gian", "Loại", "Số tiền (đ)", "Nội dung"], "rows": rows,
+                "money_cols": [3], "sum_cols": [], "extra": extra}
+    if kind == "code":
+        raw = query(
+            "SELECT cu.code, cu.used_date, COALESCE(g.reward, c.reward), g.ctype "
+            "FROM code_usage cu LEFT JOIN giftcodes g ON g.code=cu.code LEFT JOIN codes c ON c.code=cu.code "
+            "WHERE cu.user_id=%s", (uid,)
+        ) or []
+        raw = sorted(raw, key=lambda r: (_rp_date(r[1]) or datetime(1970, 1, 1).date(), str(r[1] or "")), reverse=True)
+        total = 0
+        for r in raw:
+            if not _rp_in_range(r[1], start, end):
+                continue
+            rw = int(r[2] or 0); total += rw
+            rows.append((r[1] or "", r[0], rw, r[3] or "Code thường"))
+        extra = {"sum": total}
+        return {"headers": ["Thời gian nhập", "Mã code", "Giá trị (đ)", "Loại"], "rows": rows,
+                "money_cols": [2], "sum_cols": [2], "extra": extra}
+    if kind in ("mua", "gift"):
+        if kind == "mua":
+            sql = ("SELECT code, created_by, created_at, reward, wager, expiry, used, used_by, used_at, ctype, bound_user "
+                   "FROM giftcodes WHERE created_by=%s ORDER BY created_at DESC LIMIT 50000")
+        else:
+            sql = ("SELECT code, created_by, created_at, reward, wager, expiry, used, used_by, used_at, ctype, bound_user "
+                   "FROM giftcodes WHERE used_by=%s OR (bound_user=%s AND COALESCE(used,0)=0) ORDER BY created_at DESC LIMIT 50000")
+        raw = query(sql, (uid,) if kind == "mua" else (uid, uid)) or []
+        now = get_vietnam_time()
+        total = used_n = 0
+        for r in raw:
+            when = r[2] if kind == "mua" else (r[8] or r[2])
+            if not _rp_in_range(when, start, end):
+                continue
+            expired = False
+            try:
+                exp = r[5]
+                if exp:
+                    expired = (now > exp) if getattr(exp, "tzinfo", None) else (now.replace(tzinfo=None) > exp)
+            except Exception:
+                expired = False
+            status = "Đã dùng" if r[6] else ("Hết hạn" if expired else "Chưa dùng")
+            if r[6]:
+                used_n += 1
+            rw = int(r[3] or 0); total += rw
+            rows.append((when or "", r[0], str(r[1] or ""), str(r[7] or ""), rw, f"x{r[4] or 0}", status,
+                         str(r[5] or "")[:19], r[9] or ""))
+        extra = {"sum": total, "used_n": used_n}
+        return {"headers": ["Thời gian", "Mã code", "ID tạo/mua", "ID dùng", "Giá trị (đ)", "Vòng cược", "Trạng thái", "Hạn dùng", "Loại"],
+                "rows": rows, "money_cols": [4], "sum_cols": [4], "extra": extra}
+    return {"headers": [], "rows": [], "money_cols": [], "sum_cols": [], "extra": {}}
+
+def _rp_profile_sync(uid):
+    """Toàn bộ số liệu hồ sơ (toàn thời gian) — dùng 1 kết nối."""
+    res = _rp_run([
+        ("SELECT balance, refs, refed, bank, stk, name, last_checkin, last_withdraw, total_bet, bank_linked FROM users WHERE user_id=%s", (uid,)),
+        ("SELECT COALESCE(SUM(amount),0), COUNT(*) FROM deposit_history WHERE user_id=%s AND status='success'", (uid,)),
+        ("SELECT COALESCE(SUM(amount),0), COUNT(*) FROM withdraw_history WHERE user_id=%s AND status='success'", (uid,)),
+        ("SELECT COALESCE(SUM(amount),0), COUNT(*) FROM withdraw_history WHERE user_id=%s AND status='pending'", (uid,)),
+        ("SELECT bonus_amount, required_bet, current_bet FROM user_bonus WHERE user_id=%s", (uid,)),
+        ("SELECT 1 FROM banned WHERE user_id=%s", (uid,)),
+        ("SELECT game_id FROM banned_games WHERE user_id=%s ORDER BY game_id", (uid,)),
+        ("SELECT feature FROM banned_features WHERE user_id=%s", (uid,)),
+        ("SELECT amount, note, time FROM history WHERE user_id=%s ORDER BY id DESC LIMIT 5", (uid,)),
+        ("SELECT COUNT(*) FROM giftcodes WHERE used_by=%s", (uid,)),
+        ("SELECT COUNT(*) FROM code_usage WHERE user_id=%s", (uid,)),
+        ("SELECT time FROM history WHERE user_id=%s ORDER BY id ASC LIMIT 1", (uid,)),
+        ("SELECT COALESCE(SUM(amount),0) FROM history WHERE user_id=%s AND amount>0 AND (" + " OR ".join(["note LIKE %s"] * len(WIN_NOTE_PREFIXES)) + ")",
+         (uid, *[p + "%" for p in WIN_NOTE_PREFIXES])),
     ])
+    if not res[0]:
+        return None
+    u = res[0][0]
+    gname = {v[1]: v[2] for v in ADMIN_GAMES.values()} if "ADMIN_GAMES" in globals() else {}
+    return {
+        "balance": int(u[0] or 0), "refs": u[1] or 0, "refed": u[2] or 0, "bank": u[3], "stk": u[4], "name": u[5],
+        "last_checkin": u[6], "last_withdraw": u[7], "total_bet": int(u[8] or 0), "bank_linked": u[9],
+        "dep": int(res[1][0][0] or 0) if res[1] else 0, "dep_n": int(res[1][0][1] or 0) if res[1] else 0,
+        "wd": int(res[2][0][0] or 0) if res[2] else 0, "wd_n": int(res[2][0][1] or 0) if res[2] else 0,
+        "wd_pend": int(res[3][0][0] or 0) if res[3] else 0, "wd_pend_n": int(res[3][0][1] or 0) if res[3] else 0,
+        "bonus": res[4][0] if res[4] else None,
+        "banned": bool(res[5]),
+        "banned_games": [gname.get(r[0], f"Game {r[0]}") for r in res[6]],
+        "banned_features": [str(r[0]).upper() for r in res[7]],
+        "recent": res[8], "gifts_used": int(res[9][0][0] or 0) if res[9] else 0,
+        "codes_used": int(res[10][0][0] or 0) if res[10] else 0,
+        "first_time": res[11][0][0] if res[11] else None,
+        "wins": int(res[12][0][0] or 0) if res[12] else 0,
+    }
+
+# ------------------------------------------------------------
+# GIAO DIỆN: THẺ HỒ SƠ, CHỌN KỲ, XEM TRONG CHAT
+# ------------------------------------------------------------
+def _rp_bar(cur, total, width=10):
+    try:
+        ratio = 0 if not total else max(0.0, min(1.0, float(cur) / float(total)))
+    except Exception:
+        ratio = 0
+    filled = int(round(ratio * width))
+    return "█" * filled + "░" * (width - filled) + f" {int(ratio * 100)}%"
+
+async def _rp_render_card(bot, uid):
+    p = await asyncio.to_thread(_rp_profile_sync, uid)
+    if not p:
+        return None, None
+    name = await _telegram_name(bot, uid, {})
+    status = f'{ce("⛔️")} <b>BỊ KHÓA</b>' if p["banned"] else f'{ce("🟢")} <b>Hoạt động</b>'
+    net = p["dep"] - p["wd"]
+    pnl = p["wins"] - p["total_bet"]
+    L = [
+        f'{ce("📋")} <b>HỒ SƠ NGƯỜI DÙNG</b>',
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("🆔")} ID: <code>{uid}</code>',
+        f'{ce("👤")} Tên: <b>{html.escape(name or "Chưa lấy được")}</b>',
+        f'{ce("🛡")} Trạng thái: {status}',
+        f'{ce("💰")} Số dư: <b>{_rp_money(p["balance"])}đ</b>',
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("📥")} Tổng nạp: <b>{_rp_money(p["dep"])}đ</b> · {p["dep_n"]} lần',
+        f'{ce("📤")} Tổng rút: <b>{_rp_money(p["wd"])}đ</b> · {p["wd_n"]} lần',
+    ]
+    if p["wd_pend_n"]:
+        L.append(f'{ce("⌛")} Rút đang chờ: <b>{_rp_money(p["wd_pend"])}đ</b> · {p["wd_pend_n"]} yêu cầu')
+    L += [
+        f'{ce("📈" if net >= 0 else "📉")} Nạp − Rút: <b>{"+" if net >= 0 else "−"}{_rp_money(abs(net))}đ</b>',
+        f'{ce("🎲")} Tổng cược: <b>{_rp_money(p["total_bet"])}đ</b>',
+        f'{ce("🏆")} Tổng thắng/hoàn: <b>{_rp_money(p["wins"])}đ</b>',
+        f'{ce("📈" if pnl >= 0 else "📉")} Kết quả chơi: <b>{"+" if pnl >= 0 else "−"}{_rp_money(abs(pnl))}đ</b>',
+    ]
+    b = p["bonus"]
+    if b and int(b[1] or 0) > 0:
+        L.append(f'{ce("🎁")} Vòng cược KM: {_rp_money(b[2])}/{_rp_money(b[1])}đ · <code>{_rp_bar(b[2], b[1])}</code>')
+    L += [
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("🏦")} Ngân hàng: <code>{html.escape(str(p["bank"] or "Chưa liên kết"))}</code>',
+        f'{ce("💳")} STK: <code>{html.escape(str(p["stk"] or "—"))}</code> · {html.escape(str(p["name"] or "—"))}',
+        f'{ce("🔗")} Liên kết: {"Đã liên kết" if p["bank_linked"] else "Chưa liên kết"}',
+        f'{ce("👥")} Đã mời: <b>{p["refs"]}</b> · {"Được mời bởi người khác" if p["refed"] else "Tự đăng ký"}',
+        f'{ce("🎟")} Code đã nhập: <b>{p["codes_used"]}</b> · Giftcode đã dùng: <b>{p["gifts_used"]}</b>',
+        f'{ce("🗓")} Check-in cuối: <code>{html.escape(str(p["last_checkin"] or "—"))}</code>',
+        f'{ce("⏱")} Rút gần nhất: <code>{html.escape(str(p["last_withdraw"] or "—"))}</code>',
+        f'{ce("⌛")} Hoạt động đầu tiên: <code>{html.escape(str(p["first_time"] or "—"))}</code>',
+    ]
+    if p["banned_games"] or p["banned_features"]:
+        L.append(f'{ce("🚫")} Đang bị cấm: <b>{html.escape(", ".join(p["banned_games"] + p["banned_features"]))}</b>')
+    if p["recent"]:
+        L += ["━━━━━━━━━━━━━━━━━━━━", f'{ce("🔔")} <b>5 GIAO DỊCH GẦN NHẤT</b>']
+        for amt, note, t in p["recent"]:
+            a = int(amt or 0)
+            L.append(f'{ce("📈" if a >= 0 else "📉")} <b>{"+" if a >= 0 else "−"}{_rp_money(abs(a))}đ</b> · {html.escape(str(note or ""))[:60]} · <i>{html.escape(str(t or ""))}</i>')
+    L += ["━━━━━━━━━━━━━━━━━━━━", f'{ce("💡")} <i>Chọn mục bên dưới để xem trong chat hoặc xuất file Excel.</i>']
+    kb = InlineKeyboardMarkup([
+        [btn("XUẤT FULL HỒ SƠ (EXCEL)", "📊", callback_data=f"ar:{uid}:pick:all:-:x")],
+        [btn("Lịch sử nạp", "📥", callback_data=f"ar:{uid}:pick:nap:-:x"),
+         btn("Lịch sử rút", "📤", callback_data=f"ar:{uid}:pick:rut:-:x")],
+        [btn("Cược & thắng", "🎲", callback_data=f"ar:{uid}:pick:cuoc:-:x"),
+         btn("Biến động số dư", "💳", callback_data=f"ar:{uid}:pick:his:-:x")],
+        [btn("Code đã nhập", "🎟", callback_data=f"ar:{uid}:pick:code:-:x"),
+         btn("Gift đã dùng", "🎁", callback_data=f"ar:{uid}:pick:gift:-:x")],
+        [btn("Gift đã mua", "🛒", callback_data=f"ar:{uid}:pick:mua:-:x"),
+         btn("Làm mới", "🔄", callback_data=f"ar:{uid}:home:-:-:-")],
+        [btn("Mở khóa tài khoản", "🔓", callback_data=f"ar:{uid}:unban:-:-:-") if p["banned"]
+         else btn("Khóa tài khoản", "🔒", callback_data=f"ar:{uid}:ban:-:-:-")],
+    ])
+    return "\n".join(L), kb
+
+def _rp_picker(uid, kind, mode):
+    icon, label = RP_KINDS.get(kind, ("📊", kind.upper()))
+    today = get_vietnam_time().date()
+    yest = today - timedelta(days=1)
+    act = "xls" if mode == "x" else "view"
+    def cb(token):
+        return f"ar:{uid}:{act}:{kind}:{token}:0"
+    rows = [
+        [btn(("● " if mode == "x" else "○ ") + "File Excel", "📥", callback_data=f"ar:{uid}:pick:{kind}:-:x"),
+         btn(("● " if mode == "v" else "○ ") + ("Xem trong chat" if kind != "all" else "Xem tổng kết"), "👀", callback_data=f"ar:{uid}:pick:{kind}:-:v")],
+        [btn("Hôm nay", "📅", callback_data=cb("n1")),
+         btn("Hôm qua", "📅", callback_data=cb("d" + yest.strftime("%Y%m%d")))],
+        [btn("3 ngày", "📅", callback_data=cb("n3")),
+         btn("7 ngày", "📅", callback_data=cb("n7")),
+         btn("30 ngày", "📅", callback_data=cb("n30"))],
+        [btn("TẤT CẢ THỜI GIAN", "🗓", callback_data=cb("all"))],
+    ]
+    day_btns = [btn((today - timedelta(days=i)).strftime("%d/%m"), "📅",
+                    callback_data=cb("d" + (today - timedelta(days=i)).strftime("%Y%m%d"))) for i in range(7)]
+    rows.append(day_btns[:4])
+    rows.append(day_btns[4:])
+    rows.append([btn("Nhập ngày / khoảng ngày", "✍️", callback_data=f"ar:{uid}:ask:{kind}:-:{mode}")])
+    rows.append([btn("Quay lại hồ sơ", "⬅️", callback_data=f"ar:{uid}:home:-:-:-")])
+    text = (f'{ce("🗓")} <b>CHỌN KỲ BÁO CÁO</b>\n━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("🆔")} ID: <code>{uid}</code>\n'
+            f'{ce(icon)} Mục: <b>{html.escape(label)}</b>\n'
+            f'{ce("📎")} Hình thức: <b>{"File Excel" if mode == "x" else ("Xem trong chat" if kind != "all" else "Tổng kết trong chat")}</b>\n\n'
+            f'{ce("💡")} <i>Bấm một nút ngày bên dưới — bot sẽ gửi ngay, không cần gõ gì thêm.</i>')
+    return text, InlineKeyboardMarkup(rows)
+
+def _rp_line(kind, row):
+    e = html.escape
+    if kind == "his":
+        _id, t, amt, note = row
+        return (f'{ce("📈" if amt >= 0 else "📉")} <b>{"+" if amt >= 0 else "−"}{_rp_money(abs(amt))}đ</b> · {e(str(note))[:70]}\n'
+                f'    {ce("⏱")} <i>{e(str(t))}</i>')
+    if kind == "nap":
+        _id, t, amt, label, ref, adm = row
+        return (f'{ce(_rp_status_icon(label))} <b>{_rp_money(amt)}đ</b> · {e(label)} · {e(adm)}\n'
+                f'    {ce("⏱")} <i>{e(str(t))}</i>' + (f' · <code>{e(str(ref))[:24]}</code>' if ref else ""))
+    if kind == "rut":
+        _id, t, amt, label, adm, note = row
+        return (f'{ce(_rp_status_icon(label))} <b>{_rp_money(amt)}đ</b> · {e(label)} · {e(str(adm))}\n'
+                f'    {ce("⏱")} <i>{e(str(t))}</i>' + (f' · {e(str(note))[:40]}' if note else ""))
+    if kind == "cuoc":
+        _id, t, loai, amt, note = row
+        return (f'{ce("🎲" if loai == "Cược" else "🏆")} <b>{_rp_money(amt)}đ</b> · {e(loai)} · {e(str(note))[:60]}\n'
+                f'    {ce("⏱")} <i>{e(str(t))}</i>')
+    if kind == "code":
+        t, code, rw, loai = row
+        return (f'{ce("🎟")} <code>{e(str(code))}</code> · <b>{_rp_money(rw)}đ</b> · {e(str(loai))}\n'
+                f'    {ce("⏱")} <i>{e(str(t))}</i>')
+    # mua / gift
+    t, code, creator, used_by, rw, wager, status, exp, ctype = row
+    icon = {"Đã dùng": "✅", "Hết hạn": "⌛", "Chưa dùng": "🎁"}.get(status, "🎁")
+    return (f'{ce(icon)} <code>{e(str(code))}</code> · <b>{_rp_money(rw)}đ</b> · {e(wager)} · {e(status)}\n'
+            f'    {ce("⏱")} <i>{e(str(t))}</i> · {e(str(ctype))}')
+
+def _rp_summary_line(kind, data):
+    x = data["extra"]
+    if kind == "his":
+        return f'{ce("📈")} Vào: <b>+{_rp_money(x["in"])}đ</b> · {ce("📉")} Ra: <b>−{_rp_money(x["out"])}đ</b>'
+    if kind in ("nap", "rut"):
+        s = f'{ce("✅")} Thành công: <b>{_rp_money(x["ok"])}đ</b> ({x["ok_n"]} lần)'
+        if x["pending"]:
+            s += f' · {ce("⌛")} Chờ: <b>{_rp_money(x["pending"])}đ</b>'
+        return s
+    if kind == "cuoc":
+        return (f'{ce("🎲")} Cược: <b>{_rp_money(x["bets"])}đ</b> ({x["n_bet"]}) · {ce("🏆")} Thắng/hoàn: <b>{_rp_money(x["wins"])}đ</b> ({x["n_win"]})\n'
+                f'{ce("📈" if x["net"] >= 0 else "📉")} Kết quả: <b>{"+" if x["net"] >= 0 else "−"}{_rp_money(abs(x["net"]))}đ</b>')
+    if kind == "code":
+        return f'{ce("💰")} Tổng giá trị: <b>{_rp_money(x["sum"])}đ</b>'
+    return f'{ce("💰")} Tổng giá trị: <b>{_rp_money(x["sum"])}đ</b> · {ce("✅")} Đã dùng: <b>{x["used_n"]}</b>'
+
+async def _rp_render_view(bot, uid, kind, token, page):
+    start, end, label = _rp_range(token)
+    data = await asyncio.to_thread(_rp_collect, kind, uid, start, end)
+    rows = data["rows"]
+    total = len(rows)
+    pages = max(1, -(-total // RP_PAGE_SIZE))
+    page = max(0, min(int(page or 0), pages - 1))
+    icon, title = RP_KINDS.get(kind, ("📊", kind.upper()))
+    name = await _telegram_name(bot, uid, {})
+    L = [
+        f'{ce(icon)} <b>{html.escape(title)}</b>',
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("🆔")} <code>{uid}</code> · {ce("👤")} {html.escape(name or "Chưa lấy được")}',
+        f'{ce("🗓")} {html.escape(label)}',
+        f'{ce("📄")} Tổng: <b>{total}</b> dòng',
+        _rp_summary_line(kind, data),
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    chunk = rows[page * RP_PAGE_SIZE:(page + 1) * RP_PAGE_SIZE]
+    if not chunk:
+        L.append("Không có dữ liệu trong kỳ này.")
+    for r in chunk:
+        L.append(_rp_line(kind, r))
+    L += ["━━━━━━━━━━━━━━━━━━━━", f'{ce("📎")} Trang <b>{page + 1}/{pages}</b>']
+    nav = []
+    if page > 0:
+        nav.append(btn("Trước", "⬅️", callback_data=f"ar:{uid}:view:{kind}:{token}:{page - 1}"))
+    nav.append(InlineKeyboardButton(f"{page + 1}/{pages}", callback_data="ar:0:noop:-:-:-"))
+    if page < pages - 1:
+        nav.append(btn("Sau", "➡️", callback_data=f"ar:{uid}:view:{kind}:{token}:{page + 1}"))
+    kb = InlineKeyboardMarkup([
+        nav,
+        [btn("Xuất Excel kỳ này", "📥", callback_data=f"ar:{uid}:xls:{kind}:{token}:0"),
+         btn("Đổi kỳ", "🗓", callback_data=f"ar:{uid}:pick:{kind}:-:v")],
+        [btn("Hồ sơ", "🏠", callback_data=f"ar:{uid}:home:-:-:-")],
+    ])
+    return "\n".join(L), kb
+
+async def _rp_render_summary(bot, uid, token):
+    start, end, label = _rp_range(token)
+    kinds = ["nap", "rut", "cuoc", "his", "code", "gift"]
+    res = await asyncio.gather(*[asyncio.to_thread(_rp_collect, k, uid, start, end) for k in kinds])
+    d = dict(zip(kinds, res))
+    p = await asyncio.to_thread(_rp_profile_sync, uid)
+    name = await _telegram_name(bot, uid, {})
+    net = d["nap"]["extra"]["ok"] - d["rut"]["extra"]["ok"]
+    cx = d["cuoc"]["extra"]
+    L = [
+        f'{ce("📊")} <b>TỔNG KẾT NGƯỜI DÙNG</b>',
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("🆔")} <code>{uid}</code> · {ce("👤")} {html.escape(name or "Chưa lấy được")}',
+        f'{ce("🗓")} {html.escape(label)}',
+        f'{ce("💰")} Số dư hiện tại: <b>{_rp_money(p["balance"]) if p else "—"}đ</b>',
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("📥")} Nạp thành công: <b>{_rp_money(d["nap"]["extra"]["ok"])}đ</b> ({d["nap"]["extra"]["ok_n"]} lần)',
+        f'{ce("📤")} Rút thành công: <b>{_rp_money(d["rut"]["extra"]["ok"])}đ</b> ({d["rut"]["extra"]["ok_n"]} lần)',
+        f'{ce("📈" if net >= 0 else "📉")} Nạp − Rút: <b>{"+" if net >= 0 else "−"}{_rp_money(abs(net))}đ</b>',
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("🎲")} Tổng cược: <b>{_rp_money(cx["bets"])}đ</b> ({cx["n_bet"]} lượt)',
+        f'{ce("🏆")} Thắng/hoàn: <b>{_rp_money(cx["wins"])}đ</b> ({cx["n_win"]} lượt)',
+        f'{ce("📈" if cx["net"] >= 0 else "📉")} Kết quả chơi: <b>{"+" if cx["net"] >= 0 else "−"}{_rp_money(abs(cx["net"]))}đ</b>',
+        "━━━━━━━━━━━━━━━━━━━━",
+        f'{ce("🎟")} Code nhập: <b>{len(d["code"]["rows"])}</b> ({_rp_money(d["code"]["extra"]["sum"])}đ)',
+        f'{ce("🎁")} Giftcode dùng: <b>{d["gift"]["extra"]["used_n"]}</b> ({_rp_money(d["gift"]["extra"]["sum"])}đ)',
+        f'{ce("💳")} Biến động số dư: <b>{len(d["his"]["rows"])}</b> dòng · +{_rp_money(d["his"]["extra"]["in"])}đ / −{_rp_money(d["his"]["extra"]["out"])}đ',
+    ]
+    kb = InlineKeyboardMarkup([
+        [btn("Xuất FULL Excel kỳ này", "📊", callback_data=f"ar:{uid}:xls:all:{token}:0"),
+         btn("Đổi kỳ", "🗓", callback_data=f"ar:{uid}:pick:all:-:v")],
+        [btn("Hồ sơ", "🏠", callback_data=f"ar:{uid}:home:-:-:-")],
+    ])
+    return "\n".join(L), kb
+
+# ------------------------------------------------------------
+# XUẤT FILE (XLSX nhiều sheet, tự fallback CSV nếu thiếu openpyxl)
+# ------------------------------------------------------------
+def _rp_build_xlsx(title, subtitle, sheets):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    TAB = {"Tổng quan": "183153", "Biến động số dư": "246B8E", "Nạp": "2E8B57", "Rút": "C0392B",
+           "Cược & Thắng": "8E44AD", "Code đã nhập": "D68910", "Gift đã mua": "117A8B", "Gift đã dùng": "117A8B"}
+    wb = Workbook()
+    wb.remove(wb.active)
+    used = set()
+    thin = Side(style="hair", color="C9D6E8")
+    for sh in sheets:
+        name = re.sub(r"[\\/*?:\[\]]", "", sh["name"])[:31] or "Sheet"
+        base, i = name, 2
+        while name in used:
+            name = f"{base[:28]}_{i}"; i += 1
+        used.add(name)
+        ws = wb.create_sheet(name)
+        ws.sheet_properties.tabColor = TAB.get(sh["name"], "246B8E")
+        headers, rows = sh["headers"], sh["rows"]
+        ncol = max(1, len(headers))
+        money = set(sh.get("money_cols", []))
+        signed = sh.get("signed_col")
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncol)
+        c = ws.cell(1, 1, title)
+        c.font = Font(name="Arial", size=15, bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="183153")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 32
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncol)
+        c2 = ws.cell(2, 1, f"{subtitle}  |  Xuất lúc: {get_vietnam_datetime_db()}  |  Số dòng: {len(rows)}")
+        c2.font = Font(name="Arial", italic=True, size=9, color="555555")
+        c2.alignment = Alignment(horizontal="center")
+        for ci, h in enumerate(headers, 1):
+            hc = ws.cell(4, ci, str(h))
+            hc.font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
+            hc.fill = PatternFill("solid", fgColor="246B8E")
+            hc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.row_dimensions[4].height = 24
+        for ri, row in enumerate(rows, 5):
+            zebra = PatternFill("solid", fgColor="F3F7FB") if ri % 2 == 0 else None
+            for ci, v in enumerate(row, 1):
+                cell = ws.cell(ri, ci)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and (ci - 1) in money:
+                    cell.value = v
+                    cell.number_format = "#,##0"
+                    cell.alignment = Alignment(horizontal="right", vertical="top")
+                    if signed is not None and (ci - 1) == signed:
+                        cell.font = Font(name="Arial", size=10, bold=True, color="1E8449" if v >= 0 else "C0392B")
+                    else:
+                        cell.font = Font(name="Arial", size=10)
+                else:
+                    s = "" if v is None else str(v)
+                    cell.value = s
+                    cell.data_type = "s"          # luôn là chuỗi -> không bị hiểu thành công thức Excel
+                    cell.font = Font(name="Arial", size=10)
+                    cell.alignment = Alignment(vertical="top", wrap_text=len(s) > 40)
+                cell.border = Border(bottom=thin)
+                if zebra:
+                    cell.fill = zebra
+        last = 4 + len(rows)
+        if sh.get("sum_cols") and rows:
+            tr = last + 1
+            ws.cell(tr, 1, "TỔNG").font = Font(name="Arial", bold=True)
+            for ci in sh["sum_cols"]:
+                total = sum(int(r[ci] or 0) for r in rows if isinstance(r[ci], (int, float)))
+                tc = ws.cell(tr, ci + 1, total)
+                tc.number_format = "#,##0"
+                tc.font = Font(name="Arial", bold=True)
+                tc.fill = PatternFill("solid", fgColor="FFF2CC")
+        ws.freeze_panes = "A5"
+        if rows:
+            ws.auto_filter.ref = f"A4:{get_column_letter(ncol)}{last}"
+        for ci, h in enumerate(headers, 1):
+            vals = [len(str(h))] + [len(str(r[ci - 1])) for r in rows[:300] if r[ci - 1] is not None]
+            ws.column_dimensions[get_column_letter(ci)].width = min(48, max(12, max(vals) + 3))
+        ws.page_setup.orientation = "landscape"
+        ws.print_title_rows = "4:4"
+    wb.properties.title = title
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+def _rp_build_csv(title, subtitle, sheets):
+    import io as _io
+    def safe(v):
+        s = "" if v is None else v
+        if isinstance(s, str) and s[:1] in ("=", "+", "@"):
+            return "'" + s
+        return s
+    sio = _io.StringIO()
+    w = csv.writer(sio)
+    w.writerow([title]); w.writerow([subtitle])
+    for sh in sheets:
+        w.writerow([]); w.writerow([f"== {sh['name']} =="]); w.writerow(sh["headers"])
+        for r in sh["rows"]:
+            w.writerow([safe(v) for v in r])
+    return BytesIO(("\ufeff" + sio.getvalue()).encode("utf-8"))
+
+async def _rp_export(message, bot, uid, kind, token):
+    start, end, label = _rp_range(token)
+    icon, title = RP_KINDS.get(kind, ("📊", kind.upper()))
+    status = await message.reply_text("⏳ Đang tạo file báo cáo, vui lòng chờ…")
+    try:
+        name = await _telegram_name(bot, uid, {})
+        if kind == "all":
+            order = ["his", "nap", "rut", "cuoc", "code", "mua", "gift"]
+            res = await asyncio.gather(*[asyncio.to_thread(_rp_collect, k, uid, start, end) for k in order])
+            data = dict(zip(order, res))
+            p = await asyncio.to_thread(_rp_profile_sync, uid)
+            cx = data["cuoc"]["extra"]
+            kv = [
+                ("ID người dùng", str(uid)), ("Tên / @username", name or "Chưa lấy được"),
+                ("Trạng thái", "BỊ KHÓA" if (p and p["banned"]) else "Hoạt động"),
+                ("Số dư hiện tại (đ)", p["balance"] if p else ""),
+                ("Ngân hàng", (p or {}).get("bank") or "Chưa liên kết"), ("Số tài khoản", (p or {}).get("stk") or ""),
+                ("Chủ tài khoản", (p or {}).get("name") or ""),
+                ("Đã liên kết ngân hàng", "Có" if (p and p["bank_linked"]) else "Không"),
+                ("Số người đã mời", (p or {}).get("refs", 0)),
+                ("Check-in cuối", (p or {}).get("last_checkin") or ""), ("Rút gần nhất", (p or {}).get("last_withdraw") or ""),
+                ("Hoạt động đầu tiên", (p or {}).get("first_time") or ""),
+                ("— TOÀN THỜI GIAN —", ""),
+                ("Tổng nạp thành công (đ)", p["dep"] if p else ""), ("Số lần nạp thành công", p["dep_n"] if p else ""),
+                ("Tổng rút thành công (đ)", p["wd"] if p else ""), ("Số lần rút thành công", p["wd_n"] if p else ""),
+                ("Rút đang chờ (đ)", p["wd_pend"] if p else ""), ("Tổng cược (đ)", p["total_bet"] if p else ""),
+                (f"— KỲ: {label} —", ""),
+                ("Nạp thành công trong kỳ (đ)", data["nap"]["extra"]["ok"]), ("Rút thành công trong kỳ (đ)", data["rut"]["extra"]["ok"]),
+                ("Tổng cược trong kỳ (đ)", cx["bets"]), ("Thắng / hoàn trong kỳ (đ)", cx["wins"]),
+                ("Kết quả chơi trong kỳ (đ)", cx["net"]),
+                ("Số code đã nhập trong kỳ", len(data["code"]["rows"])),
+                ("Số giftcode đã dùng trong kỳ", data["gift"]["extra"]["used_n"]),
+            ]
+            kv_rows = [(k, v) for k, v in kv]
+            sheets = [
+                {"name": "Tổng quan", "headers": ["Chỉ tiêu", "Giá trị"], "rows": kv_rows, "money_cols": [1], "sum_cols": []},
+                {"name": "Biến động số dư", **data["his"]},
+                {"name": "Nạp", **data["nap"]}, {"name": "Rút", **data["rut"]},
+                {"name": "Cược & Thắng", **data["cuoc"]}, {"name": "Code đã nhập", **data["code"]},
+                {"name": "Gift đã mua", **data["mua"]}, {"name": "Gift đã dùng", **data["gift"]},
+            ]
+            total_rows = sum(len(s["rows"]) for s in sheets[1:])
+        else:
+            data = await asyncio.to_thread(_rp_collect, kind, uid, start, end)
+            sheets = [{"name": {"his": "Biến động số dư", "nap": "Nạp", "rut": "Rút", "cuoc": "Cược & Thắng",
+                                "code": "Code đã nhập", "mua": "Gift đã mua", "gift": "Gift đã dùng"}.get(kind, "Báo cáo"), **data}]
+            total_rows = len(data["rows"])
+        head = f"{title} — ID {uid} — {label}"
+        sub = f"Tài khoản: {name or 'Chưa lấy được'}"
+        tag = _rp_tag(token)
+        try:
+            bio = await asyncio.to_thread(_rp_build_xlsx, head, sub, sheets)
+            fname, note = f"{'fulluser' if kind == 'all' else kind}_{uid}_{tag}.xlsx", ""
+        except ImportError:
+            bio = await asyncio.to_thread(_rp_build_csv, head, sub, sheets)
+            fname, note = f"{'fulluser' if kind == 'all' else kind}_{uid}_{tag}.csv", "\n⚠️ Máy chủ chưa cài <code>openpyxl</code> nên bot xuất CSV (mở được bằng Excel)."
+        bio.seek(0)
+        await message.reply_document(
+            document=bio, filename=fname,
+            caption=(f'{ce(icon)} <b>{html.escape(title)}</b>\n'
+                     f'{ce("🆔")} ID: <code>{uid}</code> · {ce("👤")} {html.escape(name or "Chưa lấy được")}\n'
+                     f'{ce("🗓")} {html.escape(label)}\n'
+                     f'{ce("📄")} Tổng: <b>{total_rows}</b> dòng' + note),
+            parse_mode=ParseMode.HTML)
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await status.edit_text(f"❌ Không xuất được file: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+# ------------------------------------------------------------
+# LỆNH ADMIN
+# ------------------------------------------------------------
+def _rp_parse_cmd_args(update, ctx):
+    args = list(ctx.args or [])
+    msg = update.effective_message
+    uid = None
+    if args and args[0].lstrip("-").isdigit():
+        uid = int(args.pop(0))
+    elif msg and msg.reply_to_message and msg.reply_to_message.from_user:
+        uid = msg.reply_to_message.from_user.id
+    if uid is None:
+        return None, None
+    token = _rp_token_from_text(" ".join(args)) if args else "all"
+    return uid, token
+
+async def _rp_cmd_guard(update, ctx, usage):
+    uid, token = _rp_parse_cmd_args(update, ctx)
+    msg = update.effective_message
+    if uid is None:
+        await msg.reply_text(usage, parse_mode=ParseMode.HTML); return None, None
+    if token is None:
+        await msg.reply_text("❌ Kỳ không hợp lệ. Dùng: <code>all</code>, <code>7</code> (số ngày), <code>29/10/2026</code> hoặc <code>01/10/2026 - 29/10/2026</code>.", parse_mode=ParseMode.HTML)
+        return None, None
+    if not await asyncio.to_thread(_rp_user_exists, uid):
+        await msg.reply_text("❌ Không tìm thấy người dùng này trong hệ thống."); return None, None
+    return uid, token
+
+RP_USAGE_TAIL = "\n<i>[kỳ] = all | số ngày | DD/MM/YYYY | DD/MM/YYYY - DD/MM/YYYY. Có thể reply tin nhắn của user thay cho ID.</i>"
 
 @admin_only
 async def fulluser_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
+    msg = update.effective_message
+    uid = None
+    if ctx.args and ctx.args[0].lstrip("-").isdigit():
         uid = int(ctx.args[0])
-    except (IndexError, ValueError):
-        return await update.effective_message.reply_text("Cú pháp: /fulluser ID", parse_mode=ParseMode.HTML)
-    row = query("SELECT balance, refs, refed, bank, stk, name, last_checkin, last_withdraw, total_bet, bank_linked FROM users WHERE user_id=%s", (uid,))
-    if not row:
-        return await update.effective_message.reply_text("Không tìm thấy người dùng này.")
-    u = row[0]
-    try:
-        tg_user = await ctx.bot.get_chat(uid)
-        username_text = f"@{tg_user.username}" if getattr(tg_user, "username", None) else (getattr(tg_user, "full_name", None) or "Chưa lấy được")
-    except Exception:
-        username_text = "Chưa lấy được (user chưa mở bot/Telegram không trả dữ liệu)"
-    deps = _sum("SELECT COALESCE(SUM(amount),0) FROM deposit_history WHERE user_id=%s AND status='success'", (uid,))
-    wds = _sum("SELECT COALESCE(SUM(amount),0) FROM withdraw_history WHERE user_id=%s AND status='success'", (uid,))
-    msg = (f"📋 <b>HỒ SƠ NGƯỜI DÙNG</b>\n🆔 ID: <code>{uid}</code>\n👤 Tên/@username: <code>{html.escape(str(username_text))}</code>\n"
-           f"💰 Số dư: <code>{fmt_money(int(u[0] or 0))}đ</code>\n📥 Tổng nạp thành công: <code>{fmt_money(int(deps))}đ</code>\n"
-           f"📤 Tổng rút thành công: <code>{fmt_money(int(wds))}đ</code>\n🎲 Tổng cược: <code>{fmt_money(int(u[8] or 0))}đ</code>\n"
-           f"👥 Người giới thiệu: <code>{u[1] or 0}</code> | Được giới thiệu bởi: <code>{u[2] or 0}</code>\n"
-           f"🏦 Ngân hàng: <code>{html.escape(str(u[3] or 'Chưa liên kết'))}</code>\n💳 STK: <code>{html.escape(str(u[4] or '—'))}</code>\n"
-           f"👤 Chủ TK: <code>{html.escape(str(u[5] or '—'))}</code>\n🔗 Trạng thái liên kết: <code>{'Đã liên kết' if u[9] else 'Chưa liên kết'}</code>\n"
-           f"🗓 Check-in cuối: <code>{html.escape(str(u[6] or '—'))}</code>\n⏱ Rút gần nhất: <code>{html.escape(str(u[7] or '—'))}</code>")
-    await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=_report_keyboard(uid))
+    elif msg.reply_to_message and msg.reply_to_message.from_user:
+        uid = msg.reply_to_message.from_user.id
+    if uid is None:
+        return await msg.reply_text("Cú pháp: <code>/fulluser ID</code> (hoặc reply tin nhắn của user)", parse_mode=ParseMode.HTML)
+    text, kb = await _rp_render_card(ctx.bot, uid)
+    if not text:
+        return await msg.reply_text("❌ Không tìm thấy người dùng này.")
+    await msg.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+def _rp_make_view_cmd(kind, cmd, desc):
+    @admin_only
+    async def _cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        uid, token = await _rp_cmd_guard(update, ctx, f"Cú pháp: <code>/{cmd} ID [kỳ]</code> — {desc}" + RP_USAGE_TAIL)
+        if uid is None:
+            return
+        text, kb = await _rp_render_view(ctx.bot, uid, kind, token, 0)
+        await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    return _cmd
+
+lsuser_cmd = _rp_make_view_cmd("his", "lsuser", "biến động số dư đầy đủ")
+lsnap_cmd = _rp_make_view_cmd("nap", "lsnap", "lịch sử nạp")
+lsrut_cmd = _rp_make_view_cmd("rut", "lsrut", "lịch sử rút")
+lscuoc_cmd = _rp_make_view_cmd("cuoc", "lscuoc", "lịch sử cược & thắng")
+lscode_cmd = _rp_make_view_cmd("code", "lscode", "code đã nhập")
+lsgift_cmd = _rp_make_view_cmd("gift", "lsgift", "giftcode đã dùng / được cấp")
+lsmua_cmd = _rp_make_view_cmd("mua", "lsmua", "giftcode đã mua")
+
+@admin_only
+async def tongket_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid, token = await _rp_cmd_guard(update, ctx, "Cú pháp: <code>/tongket ID [kỳ]</code> — tổng kết nạp/rút/cược theo kỳ" + RP_USAGE_TAIL)
+    if uid is None:
+        return
+    text, kb = await _rp_render_summary(ctx.bot, uid, token)
+    await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def xuatls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid, token = await _rp_cmd_guard(update, ctx, "Cú pháp: <code>/xuatls ID [kỳ]</code> — xuất FULL Excel nhiều sheet" + RP_USAGE_TAIL)
+    if uid is None:
+        return
+    await _rp_export(update.effective_message, ctx.bot, uid, "all", token)
 
 @admin_only
 async def resetbank_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -6085,246 +7009,147 @@ async def _telegram_name(bot, uid, cache=None):
         cache[uid] = result
     return result
 
-def _in_report_period(value, days):
-    if days == "all":
-        return True
-    dt = _parse_db_date(value)
-    if not dt:
-        return False
-    today = get_vietnam_time().date()
+# ------------------------------------------------------------
+# CALLBACK NÚT BẤM + NHẬP NGÀY
+# ------------------------------------------------------------
+async def _rp_edit(q, text, kb):
     try:
-        n = int(days)
-    except (TypeError, ValueError):
-        return False
-    return today - timedelta(days=max(0, n-1)) <= dt <= today
-
-def _make_report_document(title, headers, data, filename):
-    """Tạo XLSX có tiêu đề, định dạng, bộ lọc; fallback CSV nếu thiếu openpyxl."""
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Bao cao"
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(headers)))
-        c = ws.cell(1, 1, title)
-        c.font = Font(name="Arial", size=16, bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="183153")
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[1].height = 30
-        ws.cell(2, 1, f"Xuất lúc: {get_vietnam_datetime_db()} | Tổng dòng: {len(data)}")
-        ws.cell(2, 1).font = Font(name="Arial", italic=True, color="666666")
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(4, col, str(header))
-            cell.font = Font(name="Arial", bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="246B8E")
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        for r_idx, row in enumerate(data, 5):
-            for c_idx, value in enumerate(row, 1):
-                cell = ws.cell(r_idx, c_idx, "" if value is None else str(value))
-                cell.font = Font(name="Arial", size=10)
-                cell.alignment = Alignment(vertical="top", wrap_text=True)
-                cell.border = Border(bottom=Side(style="hair", color="D9E2F3"))
-                # Luôn ép chuỗi thành text, tránh dữ liệu người dùng bị hiểu là công thức Excel.
-                cell.data_type = "s"
-        ws.freeze_panes = "A5"
-        if data:
-            ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{len(data)+4}"
-        for col_idx, header in enumerate(headers, 1):
-            vals = [str(header)] + [str(row[col_idx-1] if row[col_idx-1] is not None else "") for row in data[:300]]
-            width = min(42, max(12, max((len(v) for v in vals), default=12) + 2))
-            ws.column_dimensions[get_column_letter(col_idx)].width = width
-        out = BytesIO()
-        wb.save(out)
-        out.seek(0)
-        out.name = filename.replace(".csv", ".xlsx")
-        return out, out.name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        await q.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     except Exception as e:
-        import csv as _csv
-        out = BytesIO()
-        import io
-        wrapper = io.TextIOWrapper(out, encoding="utf-8-sig", newline="")
-        writer = _csv.writer(wrapper)
-        writer.writerow(headers)
-        writer.writerows(data)
-        wrapper.flush()
-        out.seek(0)
-        out.name = filename if filename.endswith(".csv") else filename.rsplit(".", 1)[0] + ".csv"
-        return out, out.name, "text/csv"
+        if "not modified" in str(e).lower():
+            return
+        raise
 
 async def admin_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    if q.from_user.id not in ADMIN_IDS:
+    if q.from_user.id not in ADMIN_IDS or is_admin_banned(q.from_user.id):
         return await q.answer("Bạn không có quyền.", show_alert=True)
-    await q.answer()
-    parts = q.data.split("_")
+    parts = (q.data or "").split(":")
+    if len(parts) < 6:
+        return await q.answer()
+    _, uid_s, act, kind, token, extra = parts[:6]
     try:
-        uid = int(parts[1])
-        kind = parts[2]
-        period = parts[3] if len(parts) > 3 else "pick"
-    except Exception:
-        return
-    if kind == "date":
-        ctx.user_data["report_wait_date"] = uid
-        ctx.user_data["report_wait_kind"] = "all"
-        return await q.message.reply_text("Nhập ngày cần xuất theo định dạng DD/MM/YYYY, ví dụ 28/10/2026. Gửi /huy để hủy.")
-    if period == "pick":
-        buttons = [
-            [btn("HÔM NAY / 1 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_1"),
-             btn("3 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_3")],
-            [btn("2 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_2"),
-             btn("4 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_4")],
-            [btn("5 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_5"),
-             btn("6 NGÀY", "📅", callback_data=f"admperiod_{uid}_{kind}_6")],
-            [btn("7 NGÀY GẦN ĐÂY", "📅", callback_data=f"admperiod_{uid}_{kind}_7"),
-             btn("TẤT CẢ THỜI GIAN", "🗓", callback_data=f"admperiod_{uid}_{kind}_all")],
-            [btn("📅 CHỌN NGÀY CỤ THỂ", "📅", callback_data=f"admperiod_{uid}_{kind}_date")],
-        ]
-        return await q.message.reply_text(
-            f"📊 <b>CHỌN KHOẢNG THỜI GIAN</b>\n"
-            f"ID người dùng: <code>{uid}</code>\n"
-            f"Loại báo cáo: <b>{html.escape(kind.upper())}</b>\n\n"
-            f"Chọn từ 1 đến 7 ngày gần đây hoặc toàn bộ lịch sử.",
-            reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML
-        )
-    return await _export_user_report(q.message, ctx.bot, uid, kind, period, ctx)
-
-async def admin_report_period_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if q.from_user.id not in ADMIN_IDS:
-        return await q.answer("Bạn không có quyền.", show_alert=True)
-    await q.answer()
-    try:
-        _, uid_s, kind, period = q.data.split("_", 3)
         uid = int(uid_s)
-    except Exception:
-        return
-    if period == "date":
-        ctx.user_data["report_wait_date"] = uid
-        ctx.user_data["report_wait_kind"] = kind
-        return await q.message.reply_text("Nhập ngày cần xuất theo định dạng DD/MM/YYYY, ví dụ 28/10/2026. Gửi /huy để hủy.")
-    await _export_user_report(q.message, ctx.bot, uid, kind, period, ctx)
-
-async def _export_user_report(message, bot, uid, kind, period, ctx):
-    today = get_vietnam_time().date()
-    if period == "date":
-        date_filter = ctx.user_data.get("report_date")
-        period_label = date_filter or "ngày đã chọn"
-    elif period == "all":
-        date_filter = None
-        period_label = "Tất cả thời gian"
-    else:
+    except ValueError:
+        return await q.answer()
+    try:
+        if act == "noop":
+            return await q.answer()
+        if act == "home":
+            text, kb = await _rp_render_card(ctx.bot, uid)
+            if not text:
+                return await q.answer("Không tìm thấy người dùng.", show_alert=True)
+            await q.answer()
+            return await _rp_edit(q, text, kb)
+        if act == "pick":
+            await q.answer()
+            text, kb = _rp_picker(uid, kind, extra if extra in ("x", "v") else "x")
+            return await _rp_edit(q, text, kb)
+        if act == "view":
+            await q.answer()
+            if kind == "all":
+                text, kb = await _rp_render_summary(ctx.bot, uid, token)
+            else:
+                text, kb = await _rp_render_view(ctx.bot, uid, kind, token, int(extra or 0))
+            return await _rp_edit(q, text, kb)
+        if act == "xls":
+            await q.answer("⏳ Đang tạo file…")
+            return await _rp_export(q.message, ctx.bot, uid, kind, token)
+        if act == "ask":
+            await q.answer()
+            sent = await q.message.reply_text(
+                f'<a href="tg://user?id={q.from_user.id}">Admin</a> ✍️ Nhập <b>ngày hoặc khoảng ngày</b> cần xem cho ID <code>{uid}</code>:\n'
+                f'• <code>29/10/2026</code> — một ngày\n• <code>01/10/2026 - 29/10/2026</code> — khoảng ngày\n'
+                f'• <code>10</code> — 10 ngày gần nhất · <code>all</code> — tất cả\n'
+                f'<i>Reply tin nhắn này (hoặc gửi /huy để hủy).</i>',
+                parse_mode=ParseMode.HTML,
+                reply_markup=ForceReply(selective=True, input_field_placeholder="DD/MM/YYYY hoặc DD/MM - DD/MM"))
+            ctx.user_data["rp_wait"] = {"uid": uid, "kind": kind, "mode": extra if extra in ("x", "v") else "x",
+                                        "ts": get_vietnam_time().timestamp(), "prompt_id": sent.message_id}
+            return
+        if act in ("ban", "unban"):
+            if act == "ban":
+                if uid in ADMIN_IDS:
+                    return await q.answer("Không thể khóa admin.", show_alert=True)
+                query("INSERT INTO banned(user_id) VALUES(%s) ON CONFLICT DO NOTHING", (uid,))
+                await q.answer("Đã khóa tài khoản.", show_alert=True)
+            else:
+                query("DELETE FROM banned WHERE user_id=%s", (uid,))
+                await q.answer("Đã mở khóa tài khoản.", show_alert=True)
+            text, kb = await _rp_render_card(ctx.bot, uid)
+            if text:
+                await _rp_edit(q, text, kb)
+            return
+        await q.answer()
+    except Exception as e:
+        traceback.print_exc()
         try:
-            days = int(period)
-        except ValueError:
-            days = 1
-        date_filter = None
-        period_label = f"{days} ngày gần đây ({(today - timedelta(days=max(0, days-1))).strftime('%d/%m/%Y')} – {today.strftime('%d/%m/%Y')})"
+            await q.answer()
+        except Exception:
+            pass
+        try:
+            await q.message.reply_text(f"❌ Lỗi khi xử lý nút: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
-    name_cache = {}
-    target_name = await _telegram_name(bot, uid, name_cache)
-    rows = []
-    if kind in ("all", "history"):
-        raw = query("SELECT amount,note,time FROM history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
-        rows = [("Lịch sử", uid, target_name, r[0], r[1], r[2]) for r in raw
-                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
-                   (period != "date" and _in_report_period(r[2], period))]
-        headers = ["Loại", "ID người dùng", "@username / Tên", "Số tiền", "Nội dung", "Thời gian"]
-    elif kind == "nap":
-        raw = query("SELECT amount,status,time,ref_code,admin_id FROM deposit_history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
-        rows = [(uid, target_name, r[0], r[1], r[2], r[3], r[4]) for r in raw
-                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
-                   (period != "date" and _in_report_period(r[2], period))]
-        headers = ["ID người nạp", "@username / Tên", "Số tiền", "Trạng thái", "Thời gian", "Mã giao dịch", "Admin xử lý"]
-    elif kind == "rut":
-        raw = query("SELECT amount,status,time,admin_id,admin_note,id FROM withdraw_history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
-        rows = [(uid, target_name, r[0], r[1], r[2], r[3], r[4], r[5]) for r in raw
-                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
-                   (period != "date" and _in_report_period(r[2], period))]
-        headers = ["ID người rút", "@username / Tên", "Số tiền", "Trạng thái", "Thời gian", "Admin xử lý", "Ghi chú", "Mã yêu cầu"]
-    elif kind == "code":
-        raw = query("SELECT code,used_date FROM code_usage WHERE user_id=%s ORDER BY used_date DESC LIMIT 20000", (uid,)) or []
-        rows = [(uid, target_name, r[0], "Đã sử dụng", r[1]) for r in raw
-                if (period == "date" and _parse_db_date(r[1]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
-                   (period != "date" and _in_report_period(r[1], period))]
-        headers = ["ID người nhập", "@username / Tên", "Mã code", "Trạng thái", "Thời gian nhập"]
-    elif kind == "cuoc":
-        raw = query("SELECT amount,note,time FROM history WHERE user_id=%s AND amount<0 AND note ILIKE '%cược%' ORDER BY id DESC LIMIT 20000", (uid,)) or []
-        rows = [(uid, target_name, abs(int(r[0] or 0)), r[1], r[2]) for r in raw
-                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
-                   (period != "date" and _in_report_period(r[2], period))]
-        headers = ["ID người cược", "@username / Tên", "Giá trị cược", "Game / Nội dung", "Thời gian"]
-    elif kind in ("mua", "gift"):
-        raw = query(
-            "SELECT code,created_by,created_at,reward,wager,expiry,used,used_by,used_at,ctype "
-            "FROM giftcodes WHERE (created_by=%s OR used_by=%s) AND ctype IN ('CODEMUA','INTERACT','TICHLUY') "
-            "ORDER BY created_at DESC LIMIT 20000", (uid, uid)
-        ) or []
-        for r in raw:
-            created_by, used_by = r[1], r[7]
-            if kind == "mua" and int(created_by or 0) != uid:
-                continue
-            if kind == "gift" and int(used_by or 0) != uid:
-                continue
-            when = r[2] if kind == "mua" else (r[8] or r[2])
-            if not ((period == "date" and _parse_db_date(when) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
-                    (period != "date" and _in_report_period(when, period))):
-                continue
-            buyer_name = await _telegram_name(bot, created_by, name_cache)
-            used_name = await _telegram_name(bot, used_by, name_cache)
-            status = "Đã dùng" if r[6] else ("Hết hạn" if r[5] and get_vietnam_time() > r[5] else "Chưa dùng")
-            rows.append((r[0], created_by, buyer_name, used_by or "", used_name, r[3], f"x{r[4] or 0}", str(r[5] or ""), status, r[2], r[8] or ""))
-        headers = ["Mã code (chỉ báo cáo admin)", "ID người mua/tạo", "@username người mua", "ID người dùng", "@username người dùng", "Giá trị", "Vòng cược", "Hạn sử dụng", "Trạng thái", "Mua/tạo lúc", "Dùng lúc"]
-    else:
-        return await message.reply_text("Loại báo cáo không hợp lệ.")
+async def legacy_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Menu cũ đã hết hạn. Hãy gõ lại /fulluser ID để dùng giao diện mới.", show_alert=True)
 
-    # Báo cáo full hồ sơ có thêm thông tin tài khoản.
-    if kind == "all":
-        u = query("SELECT balance,refs,refed,bank,stk,name,last_checkin,last_withdraw,total_bet,bank_linked FROM users WHERE user_id=%s", (uid,))
-        if u:
-            x = u[0]
-            rows.insert(0, ("HỒ SƠ", uid, target_name, x[0], f"Tổng cược={x[8] or 0}; refs={x[1] or 0}; refed={x[2] or 0}; ngân hàng={x[3] or '-'}; STK={x[4] or '-'}; chủ TK={x[5] or '-'}; bank_linked={x[9]}; checkin cuối={x[6] or '-'}; rút cuối={x[7] or '-'}", ""))
-            dep = _sum("SELECT COALESCE(SUM(amount),0) FROM deposit_history WHERE user_id=%s AND status='success'", (uid,))
-            wd = _sum("SELECT COALESCE(SUM(amount),0) FROM withdraw_history WHERE user_id=%s AND status='success'", (uid,))
-            rows.insert(1, ("TỔNG KẾT", uid, target_name, x[0], f"Tổng nạp thành công={dep}; tổng rút thành công={wd}; số dư={x[0] or 0}", ""))
-        headers = ["Loại", "ID người dùng", "@username / Tên", "Số tiền / Số dư", "Chi tiết", "Thời gian"]
-
-    safe_uid = str(uid)
-    file_stem = f"bao_cao_{kind}_{safe_uid}_{period}"
-    file_obj, filename, mime = _make_report_document(
-        f"BÁO CÁO {kind.upper()} — ID {uid} — {period_label}",
-        headers, rows, file_stem + ".csv"
-    )
-    await message.reply_document(
-        document=file_obj, filename=filename,
-        caption=f"📊 <b>BÁO CÁO {kind.upper()}</b>\n"
-                f"🆔 ID: <code>{uid}</code> · Tài khoản: {html.escape(target_name or 'Chưa lấy được username')}\n"
-                f"🗓 Thời gian: {html.escape(period_label)}\n"
-                f"📄 Số dòng: <b>{len(rows)}</b>",
-        parse_mode=ParseMode.HTML
-    )
+async def huy_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if ctx.user_data.pop("rp_wait", None):
+        await update.effective_message.reply_text("✅ Đã hủy chọn ngày.")
 
 async def report_date_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = ctx.user_data.get("report_wait_date")
-    if not uid:
+    wait = ctx.user_data.get("rp_wait")
+    msg = update.effective_message
+    user = update.effective_user
+    if not wait or not msg or not msg.text or not user or user.id not in ADMIN_IDS:
         return
-    if update.effective_user.id not in ADMIN_IDS:
+    if get_vietnam_time().timestamp() - wait.get("ts", 0) > 600:
+        ctx.user_data.pop("rp_wait", None)
         return
-    if update.effective_message.text.strip().lower() == "/huy":
-        ctx.user_data.pop("report_wait_date", None)
-        ctx.user_data.pop("report_wait_kind", None)
-        return await update.effective_message.reply_text("Đã hủy chọn ngày.")
+    is_private = update.effective_chat and update.effective_chat.type == "private"
+    is_reply = bool(msg.reply_to_message and msg.reply_to_message.message_id == wait.get("prompt_id"))
+    if not (is_private or is_reply):
+        return
+    text = msg.text.strip()
+    if text.lower() in ("huy", "hủy", "cancel"):
+        ctx.user_data.pop("rp_wait", None)
+        await msg.reply_text("✅ Đã hủy chọn ngày.")
+        raise ApplicationHandlerStop
+    token = _rp_token_from_text(text)
+    if token is None:
+        await msg.reply_text("❌ Không hiểu định dạng. Ví dụ: <code>29/10/2026</code>, <code>01/10 - 29/10</code>, <code>7</code> hoặc <code>all</code>.", parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+    ctx.user_data.pop("rp_wait", None)
+    uid, kind, mode = int(wait["uid"]), wait["kind"], wait.get("mode", "x")
     try:
-        date_obj = datetime.strptime(update.effective_message.text.strip(), "%d/%m/%Y")
-        date_filter = date_obj.strftime("%d/%m/%Y")
-    except ValueError:
-        return await update.effective_message.reply_text("Ngày không hợp lệ. Hãy nhập DD/MM/YYYY, ví dụ 28/10/2026.")
-    kind = ctx.user_data.get("report_wait_kind", "all")
-    ctx.user_data.pop("report_wait_date", None)
-    ctx.user_data.pop("report_wait_kind", None)
-    ctx.user_data["report_date"] = date_filter
-    await _export_user_report(update.effective_message, ctx.bot, int(uid), kind, "date", ctx)
+        if mode == "x":
+            await _rp_export(msg, ctx.bot, uid, kind, token)
+        elif kind == "all":
+            t, kb = await _rp_render_summary(ctx.bot, uid, token)
+            await msg.reply_text(t, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            t, kb = await _rp_render_view(ctx.bot, uid, kind, token, 0)
+            await msg.reply_text(t, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        traceback.print_exc()
+        await msg.reply_text(f"❌ Lỗi: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
+    raise ApplicationHandlerStop
+
+async def _on_error(update, context):
+    """Không để lỗi bị nuốt im lặng: in log và báo cho admin nếu lỗi đến từ thao tác của admin."""
+    print(f"❌ Lỗi handler: {context.error}")
+    try:
+        traceback.print_exception(type(context.error), context.error, context.error.__traceback__)
+    except Exception:
+        pass
+    try:
+        if isinstance(update, Update) and update.effective_user and update.effective_user.id in ADMIN_IDS and update.effective_message:
+            await update.effective_message.reply_text(f"⚠️ Lỗi nội bộ: {html.escape(str(context.error))[:300]}", parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
 
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("lienket", lien_ket))
@@ -6390,10 +7215,20 @@ application.add_handler(CommandHandler("tatroom", tatroom_cmd))
 
 application.add_handler(CommandHandler("admin", admin_help_cmd))
 application.add_handler(CommandHandler("fulluser", fulluser_cmd))
-application.add_handler(CommandHandler("huy", report_date_input))
+application.add_handler(CommandHandler("lsuser", lsuser_cmd))
+application.add_handler(CommandHandler("lsnap", lsnap_cmd))
+application.add_handler(CommandHandler("lsrut", lsrut_cmd))
+application.add_handler(CommandHandler("lscuoc", lscuoc_cmd))
+application.add_handler(CommandHandler("lscode", lscode_cmd))
+application.add_handler(CommandHandler("lsgift", lsgift_cmd))
+application.add_handler(CommandHandler("lsmua", lsmua_cmd))
+application.add_handler(CommandHandler("tongket", tongket_cmd))
+application.add_handler(CommandHandler("xuatls", xuatls_cmd))
+application.add_handler(CommandHandler("huy", huy_cmd))
 application.add_handler(CommandHandler("resetbank", resetbank_cmd))
-application.add_handler(CallbackQueryHandler(admin_report_callback, pattern=r"^admreport_"))
-application.add_handler(CallbackQueryHandler(admin_report_period_callback, pattern=r"^admperiod_"))
+application.add_handler(CallbackQueryHandler(admin_report_callback, pattern=r"^ar:"))
+application.add_handler(CallbackQueryHandler(legacy_report_callback, pattern=r"^(admreport_|admperiod_)"))
+application.add_error_handler(_on_error)
 application.add_handler(CommandHandler("baotrigame", baotrigame_cmd))
 application.add_handler(CommandHandler("trangthai", trangthai_cmd))
 application.add_handler(CommandHandler("user", user_cmd))
