@@ -794,8 +794,10 @@ def sub_money(uid, amt, note="withdraw"):
         update_bet_progress(uid, amt)
     return True
 
-def add_bonus_with_requirement(user_id, bonus_amount, required_multiplier=2):
-    required_bet = bonus_amount * required_multiplier
+def add_bonus_with_requirement(user_id, bonus_amount, required_multiplier=None):
+    if required_multiplier is None:
+        required_multiplier = PROMO_WAGER_MULT
+    required_bet = int(round(bonus_amount * required_multiplier))
     now_str = get_vietnam_datetime_db()
     query("DELETE FROM user_bonus WHERE user_id=%s", (user_id,))
     query("INSERT INTO user_bonus (user_id, bonus_amount, required_bet, current_bet, created_at) VALUES (%s, %s, %s, %s, %s)",
@@ -812,7 +814,8 @@ def add_bonus_with_requirement(user_id, bonus_amount, required_multiplier=2):
 # ============================================================
 PROMO_PCT = 15                              # % khuyến mãi nạp (1 lần/ngày)
 PROMO_ORDER_PCT = 3                         # % thưởng thêm cho mỗi lệnh nạp
-PROMO_WAGER_MULT = 2                        # yêu cầu cược x2 trên tiền thưởng
+PROMO_WAGER_MULT = 2.8                      # khuyến mãi (15%, admin tặng...) phải cược x2.8 vòng
+PROMO_ORDER_WAGER_MULT = 1                  # thưởng 3% mỗi lệnh nạp chỉ cần cược x1 vòng
 PROMO_GOLDEN_WINDOWS = ((10, 11), (20, 21)) # [giờ bắt đầu, giờ kết thúc) -> 10:00-11:00 và 20:00-21:00
 PROMO_ALWAYS_ON = False                     # True = khuyến mãi 15% luôn mở cả ngày (không phụ thuộc giờ vàng)
 
@@ -850,11 +853,13 @@ def promo_claim_daily(uid, amount):
               "ON CONFLICT DO NOTHING RETURNING user_id", (uid, promo_today_key(), amount))
     return bool(r)
 
-def add_promo_bonus(uid, bonus_amount, note="Khuyến mãi nạp"):
-    """Cộng tiền thưởng + CỘNG DỒN yêu cầu cược vào vòng cược hiện có (nếu đang có)."""
-    required = bonus_amount * PROMO_WAGER_MULT
-    add_wager_requirement(uid, bonus_amount, required)
-    add_money(uid, bonus_amount, f"{note} +{bonus_amount:,}đ (yêu cầu cược x{PROMO_WAGER_MULT})")
+def add_promo_bonus(uid, bonus_main, bonus_order=0, note="Khuyến mãi nạp"):
+    """Cộng thưởng + CỘNG DỒN yêu cầu cược vào vòng cược hiện có (nếu đang có).
+    bonus_main: phần khuyến mãi phải cược x2.8; bonus_order: phần thưởng 3%/lệnh chỉ cược x1."""
+    total = bonus_main + bonus_order
+    required = int(round(bonus_main * PROMO_WAGER_MULT)) + int(round(bonus_order * PROMO_ORDER_WAGER_MULT))
+    add_wager_requirement(uid, total, required)
+    add_money(uid, total, f"{note} +{total:,}đ (yêu cầu cược {fmt_money(required)}đ)")
     return required
 
 def promo_build_offer(uid, amount):
@@ -865,7 +870,9 @@ def promo_build_offer(uid, amount):
     total = p15 + p3
     if total <= 0:
         return None
-    required = total * PROMO_WAGER_MULT
+    req_main = int(round(p15 * PROMO_WAGER_MULT))
+    req_order = int(round(p3 * PROMO_ORDER_WAGER_MULT))
+    required = req_main + req_order
     lines = [
         f'{ce("🎁")} <b>BẠN CÓ MUỐN NHẬN THÊM KHUYẾN MÃI?</b>',
         '━━━━━━━━━━━━━━━━━━━━━',
@@ -876,8 +883,11 @@ def promo_build_offer(uid, amount):
         lines.append(f'{ce("✨")} <b>Thưởng nạp {PROMO_PCT}% (1 lần/ngày):</b> <code>+{fmt_money(p15)}đ</code>')
     lines.append(f'{ce("➕")} <b>Thưởng thêm mỗi lệnh nạp {PROMO_ORDER_PCT}%:</b> <code>+{fmt_money(p3)}đ</code>')
     lines.append(f'{ce("💰")} <b>Tổng nhận:</b> <code>+{fmt_money(total)}đ</code>')
-    lines.append(f'{ce("🎯")} <b>Yêu cầu cược:</b> x{PROMO_WAGER_MULT} vòng (<code>{fmt_money(required)}đ</code>)')
-    lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x{PROMO_WAGER_MULT} vòng cược. '
+    if eligible15:
+        lines.append(f'{ce("🎯")} <b>Cược {PROMO_PCT}%:</b> x{PROMO_WAGER_MULT} vòng (<code>{fmt_money(req_main)}đ</code>)')
+    lines.append(f'{ce("🎯")} <b>Cược {PROMO_ORDER_PCT}%:</b> x{PROMO_ORDER_WAGER_MULT} vòng (<code>{fmt_money(req_order)}đ</code>)')
+    lines.append(f'{ce("📊")} <b>Tổng yêu cầu cược:</b> <code>{fmt_money(required)}đ</code>')
+    lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> Cược đủ yêu cầu mới được rút. '
                  f'Nếu đang có vòng cược khuyến mãi khác, yêu cầu cược sẽ được cộng dồn.')
     if not eligible15:
         if promo_claimed_today(uid):
@@ -3727,7 +3737,7 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if remaining > 0:
         return await msg_obj.reply_text(
             f'{ce("⚠️")} <b>CHƯA ĐỦ ĐIỀU KIỆN RÚT TIỀN!</b>\n\n'
-            f'{ce("💰")} Bạn đang có tiền khuyến mãi cần cược đủ <b>x2</b> vòng.\n'
+            f'{ce("💰")} Bạn đang có tiền khuyến mãi chưa cược đủ vòng cược yêu cầu.\n'
             f'{ce("📊")} <b>Cần cược thêm:</b> <code>{fmt_money(remaining)}đ</code>',
             parse_mode=ParseMode.HTML)
     if sub_money(uid, amount, "Rút tiền"):
@@ -4804,7 +4814,7 @@ async def kmnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         bonus_amount = int(ctx.args[1])
         if bonus_amount <= 0:
             return await update.effective_message.reply_text(f'{ce("❌")} Số tiền khuyến mãi phải lớn hơn 0!', parse_mode=ParseMode.HTML)
-        required_bet = add_bonus_with_requirement(target_id, bonus_amount, 2)
+        required_bet = add_bonus_with_requirement(target_id, bonus_amount)
         await update.effective_message.reply_text(
             f'{ce("✅")} <b>KHUYẾN MÃI NẠP THÀNH CÔNG!</b>\n\n'
             f'{ce("👥")} <b>ID:</b> <code>{target_id}</code>\n'
@@ -4816,7 +4826,7 @@ async def kmnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'{ce("🎁")} <b>THÔNG BÁO KHUYẾN MÃI</b>\n\n'
                 f'Bạn vừa nhận được khuyến mãi nạp: <code>+{fmt_money(bonus_amount)}đ</code>\n\n'
                 f'{ce("📌")} <b>Điều kiện rút tiền:</b>\n'
-                f'• Cần cược <b>x2</b> vòng\n'
+                f'• Cần cược <b>x{PROMO_WAGER_MULT}</b> vòng\n'
                 f'• Số tiền cược yêu cầu: <code>{fmt_money(required_bet)}đ</code>',
                 parse_mode=ParseMode.HTML)
         except Exception:
@@ -5709,7 +5719,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total = p15 + p3
         if total <= 0:
             return await q.answer("❌ Không có khuyến mãi để nhận!", show_alert=True)
-        add_promo_bonus(target_id, total)
+        add_promo_bonus(target_id, p15, p3)
         st = get_bet_progress_status(target_id)
         lines = [f'{ce("🎁")} <b>ĐÃ NHẬN KHUYẾN MÃI!</b>']
         if p15:
@@ -5721,7 +5731,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if st:
             lines.append(f'{ce("🎯")} Yêu cầu cược hiện tại: <code>{fmt_money(st["required_bet"])}đ</code> '
                          f'(đã cược <code>{fmt_money(st["current_bet"])}đ</code>)')
-        lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x{PROMO_WAGER_MULT} vòng cược')
+        lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> {PROMO_PCT}% cược x{PROMO_WAGER_MULT} vòng, {PROMO_ORDER_PCT}% cược x{PROMO_ORDER_WAGER_MULT} vòng')
         await q.message.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
         return
 
@@ -5735,12 +5745,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                      (q.message.chat_id, q.message.message_id))
         if not done:
             return await q.answer("❌ Khuyến mãi này đã được xử lý rồi!", show_alert=True)
-        required_bet = add_promo_bonus(target_id, bonus_amount)
+        required_bet = add_promo_bonus(target_id, bonus_amount, 0)
         await q.message.edit_text(
             f'{ce("🎁")} <b>ĐÃ NHẬN KHUYẾN MÃI!</b>\n'
             f'{ce("💰")} <code>+{fmt_money(bonus_amount)}đ</code>\n'
             f'{ce("🎯")} Yêu cầu cược thêm: <code>{fmt_money(required_bet)}đ</code>\n'
-            f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x{PROMO_WAGER_MULT} vòng cược',
+            f'{ce("⚠️")} <b>Lưu ý:</b> Phải cược x{PROMO_WAGER_MULT} vòng',
             parse_mode=ParseMode.HTML)
         return
 
