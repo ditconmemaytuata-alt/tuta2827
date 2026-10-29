@@ -2482,7 +2482,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 f'{ce("🎮")} Cách chơi: [Cửa cược] [số tiền]\n'
                 f'🔵 Tài: T | 🔴 Xỉu: X | ⚪ Chẵn: C | ⚫ Lẻ: L\n'
                 f'{ce("👅")} Ẩn danh thường: TT/XX/CC/LL, VD TT 50000, XX 50000\n\n'
-                f'{ce("🔥")} T/X/C/L trả x2.3: thua tổng khi 3 XX 9/10/11/12 điểm\n'
+                f'{ce("🔥")} T/X/C/L trả x1.97: thua tổng khi 3 XX 9/10/11/12 điểm\n'
                 f'{ce("👅")} Tất tay: VD T MAX hoặc T ALL <i>(Lưu ý: MAX là tất tay)</i>\n'
                 f'{ce("🎰")} D1 [mặt] x5: đoán viên đầu, VD D1 4 20k\n'
                 f'{ce("🎰")} D2 [2 mặt] x10: đoán viên 1 và 2 đúng thứ tự, VD D2 46 20k\n'
@@ -2633,10 +2633,10 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                         elif target_sum in [5, 16]: multiplier = 18
                         elif target_sum in [4, 17]: multiplier = 25
                         elif target_sum in [3, 18]: multiplier = 30
-                elif choice == "tai" and res_tx == "tai": is_win = True; multiplier = 2.3
-                elif choice == "xiu" and res_tx == "xiu": is_win = True; multiplier = 2.3
-                elif choice == "chan" and res_cl == "chan": is_win = True; multiplier = 2.3
-                elif choice == "le" and res_cl == "le": is_win = True; multiplier = 2.3
+                elif choice == "tai" and res_tx == "tai": is_win = True; multiplier = 1.97
+                elif choice == "xiu" and res_tx == "xiu": is_win = True; multiplier = 1.97
+                elif choice == "chan" and res_cl == "chan": is_win = True; multiplier = 1.97
+                elif choice == "le" and res_cl == "le": is_win = True; multiplier = 1.97
                 elif choice == "tl" and res_tx == "tai" and res_cl == "le": is_win = True; multiplier = 3
                 elif choice == "tc" and res_tx == "tai" and res_cl == "chan": is_win = True; multiplier = 3
                 elif choice == "xl" and res_tx == "xiu" and res_cl == "le": is_win = True; multiplier = 3
@@ -2838,7 +2838,7 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
     }.get(choice, choice.upper())
 
     session_id = game.get("session_id", 0)
-    multiplier = 2.3
+    multiplier = 1.97
     if choice in ["tl", "tc", "xl", "xc"]: multiplier = 3
     elif choice.startswith("a"): multiplier = 150
     elif choice.startswith("d1"): multiplier = 5
@@ -5267,7 +5267,7 @@ GAME_RULES = {
         f'  - Ra 3 con 6 (cửa Tài trúng hũ).\n'
         f'  - Ra 3 con 1 (cửa Xỉu trúng hũ).\n'
         f'• Tỷ lệ trả thưởng:\n'
-        f'  - Tài / Xỉu / Chẵn / Lẻ: x2.3\n'
+        f'  - Tài / Xỉu / Chẵn / Lẻ: x1.97\n'
         f'  - Cửa kết hợp: x3\n'
         f'  - Bộ ba đồng nhất: x150\n\n'
         f'{ce("💡")} <b>Cách chơi:</b> Bấm nút bên dưới để vào phòng, nhắn lệnh VD: <code>T 20000</code> hoặc cược ẩn danh nhắn riêng cho bot.'
