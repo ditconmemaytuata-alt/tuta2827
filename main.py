@@ -5566,7 +5566,8 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<b>📊 Thống kê / code</b>\n<code>/stats</code>, <code>/all</code>, <code>/thongke</code>, <code>/tong</code>, <code>/check ID</code>, <code>/hisall</code>\n"
         "<code>/top</code> — Top tương tác hôm nay; <code>/topsodu [n]</code> — Top số dư; <code>/topcuoc [n]</code>, <code>/taocode</code>, <code>/taocodeall</code>, <code>/xoacode</code>, <code>/taogift</code>, <code>/dsgift</code>, <code>/xoagift</code>\n"
         "<code>/fulluser ID</code> — hồ sơ + xuất XLSX lịch sử theo 1–7 ngày/tất cả; <code>/resetbank ID</code> — gỡ liên kết ngân hàng\n"
-        "<code>/checktt</code> — tiến trình tương tác; <code>/top</code> — Top 10 tương tác; <code>/code MÃ</code> — nhập code\n"
+        "<code>/fulluser ID</code> — dùng được trong nhóm hoặc chat riêng, mở bảng xuất file theo từng loại dữ liệu và chọn 1–7 ngày/tất cả thời gian.\n"
+        "<code>/checktt</code> — xem số tin hợp lệ, thứ hạng và mốc thưởng hôm nay; <code>/top</code> — Top 10 tương tác; <code>/help</code> — hướng dẫn thành viên; <code>/code MÃ</code> — nhập code.\n"
         "<code>/send nội_dung</code>, <code>/rep ID nội_dung</code> — thông báo/liên hệ user\n\n"
         "<b>Trạng thái bảo trì</b> (🔴 bảo trì, 🟢 hoạt động):\n" + _admin_mt_lines()
     )
@@ -5782,6 +5783,7 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if not user:
         return
+    # Trong nhóm: thống kê nhóm đang chat; trong tin nhắn riêng: nhóm tương tác đã cấu hình.
     group_id = chat.id if chat and chat.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
     if not group_id:
         return await update.effective_message.reply_text("Chưa cấu hình nhóm tương tác.")
@@ -5789,6 +5791,11 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     row = query("SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
                 (user.id, group_id, today))
     count = int(row[0][0] or 0) if row else 0
+    rank_rows = query(
+        "SELECT COUNT(*) + 1 FROM daily_top_interactions WHERE group_id=%s AND date=%s AND interaction_count > %s",
+        (group_id, today, count)
+    ) or []
+    rank = int(rank_rows[0][0] or 1) if rank_rows else 1
     claimed_rows = query("SELECT milestone FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s ORDER BY milestone",
                          (user.id, group_id, today)) or []
     claimed = {int(r[0]) for r in claimed_rows}
@@ -5801,11 +5808,14 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     earned = "\n".join(f"✅ Mốc {m:,}: {fmt_money(reward)}đ {'(đã phát code)' if m in claimed else '(đang xử lý)'}"
                        for m, reward in INTERACTION_MILESTONES if m in claimed) or "Chưa nhận mốc nào hôm nay."
     await update.effective_message.reply_text(
-        f"📊 <b>THỐNG KÊ TƯƠNG TÁC CỦA BẠN</b>\n"
+        f"📊 <b>THỐNG KÊ TƯƠNG TÁC HÔM NAY</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 {html.escape(user.full_name or 'Thành viên')} · ID {mask_user_id(user.id)}\n"
-        f"💬 Hôm nay: <b>{count:,}</b> tin hợp lệ\n\n{progress}\n\n"
-        f"🎁 <b>Mốc đã nhận</b>\n{earned}\n\n"
-        f"Phần thưởng được gửi riêng qua bot, mỗi giftcode yêu cầu x7 vòng cược và hết hạn sau 24 giờ.",
+        f"💬 Tin nhắn hợp lệ: <b>{count:,}</b>\n"
+        f"🏆 Thứ hạng hiện tại: <b>{('#' + str(rank)) if count else 'Chưa có hạng'}</b>\n\n{progress}\n\n"
+        f"🎁 <b>CÁC MỐC ĐÃ NHẬN</b>\n{earned}\n\n"
+        f"🔐 Giftcode gửi riêng qua bot, yêu cầu x7 vòng cược và hết hạn sau 24 giờ.\n"
+        f"💡 Dùng /top để xem bảng xếp hạng nhóm.",
         parse_mode=ParseMode.HTML
     )
 
