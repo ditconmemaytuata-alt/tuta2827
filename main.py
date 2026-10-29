@@ -7780,7 +7780,7 @@ async def lsnaptatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         return await update.effective_message.reply_text("Chưa có lịch sử nạp.")
     text = "📥 <b>50 LỊCH SỬ NẠP MỚI NHẤT</b>\n\n" + "\n".join(
-        f"#{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[3] or ""))} · {html.escape(str(r[4] or ""))}"
+        f"#{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[3] or ''))} · {html.escape(str(r[4] or ''))}"
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -7790,7 +7790,7 @@ async def lsruttatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         return await update.effective_message.reply_text("Chưa có lịch sử rút.")
     text = "📤 <b>50 LỊCH SỬ RÚT MỚI NHẤT</b>\n\n" + "\n".join(
-        f"#{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[3] or ""))} · {html.escape(str(r[4] or ""))}"
+        f"#{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[3] or ''))} · {html.escape(str(r[4] or ''))}"
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
