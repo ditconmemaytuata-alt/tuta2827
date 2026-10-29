@@ -803,6 +803,94 @@ def add_bonus_with_requirement(user_id, bonus_amount, required_multiplier=2):
     add_money(user_id, bonus_amount, f"Khuyến mãi nạp +{bonus_amount:,}đ (yêu cầu cược x{required_multiplier})")
     return required_bet
 
+# ============================================================
+# KHUYẾN MÃI NẠP
+#  • 15% mỗi lần nạp, MỖI NGÀY CHỈ NHẬN 1 LẦN (đang có vòng cược khác vẫn nhận, cược được cộng dồn)
+#  • +3% thưởng thêm cho MỖI lệnh nạp (không giới hạn số lần)
+#  • GIỜ VÀNG tự động bật/tắt hằng ngày: 10:00-11:00 và 20:00-21:00 (giờ Việt Nam)
+#  • Admin có thể ép bật/tắt bằng /kmgio on|off|auto
+# ============================================================
+PROMO_PCT = 15                              # % khuyến mãi nạp (1 lần/ngày)
+PROMO_ORDER_PCT = 3                         # % thưởng thêm cho mỗi lệnh nạp
+PROMO_WAGER_MULT = 2                        # yêu cầu cược x2 trên tiền thưởng
+PROMO_GOLDEN_WINDOWS = ((10, 11), (20, 21)) # [giờ bắt đầu, giờ kết thúc) -> 10:00-11:00 và 20:00-21:00
+PROMO_ALWAYS_ON = False                     # True = khuyến mãi 15% luôn mở cả ngày (không phụ thuộc giờ vàng)
+
+query("CREATE TABLE IF NOT EXISTS promo_daily_claims (user_id BIGINT, claim_date TEXT, amount BIGINT DEFAULT 0, PRIMARY KEY (user_id, claim_date))")
+query("CREATE TABLE IF NOT EXISTS promo_offer_done (chat_id BIGINT, message_id BIGINT, PRIMARY KEY (chat_id, message_id))")
+
+def promo_mode():
+    m = (get_setting("promo_mode", "auto") or "auto").lower()
+    return m if m in ("auto", "on", "off") else "auto"
+
+def promo_golden_now():
+    h = get_vietnam_time().hour
+    return any(a <= h < b for a, b in PROMO_GOLDEN_WINDOWS)
+
+def promo_is_active():
+    m = promo_mode()
+    if m == "on":
+        return True
+    if m == "off":
+        return False
+    return PROMO_ALWAYS_ON or promo_golden_now()
+
+def promo_windows_text():
+    return " và ".join(f"{a:02d}:00-{b:02d}:00" for a, b in PROMO_GOLDEN_WINDOWS)
+
+def promo_today_key():
+    return get_vietnam_time().strftime("%Y-%m-%d")
+
+def promo_claimed_today(uid):
+    return bool(query("SELECT 1 FROM promo_daily_claims WHERE user_id=%s AND claim_date=%s", (uid, promo_today_key())))
+
+def promo_claim_daily(uid, amount):
+    """Đánh dấu đã nhận 15% hôm nay. Trả về True nếu lần đầu trong ngày."""
+    r = query("INSERT INTO promo_daily_claims (user_id, claim_date, amount) VALUES (%s,%s,%s) "
+              "ON CONFLICT DO NOTHING RETURNING user_id", (uid, promo_today_key(), amount))
+    return bool(r)
+
+def add_promo_bonus(uid, bonus_amount, note="Khuyến mãi nạp"):
+    """Cộng tiền thưởng + CỘNG DỒN yêu cầu cược vào vòng cược hiện có (nếu đang có)."""
+    required = bonus_amount * PROMO_WAGER_MULT
+    add_wager_requirement(uid, bonus_amount, required)
+    add_money(uid, bonus_amount, f"{note} +{bonus_amount:,}đ (yêu cầu cược x{PROMO_WAGER_MULT})")
+    return required
+
+def promo_build_offer(uid, amount):
+    """Trả về (text, keyboard) của lời mời nhận khuyến mãi sau khi nạp, hoặc None nếu không có gì để tặng."""
+    p3 = int(amount * PROMO_ORDER_PCT / 100)
+    eligible15 = promo_is_active() and not promo_claimed_today(uid)
+    p15 = int(amount * PROMO_PCT / 100) if eligible15 else 0
+    total = p15 + p3
+    if total <= 0:
+        return None
+    required = total * PROMO_WAGER_MULT
+    lines = [
+        f'{ce("🎁")} <b>BẠN CÓ MUỐN NHẬN THÊM KHUYẾN MÃI?</b>',
+        '━━━━━━━━━━━━━━━━━━━━━',
+    ]
+    if eligible15 and promo_mode() == "auto" and promo_golden_now():
+        lines.append(f'{ce("⏰")} <b>ĐANG LÀ GIỜ VÀNG NẠP!</b>')
+    if eligible15:
+        lines.append(f'{ce("✨")} <b>Thưởng nạp {PROMO_PCT}% (1 lần/ngày):</b> <code>+{fmt_money(p15)}đ</code>')
+    lines.append(f'{ce("➕")} <b>Thưởng thêm mỗi lệnh nạp {PROMO_ORDER_PCT}%:</b> <code>+{fmt_money(p3)}đ</code>')
+    lines.append(f'{ce("💰")} <b>Tổng nhận:</b> <code>+{fmt_money(total)}đ</code>')
+    lines.append(f'{ce("🎯")} <b>Yêu cầu cược:</b> x{PROMO_WAGER_MULT} vòng (<code>{fmt_money(required)}đ</code>)')
+    lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x{PROMO_WAGER_MULT} vòng cược. '
+                 f'Nếu đang có vòng cược khuyến mãi khác, yêu cầu cược sẽ được cộng dồn.')
+    if not eligible15:
+        if promo_claimed_today(uid):
+            lines.append(f'{ce("📌")} <i>Hôm nay bạn đã nhận khuyến mãi {PROMO_PCT}% rồi (mỗi ngày 1 lần).</i>')
+        else:
+            lines.append(f'{ce("📌")} <i>Khuyến mãi {PROMO_PCT}% mở trong giờ vàng {promo_windows_text()} mỗi ngày.</i>')
+    lines.append('━━━━━━━━━━━━━━━━━━━━━\n\nVui lòng chọn bên dưới:')
+    kb = InlineKeyboardMarkup([[
+        btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_promo_{uid}_{amount}_{1 if eligible15 else 0}"),
+        btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{uid}")
+    ]])
+    return "\n".join(lines), kb
+
 def get_remaining_bet_required(user_id):
     bonus_data = query("SELECT required_bet, current_bet FROM user_bonus WHERE user_id=%s", (user_id,))
     if not bonus_data or bonus_data[0][0] == 0:
@@ -2610,16 +2698,15 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             if len(game_history[group_id]) > 10:
                 game_history[group_id].pop(0)
 
+            # Cầu gần đây: chỉ hiển thị Tài/Xỉu bằng ô vuông 🟦/🟥 (không dùng bi đen/trắng, không bị đổi thành cờ)
             cau_tx = ""
-            cau_cl = ""
             for h in game_history.get(group_id, []):
-                cau_tx += "🔵" if h['tx'] == "tai" else "🔴"
-                cau_cl += "⚪️" if h['cl'] == "chan" else "⚫️"
+                cau_tx += "🟦" if h['tx'] == "tai" else "🟥"
 
             final_msg = (
                 f'{ce("📊")} <b>Kết quả Phiên #{session_id}</b>\n'
                 f'┏━━━━━━━━━━━━━\n'
-                f'┃ {dice_str} {ce("➡️")} {total} {result_text} {result_icons}\n'
+                f'┃ {dice_str} {ce("➡️")} {total} {result_text}\n'
                 f'┃\n'
                 f'┃ {ce("💰")} Tổng thắng: {fmt_money(total_win)}\n'
                 f'┃ {ce("❌")} Tổng thua: {fmt_money(total_lose)}\n'
@@ -2628,9 +2715,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 f'┗━━━━━━━━━━━━━\n'
                 f'<b>Cầu gần đây:</b>\n'
                 f'{cau_tx if cau_tx else "Chưa có"}\n'
-                f'      🔵  Tài             🔴  XỈU\n'
-                f'{cau_cl if cau_cl else "Chưa có"}\n'
-                f'      ⚪️  Chẵn        ⚫️  Lẻ.'
+                f'🟦 Tài      🟥 Xỉu'
             )
 
             if jackpot_winners:
@@ -4325,25 +4410,15 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML)
         except: pass
 
-        bonus_amount = int(amount * 0.10)
-        if bonus_amount > 0:
-            required_bet = bonus_amount * 2
-            keyboard = InlineKeyboardMarkup([[
-                btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_bonus_{target_id}_{bonus_amount}_{required_bet}"),
-                btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{target_id}")
-            ]])
+        offer = promo_build_offer(target_id, amount)
+        if offer:
+            offer_text, keyboard = offer
             try:
                 await ctx.bot.send_message(target_id,
                     f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n'
                     f'{ce("💰")} Số tiền nạp: <code>+{fmt_money(amount)}đ</code>\n'
                     f'{ce("💎")} Số dư hiện tại: <code>{fmt_money(get_balance(target_id))}đ</code>\n\n'
-                    f'{ce("🎁")} <b>BẠN CÓ MUỐN NHẬN THÊM KHUYẾN MÃI?</b>\n'
-                    f'━━━━━━━━━━━━━━━━━━━━━\n'
-                    f'{ce("✨")} <b>Thưởng nạp 10%:</b> <code>+{fmt_money(bonus_amount)}đ</code>\n'
-                    f'{ce("🎯")} <b>Yêu cầu cược:</b> x2 vòng (<code>{fmt_money(required_bet)}đ</code>)\n'
-                    f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x2 vòng cược tổng số dư tài khoản\n'
-                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
-                    f'Vui lòng chọn bên dưới:',
+                    + offer_text,
                     reply_markup=keyboard, parse_mode=ParseMode.HTML)
             except Exception as e: pass
         else:
@@ -4774,6 +4849,118 @@ async def kmnapvc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
     except ValueError:
         await update.effective_message.reply_text(f'{ce("❌")} ID hoặc số tiền không hợp lệ!', parse_mode=ParseMode.HTML)
+
+# ================= TÍNH NĂNG ADMIN MỚI =================
+def _today_report_text():
+    now = get_vietnam_time()
+    d_str = now.strftime("%d/%m/%Y")
+    like = f"% - {d_str}"
+    def one(sql, args=()):
+        rows = query(sql, args) or []
+        return rows[0] if rows else None
+    dep = one("SELECT COUNT(*), COALESCE(SUM(amount),0), COUNT(DISTINCT user_id) FROM deposit_history WHERE status='success' AND time LIKE %s", (like,)) or (0, 0, 0)
+    wd = one("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='success' AND time LIKE %s", (like,)) or (0, 0)
+    wd_pending = one("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='pending'") or (0, 0)
+    bets = one("SELECT COALESCE(SUM(bet),0), COALESCE(SUM(win),0), COUNT(DISTINCT user_id) FROM bet_daily WHERE day=%s", (now.date(),)) or (0, 0, 0)
+    promo = one("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM promo_daily_claims WHERE claim_date=%s", (promo_today_key(),)) or (0, 0)
+    jackpot = get_jackpot()
+    profit = int(dep[1] or 0) - int(wd[1] or 0)
+    return (
+        f'{ce("📊")} <b>BÁO CÁO HÔM NAY</b> — <code>{d_str}</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("📥")} <b>Nạp:</b> <code>{fmt_money(int(dep[1] or 0))}đ</code> ({dep[0]} lệnh, {dep[2]} người)\n'
+        f'{ce("📤")} <b>Rút đã duyệt:</b> <code>{fmt_money(int(wd[1] or 0))}đ</code> ({wd[0]} lệnh)\n'
+        f'{ce("⏰")} <b>Rút đang chờ:</b> <code>{fmt_money(int(wd_pending[1] or 0))}đ</code> ({wd_pending[0]} lệnh)\n'
+        f'{ce("💵")} <b>Nạp - Rút:</b> <code>{"+" if profit >= 0 else "-"}{fmt_money(abs(profit))}đ</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🎯")} <b>Tổng cược:</b> <code>{fmt_money(int(bets[0] or 0))}đ</code> ({bets[2]} người chơi)\n'
+        f'{ce("🏆")} <b>Tổng trả thưởng:</b> <code>{fmt_money(int(bets[1] or 0))}đ</code>\n'
+        f'{ce("🎁")} <b>Hũ jackpot:</b> <code>{fmt_money(jackpot)}đ</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("✨")} <b>Khuyến mãi {PROMO_PCT}% đã nhận hôm nay:</b> {promo[0]} người '
+        f'(<code>+{fmt_money(int(int(promo[1] or 0) * PROMO_PCT / 100))}đ</code>)'
+    )
+
+@admin_only
+async def homnay_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(_today_report_text(), parse_mode=ParseMode.HTML)
+
+@admin_only
+async def kmgio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if ctx.args:
+        act = ctx.args[0].lower()
+        if act not in ("on", "off", "auto"):
+            return await msg.reply_text(f'{ce("❌")} <b>Cú pháp:</b> <code>/kmgio [on|off|auto]</code>', parse_mode=ParseMode.HTML)
+        set_setting("promo_mode", act)
+    mode = promo_mode()
+    mode_txt = {"auto": "TỰ ĐỘNG theo giờ vàng", "on": "ÉP BẬT cả ngày", "off": "ÉP TẮT"}[mode]
+    active = promo_is_active()
+    claimed = query("SELECT COUNT(*) FROM promo_daily_claims WHERE claim_date=%s", (promo_today_key(),)) or [(0,)]
+    await msg.reply_text(
+        f'{ce("⏰")} <b>KHUYẾN MÃI NẠP {PROMO_PCT}% / GIỜ VÀNG</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("⚙️")} <b>Chế độ:</b> {mode_txt}\n'
+        f'{ce("🟢") if active else ce("🔴")} <b>Hiện tại:</b> {"ĐANG BẬT" if active else "ĐANG TẮT"}\n'
+        f'{ce("🗓")} <b>Khung giờ vàng:</b> <code>{promo_windows_text()}</code> (hằng ngày)\n'
+        f'{ce("➕")} <b>Thưởng thêm mỗi lệnh nạp:</b> {PROMO_ORDER_PCT}%\n'
+        f'{ce("👥")} <b>Đã nhận {PROMO_PCT}% hôm nay:</b> {claimed[0][0]} người\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'<code>/kmgio on</code> bật cả ngày • <code>/kmgio off</code> tắt • <code>/kmgio auto</code> tự động',
+        parse_mode=ParseMode.HTML)
+
+@admin_only
+async def dskm_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = query("SELECT user_id, bonus_amount, required_bet, current_bet FROM user_bonus "
+                 "WHERE required_bet > 0 ORDER BY (required_bet - current_bet) DESC LIMIT 20") or []
+    if not rows:
+        return await update.effective_message.reply_text(f'{ce("📊")} Hiện không có ai đang trong vòng cược khuyến mãi.', parse_mode=ParseMode.HTML)
+    lines = [f'{ce("🎯")} <b>DANH SÁCH ĐANG CÓ VÒNG CƯỢC KHUYẾN MÃI</b> (top 20)\n']
+    for uid_, bonus, req, cur in rows:
+        left = max(0, int(req) - int(cur))
+        lines.append(f'• <code>{uid_}</code> | thưởng <code>{fmt_money(int(bonus))}đ</code> | còn thiếu <code>{fmt_money(left)}đ</code> '
+                     f'({min(100, int(cur * 100 / req)) if req else 0}%)')
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+async def promo_golden_loop(bot):
+    """Tự động thông báo bật/tắt giờ vàng vào nhóm + gửi báo cáo cuối ngày cho admin."""
+    last = None
+    while True:
+        try:
+            active = promo_is_active()
+            if last is None:
+                last = active
+            elif active != last:
+                last = active
+                if active:
+                    end_h = next((b for a, b in PROMO_GOLDEN_WINDOWS if a <= get_vietnam_time().hour < b), None)
+                    until = f" đến hết <b>{end_h:02d}:59</b>" if (end_h and promo_mode() == "auto") else ""
+                    text = (f'{ce("⏰")} <b>GIỜ VÀNG NẠP ĐÃ MỞ!</b> {ce("🎉")}\n'
+                            f'{ce("✨")} Nạp ngay nhận khuyến mãi <b>{PROMO_PCT}%</b> (mỗi ngày 1 lần){until}\n'
+                            f'{ce("➕")} Mỗi lệnh nạp được thưởng thêm <b>{PROMO_ORDER_PCT}%</b>\n'
+                            f'{ce("🗓")} Giờ vàng hằng ngày: <code>{promo_windows_text()}</code>')
+                else:
+                    text = (f'{ce("⌛")} <b>Giờ vàng nạp đã kết thúc.</b>\n'
+                            f'{ce("🗓")} Hẹn bạn khung giờ vàng tiếp theo: <code>{promo_windows_text()}</code>')
+                for gid in GROUP_IDS:
+                    try:
+                        await bot.send_message(gid, text, parse_mode=ParseMode.HTML)
+                    except Exception as e:
+                        print(f"Không gửi được thông báo giờ vàng tới {gid}: {e}")
+            # Báo cáo cuối ngày (23:55 - 23:59) gửi cho admin, mỗi ngày 1 lần
+            now = get_vietnam_time()
+            key = now.strftime("%Y-%m-%d")
+            if now.hour == 23 and now.minute >= 55 and get_setting("daily_report_date", "") != key:
+                set_setting("daily_report_date", key)
+                report = _today_report_text()
+                for aid in ADMIN_IDS:
+                    try:
+                        await bot.send_message(aid, report, parse_mode=ParseMode.HTML)
+                    except Exception as e:
+                        print(f"Không gửi được báo cáo cho admin {aid}: {e}")
+        except Exception as e:
+            print(f"Lỗi promo_golden_loop: {e}")
+        await asyncio.sleep(20)
 
 @admin_only
 async def admin_check_bet_progress_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -5504,22 +5691,56 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | {row[1]} | <i>{row[2]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
+    if d.startswith("accept_promo_"):
+        parts = d.split("_")
+        target_id = int(parts[2])
+        amount = int(parts[3])
+        offered15 = len(parts) > 4 and parts[4] == "1"
+        if q.from_user.id != target_id: return await q.answer("❌ Không phải yêu cầu của bạn!", show_alert=True)
+        # Chống bấm nhận 2 lần trên cùng 1 tin nhắn
+        done = query("INSERT INTO promo_offer_done (chat_id, message_id) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING chat_id",
+                     (q.message.chat_id, q.message.message_id))
+        if not done:
+            return await q.answer("❌ Khuyến mãi này đã được xử lý rồi!", show_alert=True)
+        p15 = 0
+        if offered15 and promo_claim_daily(target_id, amount):
+            p15 = int(amount * PROMO_PCT / 100)
+        p3 = int(amount * PROMO_ORDER_PCT / 100)
+        total = p15 + p3
+        if total <= 0:
+            return await q.answer("❌ Không có khuyến mãi để nhận!", show_alert=True)
+        add_promo_bonus(target_id, total)
+        st = get_bet_progress_status(target_id)
+        lines = [f'{ce("🎁")} <b>ĐÃ NHẬN KHUYẾN MÃI!</b>']
+        if p15:
+            lines.append(f'{ce("✨")} Thưởng {PROMO_PCT}%: <code>+{fmt_money(p15)}đ</code>')
+        elif offered15:
+            lines.append(f'{ce("📌")} <i>Hôm nay bạn đã nhận {PROMO_PCT}% rồi nên chỉ nhận phần {PROMO_ORDER_PCT}%.</i>')
+        lines.append(f'{ce("➕")} Thưởng {PROMO_ORDER_PCT}% mỗi lệnh nạp: <code>+{fmt_money(p3)}đ</code>')
+        lines.append(f'{ce("💰")} Tổng nhận: <code>+{fmt_money(total)}đ</code>')
+        if st:
+            lines.append(f'{ce("🎯")} Yêu cầu cược hiện tại: <code>{fmt_money(st["required_bet"])}đ</code> '
+                         f'(đã cược <code>{fmt_money(st["current_bet"])}đ</code>)')
+        lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x{PROMO_WAGER_MULT} vòng cược')
+        await q.message.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        return
+
     if d.startswith("accept_bonus_"):
+        # Nút cũ (tin nhắn khuyến mãi gửi trước khi cập nhật) - vẫn nhận được, cược cộng dồn
         parts = d.split("_")
         target_id = int(parts[2])
         bonus_amount = int(parts[3])
-        required_bet = int(parts[4])
         if q.from_user.id != target_id: return await q.answer("❌ Không phải yêu cầu của bạn!", show_alert=True)
-        existing = query("SELECT 1 FROM user_bonus WHERE user_id=%s", (target_id,))
-        if existing:
-            await q.answer("❌ Bạn đang có khuyến mãi chưa hoàn thành cược!", show_alert=True)
-            return
-        add_bonus_with_requirement(target_id, bonus_amount, 2)
+        done = query("INSERT INTO promo_offer_done (chat_id, message_id) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING chat_id",
+                     (q.message.chat_id, q.message.message_id))
+        if not done:
+            return await q.answer("❌ Khuyến mãi này đã được xử lý rồi!", show_alert=True)
+        required_bet = add_promo_bonus(target_id, bonus_amount)
         await q.message.edit_text(
             f'{ce("🎁")} <b>ĐÃ NHẬN KHUYẾN MÃI!</b>\n'
             f'{ce("💰")} <code>+{fmt_money(bonus_amount)}đ</code>\n'
-            f'{ce("🎯")} Yêu cầu cược: <code>{fmt_money(required_bet)}đ</code>\n'
-            f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x2 vòng cược',
+            f'{ce("🎯")} Yêu cầu cược thêm: <code>{fmt_money(required_bet)}đ</code>\n'
+            f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x{PROMO_WAGER_MULT} vòng cược',
             parse_mode=ParseMode.HTML)
         return
 
@@ -5707,27 +5928,12 @@ async def sepay_webhook(request):
             except Exception as e:
                 print(f"Không gửi được thông báo nạp cho admin {admin_id}: {e}")
 
-        # Tặng khuyến mãi 10% (gửi nút cho user)
-        bonus_amount = int(amount * 0.10)
-        if bonus_amount > 0:
-            required_bet = bonus_amount * 2
-            keyboard = InlineKeyboardMarkup([[
-                btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_bonus_{user_id}_{bonus_amount}_{required_bet}"),
-                btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{user_id}")
-            ]])
+        # Khuyến mãi nạp: 15% (1 lần/ngày, giờ vàng) + 3% mỗi lệnh nạp
+        offer = promo_build_offer(user_id, amount)
+        if offer:
+            offer_text, keyboard = offer
             try:
-                await _bot_instance.send_message(
-                    user_id,
-                    f'{ce("🎁")} <b>BẠN CÓ MUỐN NHẬN THÊM KHUYẾN MÃI?</b>\n'
-                    f'━━━━━━━━━━━━━━━━━━━━━\n'
-                    f'{ce("✨")} <b>Thưởng nạp 10%:</b> <code>+{fmt_money(bonus_amount)}đ</code>\n'
-                    f'{ce("🎯")} <b>Yêu cầu cược:</b> x2 vòng (<code>{fmt_money(required_bet)}đ</code>)\n'
-                    f'{ce("⚠️")} <b>Lưu ý:</b> Sau khi nhận thưởng phải x2 vòng cược tổng số dư tài khoản\n'
-                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
-                    f'Vui lòng chọn bên dưới:',
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
-                )
+                await _bot_instance.send_message(user_id, offer_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             except Exception as e:
                 print(f"SePay Webhook: Lỗi gửi khuyến mãi cho user {user_id}: {e}")
 
@@ -5798,6 +6004,10 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<code>/naptien ID số_tiền</code> — nạp tay; <code>/dsnap</code> / <code>/dsrut</code> — danh sách chờ\n\n"
         "<b>📊 Thống kê / code</b>\n<code>/stats</code>, <code>/all</code>, <code>/thongke</code>, <code>/tong</code>, <code>/check ID</code>, <code>/hisall</code>\n"
         "<code>/top</code> — Top tương tác hôm nay; <code>/topsodu [n]</code> — Top số dư; <code>/topcuoc [n]</code>, <code>/taocode</code>, <code>/taocodeall</code>, <code>/xoacode</code>, <code>/taogift</code>, <code>/dsgift</code>, <code>/xoagift</code>\n"
+        "<b>🎁 Khuyến mãi & báo cáo</b>\n"
+        "<code>/kmgio</code> — xem/điều khiển giờ vàng nạp 15% (<code>on</code> / <code>off</code> / <code>auto</code>)\n"
+        "<code>/homnay</code> — báo cáo nhanh hôm nay (nạp, rút, cược, khuyến mãi); tự gửi lúc 23:55 mỗi ngày\n"
+        "<code>/dskm</code> — người đang có vòng cược khuyến mãi; <code>/kmnap ID số_tiền</code> — tặng khuyến mãi tay\n\n"
         "<b>🔎 Kiểm tra user (dùng được trong nhóm / chat riêng, có thể reply tin nhắn của user thay ID)</b>\n"
         "<code>/fulluser ID</code> — hồ sơ đầy đủ + bảng nút xem chat / xuất Excel theo ngày\n"
         "<code>/lsuser ID [kỳ]</code> — biến động số dư; <code>/lsnap</code> nạp; <code>/lsrut</code> rút; <code>/lscuoc</code> cược & thắng\n"
@@ -7200,6 +7410,9 @@ application.add_handler(CommandHandler("taocodeall", taocodeall_cmd))
 application.add_handler(CommandHandler("xoacode", xoacode_cmd))
 application.add_handler(CommandHandler("kmnap", kmnap_cmd))
 application.add_handler(CommandHandler("kmnapvc", kmnapvc_cmd))
+application.add_handler(CommandHandler("kmgio", kmgio_cmd))
+application.add_handler(CommandHandler("homnay", homnay_cmd))
+application.add_handler(CommandHandler("dskm", dskm_cmd))
 application.add_handler(CommandHandler("checkprogressadmin", admin_check_bet_progress_cmd))
 application.add_handler(CommandHandler("resetprogress", reset_progress))
 application.add_handler(CommandHandler("codenap", gift_flow_start))
@@ -7294,6 +7507,7 @@ async def main():
     _bg_tasks.append(asyncio.create_task(reward_settle_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(auto_settle_tich_luy_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(settle_interaction_top_loop(application.bot)))
+    _bg_tasks.append(asyncio.create_task(promo_golden_loop(application.bot)))
     
     # Khởi động webhook server
     await start_webhook_server()
