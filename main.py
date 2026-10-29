@@ -2273,20 +2273,25 @@ async def dsgift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 backfill_bet_daily()
 
 INTERACTION_MILESTONES = [
-    (50, 5111),
-    (100, 12222),
-    (200, 22555),
-    (500, 44777),
-    (1000, 76111),
-    (2000, 88222),
-    (3000, 89333),
-    (4000, 90444),
-    (5000, 92555),
-    (6000, 155666),
+    (50, 3333),
+    (100, 6666),
+    (200, 11111),
+    (500, 15555),
+    (1000, 22222),
+    (2000, 25555),
+    (3000, 33333),
+    (4000, 37777),
+    (5000, 55556),
+    (6000, 88888),
 ]
-TOP_INTERACTION_PRIZES = {1: 18888, 2: 13333, 3: 10000, 4: 9999,
-                          5: 7777, 6: 7777, 7: 7777, 8: 7777, 9: 7777, 10: 7777}
-_interaction_seen = {}  # key -> {times: [...], last_text: str, last_at: datetime}
+TOP_INTERACTION_PRIZES = {1: 22222, 2: 18888, 3: 15000, 4: 13333,
+                          5: 10000, 6: 10000, 7: 10000, 8: 10000, 9: 10000, 10: 10000}
+# Chống spam: mỗi người, mỗi nhóm, trong 10 giây chỉ tính TỐI ĐA 1 tin hợp lệ.
+# (gửi 2-4 tin liên tiếp trong 10 giây vẫn chỉ được cộng 1 tin)
+INTERACTION_WINDOW_SECONDS = 10
+# Cùng một nội dung gửi lặp lại trong khoảng này không được tính.
+INTERACTION_DUP_SECONDS = 30
+_interaction_seen = {}  # (user_id, chat_id) -> {"counted_at": datetime, "text": str}
 
 def mask_user_id(user_id):
     """Ẩn 5 chữ số đầu khi đưa ID lên nhóm công khai."""
@@ -2371,6 +2376,7 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if GROUP_IDS and chat.id not in GROUP_IDS:
         return
     # Chỉ đếm tin nhắn văn bản tự nhiên; bỏ command, media-only, nội dung quá ngắn.
+    # Room đang bị admin tắt (/tatroom) vẫn được tính tương tác bình thường.
     text_value = (msg.text or msg.caption or "").strip()
     if not text_value or text_value.startswith("/") or len(text_value) < 2:
         return
@@ -2379,31 +2385,15 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = (user.id, chat.id)
     previous = _interaction_seen.get(key)
     if previous:
-        # Bộ lọc cân bằng: tối đa 2 tin hợp lệ trong mỗi cửa sổ 10 giây
-        # cho từng người trong từng nhóm. Tin trùng nội dung liên tiếp bị bỏ qua.
-        recent_times = [
-            t for t in previous.get("times", [])
-            if (now - t).total_seconds() < 10
-        ]
-        last_text = previous.get("last_text", "")
-        last_at = previous.get("last_at", now)
-
-        if normalized == last_text and (now - last_at).total_seconds() < 10:
-            previous["times"] = recent_times
+        gap = (now - previous["counted_at"]).total_seconds()
+        # Trong 10 giây kể từ tin ĐÃ ĐƯỢC TÍNH gần nhất: bỏ qua mọi tin còn lại
+        # (2, 3, 4... tin liên tiếp chỉ tính đúng 1 tin).
+        if gap < INTERACTION_WINDOW_SECONDS:
             return
-
-        if len(recent_times) >= 2:
-            previous["times"] = recent_times
-            previous["last_text"] = normalized
-            previous["last_at"] = now
+        # Lặp lại đúng nội dung của tin vừa được tính -> không tính.
+        if normalized == previous["text"] and gap < INTERACTION_DUP_SECONDS:
             return
-
-        recent_times.append(now)
-        previous["times"] = recent_times
-        previous["last_text"] = normalized
-        previous["last_at"] = now
-    else:
-        _interaction_seen[key] = {"times": [now], "last_text": normalized, "last_at": now}
+    _interaction_seen[key] = {"counted_at": now, "text": normalized}
     # Giới hạn cache trong bộ nhớ.
     if len(_interaction_seen) > 10000:
         for old_key in list(_interaction_seen)[:2000]:
@@ -2476,7 +2466,7 @@ FULL_PERMS = ChatPermissions(
 async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
     while True:
         try:
-            if not room_betting_enabled.get(group_id, True):
+            if not room_betting_enabled.get(group_id, True) or _is_room_muted(group_id):
                 await asyncio.sleep(10)
                 continue
 
@@ -2807,7 +2797,7 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
         return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
     if is_game_banned(user_id, 1):
         return False, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!'
-    if not room_betting_enabled.get(group_id, True):
+    if not room_betting_enabled.get(group_id, True) or _is_room_muted(group_id):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
     if not game or game["status"] != "betting":
@@ -2877,7 +2867,7 @@ async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
         return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
     if is_game_banned(user_id, 1):
         return False, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!'
-    if not room_betting_enabled.get(group_id, True):
+    if not room_betting_enabled.get(group_id, True) or _is_room_muted(group_id):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
     if not game or game["status"] != "betting":
@@ -5181,7 +5171,7 @@ async def baotri_tong_cong_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query("UPDATE settings SET value='0' WHERE key='mt_tongbao'")
         await update.effective_message.reply_text(f'{ce("✅")} <b>ĐÃ TẮT BẢO TRÌ TOÀN BỘ</b>', parse_mode=ParseMode.HTML)
 
-async def tatroom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def tatcuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
         await update.effective_message.reply_text(f'{ce("❌")} Bạn không có quyền!', parse_mode=ParseMode.HTML)
@@ -5194,7 +5184,7 @@ async def tatroom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         current_status = f'{ce("🔒")} ĐÃ TẮT' if not room_betting_enabled.get(chat_id, True) else f'{ce("🔓")} ĐANG BẬT'
         await update.effective_message.reply_text(
             f'{ce("🎮")} <b>TRẠNG THÁI CƯỢC</b>\n{ce("📊")} Hiện tại: {current_status}\n\n'
-            f'{ce("✍️")} Cú pháp:\n• Tắt: <code>/tatroom off</code>\n• Bật: <code>/tatroom on</code>',
+            f'{ce("✍️")} Cú pháp:\n• Tắt: <code>/tatcuoc off</code>\n• Bật: <code>/tatcuoc on</code>',
             parse_mode=ParseMode.HTML)
         return
     action = ctx.args[0].lower()
@@ -6051,7 +6041,10 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<i>[kỳ] = all | số ngày | DD/MM/YYYY | DD/MM/YYYY - DD/MM/YYYY</i>\n"
         "<code>/resetbank ID</code> — gỡ liên kết ngân hàng\n"
         "<code>/checktt</code> — xem số tin hợp lệ, thứ hạng và mốc thưởng hôm nay; <code>/top</code> — Top 10 tương tác; <code>/help</code> — hướng dẫn thành viên; <code>/code MÃ</code> — nhập code.\n"
-        "<code>/send nội_dung</code>, <code>/rep ID nội_dung</code> — thông báo/liên hệ user\n\n"
+        "<code>/send nội_dung</code>, <code>/rep ID nội_dung</code> — thông báo/liên hệ user\n"
+        "<b>🔇 Tắt / bật room</b>\n"
+        "<code>/tatroom</code> — bot ngừng gửi mọi tin nhắn vào nhóm (dùng trong nhóm, hoặc chat riêng: <code>/tatroom ID_nhóm</code>)\n"
+        "<code>/moroom</code> — bật lại; <code>/trangthairoom</code> — xem trạng thái; <code>/tatcuoc on|off</code> — chỉ khóa/mở cược\n\n"
         "<b>Trạng thái bảo trì</b> (🔴 bảo trì, 🟢 hoạt động):\n" + _admin_mt_lines()
     )
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -6240,7 +6233,7 @@ async def _interaction_top_text(bot, group_id, date_text, limit=10):
         "⏱ Chốt bảng lúc 00:00; giftcode Top 10 được gửi riêng qua bot.",
         "🎁 Giftcode thưởng yêu cầu x7 vòng cược và hết hạn sau 24 giờ.",
         "",
-        "⚠️ Không spam, flood, gửi lặp ký tự hoặc dùng bot/farm tương tác. Tin nhắn bị quản trị viên xóa và nội dung quảng cáo/spam không được tính.",
+        f"⚠️ Mỗi {INTERACTION_WINDOW_SECONDS} giây chỉ tính tối đa 1 tin. Không spam, flood, gửi lặp ký tự hoặc dùng bot/farm tương tác; nội dung quảng cáo/spam không được tính.",
         "💡 Gõ /checktt để xem tiến trình của bạn."
     ]
     return "\n".join(lines)
@@ -6260,6 +6253,25 @@ async def topsodu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows = query("SELECT user_id,balance FROM users ORDER BY balance DESC LIMIT %s", (n,)) or []
     text = f"🏆 <b>TOP {n} SỐ DƯ</b>\n\n" + ("\n".join(f"{i}. <code>{r[0]}</code> — {fmt_money(int(r[1] or 0))}đ" for i,r in enumerate(rows,1)) or "Chưa có dữ liệu.")
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+def _interaction_reward_table(count, claimed):
+    """Bảng mốc thưởng tin nhắn: ✅ đã đạt, 🔒 chưa đạt."""
+    rows = []
+    for m, reward in INTERACTION_MILESTONES:
+        if count >= m:
+            tag = "đã nhận code" if m in claimed else "đạt mốc, đang phát code"
+            rows.append(f"✅ <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>{tag}</i>")
+        else:
+            rows.append(f"🔒 <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>còn {fmt_money(m-count)} tin</i>")
+    return "\n".join(rows)
+
+def _interaction_top_prize_table():
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = []
+    for rank in (1, 2, 3, 4):
+        lines.append(f"{medals.get(rank, '🔝')} Top {rank} → <b>{fmt_money(TOP_INTERACTION_PRIZES[rank])}đ</b>")
+    lines.append(f"⭐️ Top 5 - 10 → <b>{fmt_money(TOP_INTERACTION_PRIZES[5])}đ</b> / người")
+    return "\n".join(lines)
 
 async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -6285,18 +6297,26 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     next_milestone = next(((m, reward) for m, reward in INTERACTION_MILESTONES if count < m), None)
     if next_milestone:
         m, reward = next_milestone
-        progress = f"🎯 Mốc tiếp theo: <b>{m:,}</b> tin — còn <b>{m-count:,}</b> tin để nhận <b>{fmt_money(reward)}đ</b>."
+        progress = f"🎯 Mốc tiếp theo: <b>{fmt_money(m)}</b> tin — còn <b>{fmt_money(m-count)}</b> tin để nhận <b>{fmt_money(reward)}đ</b>."
     else:
-        progress = "🏆 Bạn đã đạt toàn bộ mốc tương tác trong ngày!"
-    earned = "\n".join(f"✅ Mốc {m:,}: {fmt_money(reward)}đ {'(đã phát code)' if m in claimed else '(đang xử lý)'}"
-                       for m, reward in INTERACTION_MILESTONES if m in claimed) or "Chưa nhận mốc nào hôm nay."
+        progress = "👑 Bạn đã đạt toàn bộ mốc tương tác trong ngày!"
+    total_reward = sum(r for _, r in INTERACTION_MILESTONES)
+    earned_total = sum(r for m, r in INTERACTION_MILESTONES if count >= m)
     await update.effective_message.reply_text(
         f"📊 <b>THỐNG KÊ TƯƠNG TÁC HÔM NAY</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 {html.escape(user.full_name or 'Thành viên')} · ID {mask_user_id(user.id)}\n"
-        f"💬 Tin nhắn hợp lệ: <b>{count:,}</b>\n"
-        f"🏆 Thứ hạng hiện tại: <b>{('#' + str(rank)) if count else 'Chưa có hạng'}</b>\n\n{progress}\n\n"
-        f"🎁 <b>CÁC MỐC ĐÃ NHẬN</b>\n{earned}\n\n"
+        f"💬 Tin hợp lệ: <b>{fmt_money(count)}</b>\n"
+        f"🏆 Thứ hạng hiện tại: <b>{('#' + str(rank)) if count else 'Chưa có hạng'}</b>\n"
+        f"💰 Đã đạt: <b>{fmt_money(earned_total)}đ</b> / {fmt_money(total_reward)}đ\n\n"
+        f"{progress}\n\n"
+        f"🎁 <b>BẢNG MỐC THƯỞNG TIN NHẮN</b>\n"
+        f"{_interaction_reward_table(count, claimed)}\n\n"
+        f"👑 <b>THƯỞNG TOP 10 TƯƠNG TÁC NGÀY</b> <i>(chốt 00:00)</i>\n"
+        f"{_interaction_top_prize_table()}\n\n"
+        f"📌 <b>LƯU Ý</b>\n"
+        f"• Mỗi {INTERACTION_WINDOW_SECONDS} giây chỉ tính tối đa <b>1 tin</b> — gửi 2-4 tin liên tiếp vẫn chỉ tính 1.\n"
+        f"• Tin lặp nội dung, lệnh bot, tin quá ngắn không được tính.\n"
         f"🔐 Giftcode gửi riêng qua bot, yêu cầu x7 vòng cược và hết hạn sau 24 giờ.\n"
         f"💡 Dùng /top để xem bảng xếp hạng nhóm.",
         parse_mode=ParseMode.HTML
@@ -6305,13 +6325,17 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def interaction_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🎁 <b>HỆ THỐNG TƯƠNG TÁC NHÓM</b>\n\n"
-        "• /checktt — xem tiến trình tương tác hôm nay\n"
+        "• /checktt — xem tiến trình, bảng mốc và tiền thưởng hôm nay\n"
         "• /top — Top 10 tương tác hôm nay\n"
         "• /topnap — Top 10 nạp tiền\n"
         "• /topcuoc — Top 10 tổng cược\n"
         "• /code MÃ_CODE — nhập giftcode\n\n"
-        "Mốc thưởng: 50 / 100 / 200 / 500 / 1.000 / 2.000 / 3.000 / 4.000 / 5.000 / 6.000 tin.\n"
-        "Chỉ tính tin nhắn văn bản tự nhiên; lệnh bot, spam, tin lặp và flood nhanh không được tính.\n"
+        "🎯 <b>Mốc thưởng tin nhắn</b>\n"
+        + "\n".join(f"• {fmt_money(m)} tin → {fmt_money(r)}đ" for m, r in INTERACTION_MILESTONES) +
+        "\n\n👑 <b>Thưởng Top ngày</b>\n"
+        + _interaction_top_prize_table() +
+        f"\n\nChỉ tính tin nhắn văn bản tự nhiên. Mỗi {INTERACTION_WINDOW_SECONDS} giây tối đa 1 tin (gửi 2-4 tin liên tiếp chỉ tính 1); "
+        "lệnh bot, tin lặp và flood không được tính.\n"
         "Giftcode được gửi riêng, yêu cầu x7 vòng cược, hạn dùng 24 giờ.",
         parse_mode=ParseMode.HTML
     )
@@ -6438,12 +6462,37 @@ async def admin_user_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def _room_mute_key(chat_id):
     return f"room_muted_{int(chat_id)}"
 
+# Cache trạng thái tắt room để không phải truy vấn DB cho mỗi tin nhắn gửi đi.
+_ROOM_MUTE_CACHE = {}          # chat_id -> (muted: bool, checked_at: float)
+_ROOM_MUTE_CACHE_TTL = 20      # giây
+# Tin xác nhận bật/tắt room (bắt đầu bằng 🔇/🔊) vẫn được gửi vào nhóm.
+_ROOM_MUTE_ALLOW_PREFIX = ("🔇", "🔊")
+
 def _is_room_muted(chat_id):
     try:
-        rows = query("SELECT value FROM settings WHERE key=%s", (_room_mute_key(chat_id),))
-        return bool(rows and str(rows[0][0]) == "1")
-    except Exception:
+        cid = int(chat_id)
+    except (TypeError, ValueError):
         return False
+    import time as _time
+    cached = _ROOM_MUTE_CACHE.get(cid)
+    if cached and _time.time() - cached[1] < _ROOM_MUTE_CACHE_TTL:
+        return cached[0]
+    try:
+        rows = query("SELECT value FROM settings WHERE key=%s", (_room_mute_key(cid),))
+        muted = bool(rows and str(rows[0][0]) == "1")
+    except Exception:
+        return cached[0] if cached else False
+    _ROOM_MUTE_CACHE[cid] = (muted, _time.time())
+    return muted
+
+def _set_room_muted(chat_id, muted: bool):
+    import time as _time
+    query(
+        "INSERT INTO settings (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+        (_room_mute_key(chat_id), "1" if muted else "0")
+    )
+    _ROOM_MUTE_CACHE[int(chat_id)] = (muted, _time.time())
 
 async def _room_mute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE, muted: bool):
     user = update.effective_user
@@ -6453,20 +6502,29 @@ async def _room_mute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE, mut
             await msg.reply_text("⛔ Bạn không có quyền dùng lệnh này.")
         return
     chat = update.effective_chat
-    target_group = chat.id if chat and chat.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
+    # Trong nhóm: áp dụng cho nhóm đang chat. Trong chat riêng: /tatroom [ID_nhóm] (mặc định nhóm đầu tiên).
+    if chat and chat.type != "private":
+        target_group = chat.id
+    else:
+        target_group = None
+        if ctx.args:
+            try:
+                target_group = int(ctx.args[0])
+            except ValueError:
+                return await msg.reply_text("❌ ID nhóm không hợp lệ. Ví dụ: /tatroom -1001234567890")
+        elif GROUP_IDS:
+            target_group = GROUP_IDS[0]
     if target_group is None:
         return await msg.reply_text("❌ Chưa cấu hình nhóm trong GROUP_IDS.")
-    query(
-        "INSERT INTO settings (key, value) VALUES (%s, %s) "
-        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
-        (_room_mute_key(target_group), "1" if muted else "0")
-    )
-    state_text = "đã tắt tin nhắn bot" if muted else "đã bật lại tin nhắn bot"
-    # Confirmation is sent to the admin's private chat when the command is used privately.
-    await msg.reply_text(
-        f"{'🔇' if muted else '🔊'} Room <code>{target_group}</code> {state_text}.",
-        parse_mode=ParseMode.HTML
-    )
+    _set_room_muted(target_group, muted)
+    if muted:
+        text = (f"🔇 <b>ĐÃ TẮT ROOM</b> <code>{target_group}</code>\n"
+                f"Bot sẽ không gửi bất kỳ tin nhắn nào vào nhóm này, và tạm dừng ván game mới.\n"
+                f"Bật lại bằng <code>/moroom</code>.")
+    else:
+        text = (f"🔊 <b>ĐÃ BẬT LẠI ROOM</b> <code>{target_group}</code>\n"
+                f"Bot gửi tin nhắn và chạy game trong nhóm bình thường.")
+    await msg.reply_text(text, parse_mode=ParseMode.HTML)
 
 @admin_only
 async def tatroom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -6476,20 +6534,41 @@ async def tatroom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def moroom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _room_mute_command(update, ctx, False)
 
-# Guard Bot.send_message so scheduled tasks and handlers also respect room mute.
-_original_bot_send_message = Bot.send_message
-async def _send_message_respecting_room_mute(self, chat_id, text, *args, **kwargs):
-    try:
-        numeric_chat_id = int(chat_id)
-    except (TypeError, ValueError):
-        numeric_chat_id = None
-    if numeric_chat_id in GROUP_IDS and _is_room_muted(numeric_chat_id):
-        # Keep only the explicit mute/unmute confirmation visible in the group.
-        if not str(text or "").startswith(("🔇", "🔊")):
-            return None
-    return await _original_bot_send_message(self, chat_id, text, *args, **kwargs)
+@admin_only
+async def trangthairoom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    lines = ["🏠 <b>TRẠNG THÁI ROOM</b>"]
+    for gid in GROUP_IDS:
+        lines.append(f"{'🔇 ĐÃ TẮT' if _is_room_muted(gid) else '🔊 ĐANG BẬT'} · <code>{gid}</code>")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-Bot.send_message = _send_message_respecting_room_mute
+# Chặn MỌI kiểu gửi/sửa tin của bot vào room đang tắt (tin nhắn, ảnh, gif, video, file, sticker,
+# poll, copy, sửa tin...) — kể cả tin tự động từ các vòng lặp nền.
+def _guard_room_mute(method_name, text_kw=None, allow_prefix=False):
+    orig = getattr(Bot, method_name, None)
+    if orig is None or getattr(orig, "_room_mute_guarded", False):
+        return
+    @functools.wraps(orig)
+    async def guarded(self, *args, **kwargs):
+        chat_id = kwargs.get("chat_id", args[0] if args else None)
+        try:
+            numeric = int(chat_id)
+        except (TypeError, ValueError):
+            numeric = None
+        if numeric is not None and numeric < 0 and _is_room_muted(numeric):
+            if allow_prefix:
+                text = kwargs.get(text_kw, args[1] if len(args) > 1 else "")
+                if str(text or "").startswith(_ROOM_MUTE_ALLOW_PREFIX):
+                    return await orig(self, *args, **kwargs)
+            return None
+        return await orig(self, *args, **kwargs)
+    guarded._room_mute_guarded = True
+    setattr(Bot, method_name, guarded)
+
+_guard_room_mute("send_message", "text", allow_prefix=True)
+for _m in ("send_photo", "send_animation", "send_video", "send_document", "send_audio",
+           "send_voice", "send_sticker", "send_media_group", "send_poll", "copy_message",
+           "pin_chat_message"):
+    _guard_room_mute(_m)
 
 application = ApplicationBuilder().token(TOKEN).build()
 
@@ -7522,7 +7601,7 @@ application.add_handler(CommandHandler("baotri", baotri_cmd))
 application.add_handler(CommandHandler("baotriht", baotri_he_thong_cmd))
 application.add_handler(CommandHandler("baotriall", baotri_hethong_cmd))
 application.add_handler(CommandHandler("baotritc", baotri_tong_cong_cmd))
-application.add_handler(CommandHandler("tatroom", tatroom_cmd))
+application.add_handler(CommandHandler("tatcuoc", tatcuoc_cmd))
 
 application.add_handler(CommandHandler("admin", admin_help_cmd))
 application.add_handler(CommandHandler("fulluser", fulluser_cmd))
@@ -7558,6 +7637,7 @@ application.add_handler(CommandHandler("topsodu", topsodu_cmd))
 application.add_handler(CommandHandler("checktt", checktt_cmd))
 application.add_handler(CommandHandler("tatroom", tatroom_cmd))
 application.add_handler(CommandHandler("moroom", moroom_cmd))
+application.add_handler(CommandHandler("trangthairoom", trangthairoom_cmd))
 application.add_handler(CommandHandler("help", interaction_help_cmd))
 application.add_handler(CommandHandler("topcuoc", topcuoc_cmd))
 application.add_handler(CallbackQueryHandler(admin_user_callback, pattern=r"^admuser_"))
