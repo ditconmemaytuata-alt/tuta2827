@@ -275,6 +275,10 @@ for _k, _target in ICON_ALIAS.items():
     if _eid and _norm_emoji(_k) not in _PREMIUM_MAP:
         _PREMIUM_MAP[_norm_emoji(_k)] = _eid
 
+# Giữ nguyên các bi tròn màu thường (🔵 🔴 ⚪ ⚫) trong tin nhắn - không đổi sang cờ/khiên/khóa premium
+for _plain in ("🔵", "🔴", "⚪", "⚫"):
+    _PREMIUM_MAP.pop(_norm_emoji(_plain), None)
+
 def _emoji_pattern(key: str) -> str:
     # Cho phép (tuỳ chọn) ký tự variation selector U+FE0F sau từng ký tự.
     return "".join(re.escape(ch) + "\ufe0f?" for ch in key)
@@ -2708,15 +2712,16 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             if len(game_history[group_id]) > 10:
                 game_history[group_id].pop(0)
 
-            # Cầu gần đây: chỉ hiển thị Tài/Xỉu bằng ô vuông 🟦/🟥 (không dùng bi đen/trắng, không bị đổi thành cờ)
             cau_tx = ""
+            cau_cl = ""
             for h in game_history.get(group_id, []):
-                cau_tx += "🟦" if h['tx'] == "tai" else "🟥"
+                cau_tx += "🔵" if h['tx'] == "tai" else "🔴"
+                cau_cl += "⚪️" if h['cl'] == "chan" else "⚫️"
 
             final_msg = (
                 f'{ce("📊")} <b>Kết quả Phiên #{session_id}</b>\n'
                 f'┏━━━━━━━━━━━━━\n'
-                f'┃ {dice_str} {ce("➡️")} {total} {result_text}\n'
+                f'┃ {dice_str} {ce("➡️")} {total} {result_text} {result_icons}\n'
                 f'┃\n'
                 f'┃ {ce("💰")} Tổng thắng: {fmt_money(total_win)}\n'
                 f'┃ {ce("❌")} Tổng thua: {fmt_money(total_lose)}\n'
@@ -2725,7 +2730,9 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 f'┗━━━━━━━━━━━━━\n'
                 f'<b>Cầu gần đây:</b>\n'
                 f'{cau_tx if cau_tx else "Chưa có"}\n'
-                f'🟦 Tài      🟥 Xỉu'
+                f'      🔵  Tài             🔴  XỈU\n'
+                f'{cau_cl if cau_cl else "Chưa có"}\n'
+                f'      ⚪️  Chẵn        ⚫️  Lẻ.'
             )
 
             if jackpot_winners:
