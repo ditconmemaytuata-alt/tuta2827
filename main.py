@@ -1614,6 +1614,10 @@ def reward_center(uid):
 
     pending = query("SELECT rtype, period, amount FROM rewards WHERE user_id=%s AND claimed=0 AND amount>0 "
                     "ORDER BY id", (uid,)) or []
+    if is_feature_banned(uid, "hoan_ngay"):
+        pending = [p for p in pending if not str(p[0]).endswith("_ngay")]
+    if is_feature_banned(uid, "hoan_tuan"):
+        pending = [p for p in pending if not str(p[0]).endswith("_tuan")]
     text = (
         f'{ce("🎁")} <b>TRUNG TÂM NHẬN THƯỞNG</b>\n'
         f'<i>Theo dõi tiến độ và khoản thưởng dự kiến của bạn</i>\n\n'
@@ -1639,11 +1643,23 @@ def reward_center(uid):
 async def claim_rewards(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     uid = q.from_user.id
-    rows = query(
-        "UPDATE rewards SET claimed=1, claimed_at=%s WHERE user_id=%s AND claimed=0 AND amount>0 "
-        "RETURNING rtype, period, amount", (get_vietnam_datetime_db(), uid))
+    # Admin có thể khóa riêng hoàn ngày hoặc hoàn tuần cho từng tài khoản.
+    blocked_types = []
+    if is_feature_banned(uid, "hoan_ngay"):
+        blocked_types.extend(["cuoc_ngay", "thua_ngay"])
+    if is_feature_banned(uid, "hoan_tuan"):
+        blocked_types.extend(["cuoc_tuan", "thua_tuan"])
+    if blocked_types:
+        rows = query(
+            "UPDATE rewards SET claimed=1, claimed_at=%s WHERE user_id=%s AND claimed=0 AND amount>0 "
+            "AND rtype <> ALL(%s) RETURNING rtype, period, amount",
+            (get_vietnam_datetime_db(), uid, blocked_types))
+    else:
+        rows = query(
+            "UPDATE rewards SET claimed=1, claimed_at=%s WHERE user_id=%s AND claimed=0 AND amount>0 "
+            "RETURNING rtype, period, amount", (get_vietnam_datetime_db(), uid))
     if not rows:
-        return await safe_answer(q, "Hiện chưa có khoản thưởng nào đã chốt để nhận!", True)
+        return await safe_answer(q, "Hiện chưa có khoản thưởng nào được phép nhận hoặc đang chờ nhận!", True)
     total = sum(int(r[2]) for r in rows)
     add_money(uid, total, "Nhận thưởng hoàn trả")
     await safe_answer(q)
@@ -3758,25 +3774,55 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if sub_money(uid, amount, "Rút tiền"):
         bank, stk, name = u[0], u[1], u[2]
         now_str = get_vietnam_datetime_db()
-        query("INSERT INTO withdraw_history (user_id, amount, status, time) VALUES (%s, %s, %s, %s)", (uid, amount, 'pending', now_str))
+        ins = query("INSERT INTO withdraw_history (user_id, amount, status, time) VALUES (%s, %s, %s, %s) RETURNING id",
+                    (uid, amount, 'pending', now_str))
+        withdraw_id = int(ins[0][0]) if ins else 0
+        # Tạo mã nội dung chuyển khoản gồm 3 từ ngẫu nhiên, gắn với QR của người nhận tiền.
+        memo_words = random.sample(["MAY", "LOC", "PHAT", "AN", "TAM", "KIM", "SONG", "VUI", "SEN", "LONG", "MINH", "THINH"], 3)
+        transfer_memo = " ".join(memo_words)
         keyboard = InlineKeyboardMarkup([[
             btn("Duyệt", "✅", callback_data=f"ok_{uid}_{amount}"),
             btn("Từ chối", "❌", callback_data=f"no_{uid}_{amount}")
         ]])
+        # VietQR nhận mã ngân hàng; chuẩn hóa một số tên thường gặp.
+        bank_raw = str(bank or "").strip()
+        bank_key = re.sub(r"[^A-Z0-9]", "", bank_raw.upper())
+        bank_codes = {
+            "MB": "MB", "MBBANK": "MB", "VIETCOMBANK": "VCB", "VCB": "VCB",
+            "TECHCOMBANK": "TCB", "TCB": "TCB", "BIDV": "BIDV",
+            "VIETINBANK": "CTG", "CTG": "CTG", "ACB": "ACB", "SACOMBANK": "STB",
+            "STB": "STB", "VPBANK": "VPB", "VPB": "VPB", "TPBANK": "TPB",
+            "TPB": "TPB", "AGRIBANK": "AGRIBANK", "VIB": "VIB", "SHB": "SHB",
+            "MSB": "MSB", "LPBANK": "LPB", "OCB": "OCB", "HDBANK": "HDB"
+        }
+        qr_bank = bank_codes.get(bank_key, bank_raw)
+        qr_url = "https://img.vietqr.io/image/" + str(qr_bank) + "-" + str(stk) + "-compact2.png?" + urlencode({
+            "amount": int(amount), "addInfo": transfer_memo, "accountName": str(name or "")
+        })
         for admin_id in ADMIN_IDS:
             try:
-                await ctx.bot.send_message(admin_id,
+                admin_text = (
                     f'{ce("🎁")} <b>YÊU CẦU RÚT TIỀN MỚI</b> {ce("🎁")}\n'
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
+                    f'{ce("🧾")} <b>Mã yêu cầu:</b> <code>{withdraw_id or "-"}</code>\n'
                     f'{ce("👥")} <b>ID:</b> <code>{uid}</code>\n'
                     f'{ce("💰")} <b>Số tiền:</b> <code>{fmt_money(amount)}đ</code>\n'
                     f'{ce("💳")} <b>Ngân hàng:</b> <code>{html.escape(str(bank))}</code>\n'
-                    f'{ce("💰")} <b>STK:</b> <code>{html.escape(str(stk))}</code>\n'
-                    f'{ce("👥")} <b>Chủ TK:</b> <code>{html.escape(str(name))}</code>\n'
-                    f'{ce("⏰")} <b>Thời gian:</b> <code>{now_str}</code>',
-                    reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                    f'{ce("🏦")} <b>STK:</b> <code>{html.escape(str(stk))}</code>\n'
+                    f'{ce("👤")} <b>Chủ TK:</b> <code>{html.escape(str(name))}</code>\n'
+                    f'{ce("📝")} <b>Nội dung chuyển khoản:</b> <code>{html.escape(transfer_memo)}</code>\n'
+                    f'{ce("⏰")} <b>Thời gian:</b> <code>{now_str}</code>\n'
+                    f'━━━━━━━━━━━━━━━━━━━━━\n'
+                    f'<i>QR là thông tin chuyển khoản để admin xử lý thủ công; vui lòng kiểm tra đúng người nhận trước khi chuyển.</i>'
+                )
+                await ctx.bot.send_photo(admin_id, photo=qr_url, caption=admin_text,
+                                         reply_markup=keyboard, parse_mode=ParseMode.HTML)
             except Exception as e:
-                print(f"Không thể gửi tin nhắn đến admin {admin_id}: {e}")
+                print(f"Không thể gửi QR/tin nhắn đến admin {admin_id}: {e}")
+                try:
+                    await ctx.bot.send_message(admin_id, admin_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
         await msg_obj.reply_text(
             f'{ce("✅")} <b>GỬI YÊU CẦU RÚT THÀNH CÔNG!</b>\n\n'
             f'{ce("💰")} Số tiền: <code>{fmt_money(amount)}đ</code>\n'
@@ -6333,10 +6379,6 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{_interaction_reward_table(count, claimed)}\n\n"
         f"👑 <b>THƯỞNG TOP 10 TƯƠNG TÁC NGÀY</b> <i>(chốt 00:00)</i>\n"
         f"{_interaction_top_prize_table()}\n\n"
-        f"📌 <b>LƯU Ý</b>\n"
-        f"• Mỗi {INTERACTION_WINDOW_SECONDS} giây chỉ tính tối đa <b>1 tin</b> — gửi 2-4 tin liên tiếp vẫn chỉ tính 1.\n"
-        f"• Tin lặp nội dung, lệnh bot, tin quá ngắn không được tính.\n"
-        f"🔐 Giftcode gửi riêng qua bot, yêu cầu x7 vòng cược và hết hạn sau 24 giờ.\n"
         f"💡 Dùng /top để xem bảng xếp hạng nhóm.",
         parse_mode=ParseMode.HTML
     )
@@ -7543,6 +7585,216 @@ async def report_date_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(f"❌ Lỗi: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
     raise ApplicationHandlerStop
 
+
+
+# ============================================================
+# BỔ SUNG QUẢN TRỊ: KHÓA HOÀN NGÀY/TUẦN, RESET SỐ DƯ, XUẤT FULL HỆ THỐNG
+# ============================================================
+@admin_only
+async def camhoan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0])
+        period = (ctx.args[1] if len(ctx.args) > 1 else "").lower()
+        if period not in ("ngay", "tuan", "all"):
+            raise ValueError
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text(
+            "Cú pháp: <code>/camhoan ID ngay|tuan|all</code>\n"
+            "Ví dụ: <code>/camhoan 123456 ngay</code>",
+            parse_mode=ParseMode.HTML)
+    if not (query("SELECT 1 FROM users WHERE user_id=%s", (target,)) or []):
+        return await update.effective_message.reply_text("Không tìm thấy người dùng.")
+    features = ["hoan_ngay", "hoan_tuan"] if period == "all" else [f"hoan_{period}"]
+    for feature in features:
+        query("INSERT INTO banned_features(user_id,feature) VALUES(%s,%s) ON CONFLICT DO NOTHING",
+              (target, feature))
+    await update.effective_message.reply_text(
+        f'🚫 Đã khóa nhận hoàn trả <b>{html.escape(period.upper())}</b> cho ID <code>{target}</code>.\n'
+        'Các khoản bị khóa sẽ không được nhận qua nút nhận thưởng.',
+        parse_mode=ParseMode.HTML)
+
+@admin_only
+async def mohoan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0])
+        period = (ctx.args[1] if len(ctx.args) > 1 else "all").lower()
+        if period not in ("ngay", "tuan", "all"):
+            raise ValueError
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text(
+            "Cú pháp: <code>/mohoan ID ngay|tuan|all</code>",
+            parse_mode=ParseMode.HTML)
+    if period == "all":
+        query("DELETE FROM banned_features WHERE user_id=%s AND feature IN ('hoan_ngay','hoan_tuan')", (target,))
+    else:
+        query("DELETE FROM banned_features WHERE user_id=%s AND feature=%s", (target, f"hoan_{period}"))
+    await update.effective_message.reply_text(
+        f'✅ Đã mở quyền nhận hoàn trả <b>{html.escape(period.upper())}</b> cho ID <code>{target}</code>.',
+        parse_mode=ParseMode.HTML)
+
+@admin_only
+async def resethoan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0])
+        period = (ctx.args[1] if len(ctx.args) > 1 else "all").lower()
+        if period not in ("ngay", "tuan", "all"):
+            raise ValueError
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text(
+            "Cú pháp: <code>/resethoan ID ngay|tuan|all</code> — xóa số thưởng hoàn trả đang chờ nhận về 0.",
+            parse_mode=ParseMode.HTML)
+    if not (query("SELECT 1 FROM users WHERE user_id=%s", (target,)) or []):
+        return await update.effective_message.reply_text("Không tìm thấy người dùng.")
+    if period == "all":
+        old_rows = query("SELECT amount FROM rewards WHERE user_id=%s AND claimed=0 AND amount>0",
+                         (target,)) or []
+        query("UPDATE rewards SET amount=0, claimed=1, claimed_at=%s "
+              "WHERE user_id=%s AND claimed=0 AND amount>0",
+              (get_vietnam_datetime_db(), target))
+    else:
+        types = ["cuoc_ngay", "thua_ngay"] if period == "ngay" else ["cuoc_tuan", "thua_tuan"]
+        old_rows = query("SELECT amount FROM rewards WHERE user_id=%s AND claimed=0 AND amount>0 AND rtype = ANY(%s)",
+                         (target, types)) or []
+        query("UPDATE rewards SET amount=0, claimed=1, claimed_at=%s "
+              "WHERE user_id=%s AND claimed=0 AND amount>0 AND rtype = ANY(%s)",
+              (get_vietnam_datetime_db(), target, types))
+    total = sum(int(r[0] or 0) for r in old_rows)
+    await update.effective_message.reply_text(
+        f"✅ Đã reset thưởng hoàn trả <b>{html.escape(period.upper())}</b> của ID <code>{target}</code> về 0.\n"
+        f"Số thưởng chờ nhận đã xóa: <code>{fmt_money(total)}đ</code>. Lịch sử nạp/rút không bị ảnh hưởng.",
+        parse_mode=ParseMode.HTML)
+
+@admin_only
+async def resetuser_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        target = int(ctx.args[0])
+    except (IndexError, ValueError):
+        return await update.effective_message.reply_text(
+            "Cú pháp: <code>/resetuser ID</code> — đặt số dư user về 0 (cần xác nhận).",
+            parse_mode=ParseMode.HTML)
+    if target in ADMIN_IDS:
+        return await update.effective_message.reply_text("Không thể reset số dư tài khoản admin.")
+    row = query("SELECT balance FROM users WHERE user_id=%s", (target,)) or []
+    if not row:
+        return await update.effective_message.reply_text("Không tìm thấy người dùng.")
+    old_balance = int(row[0][0] or 0)
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⚠️ Xác nhận đặt về 0", callback_data=f"resetbal_yes_{target}"),
+        InlineKeyboardButton("Hủy", callback_data=f"resetbal_no_{target}")
+    ]])
+    await update.effective_message.reply_text(
+        f"⚠️ <b>XÁC NHẬN RESET SỐ DƯ</b>\nID: <code>{target}</code>\n"
+        f"Số dư hiện tại: <code>{fmt_money(old_balance)}đ</code>\n"
+        "Lịch sử giao dịch sẽ được giữ nguyên. Hành động này không thể tự hoàn tác.",
+        reply_markup=kb, parse_mode=ParseMode.HTML)
+
+async def reset_balance_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS or is_admin_banned(q.from_user.id):
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    parts = (q.data or "").split("_")
+    if len(parts) != 3:
+        return await q.answer()
+    action, target_s = parts[1], parts[2]
+    try:
+        target = int(target_s)
+    except ValueError:
+        return await q.answer("ID không hợp lệ.", show_alert=True)
+    if action == "no":
+        await q.answer("Đã hủy.")
+        return await q.edit_message_text("❎ Đã hủy reset số dư.")
+    if action != "yes" or target in ADMIN_IDS:
+        return await q.answer("Thao tác không hợp lệ.", show_alert=True)
+    row = query("SELECT balance FROM users WHERE user_id=%s", (target,)) or []
+    if not row:
+        return await q.answer("Không tìm thấy user.", show_alert=True)
+    old_balance = int(row[0][0] or 0)
+    if old_balance > 0:
+        add_money(target, -old_balance, "Admin reset số dư về 0")
+    elif old_balance < 0:
+        add_money(target, -old_balance, "Admin reset số dư về 0")
+    await q.answer("Đã reset số dư.")
+    await q.edit_message_text(
+        f"✅ Đã đặt số dư ID <code>{target}</code> về <code>0đ</code>.\n"
+        f"Số dư trước đó: <code>{fmt_money(old_balance)}đ</code>. Lịch sử vẫn được giữ nguyên.",
+        parse_mode=ParseMode.HTML)
+
+async def _system_export(update: Update, kind: str):
+    msg = update.effective_message
+    nowtag = get_vietnam_time().strftime("%Y%m%d_%H%M%S")
+    await msg.reply_text("⏳ Đang tổng hợp toàn bộ lịch sử, vui lòng chờ…")
+    try:
+        sheets = []
+        if kind in ("nap", "all"):
+            raw = query("SELECT id,user_id,amount,status,time,ref_code,admin_id FROM deposit_history ORDER BY id ASC") or []
+            rows = [(r[0], r[1], int(r[2] or 0), _rp_status(r[3]), r[4] or "", r[5] or "", r[6] or "") for r in raw]
+            sheets.append({"name": "Lich su nap", "headers": ["Mã", "User ID", "Số tiền (đ)", "Trạng thái", "Thời gian", "Mã giao dịch", "Admin xử lý"],
+                           "rows": rows, "money_cols": [2], "sum_cols": [2]})
+        if kind in ("rut", "all"):
+            raw = query("SELECT id,user_id,amount,status,time,admin_id,admin_note FROM withdraw_history ORDER BY id ASC") or []
+            rows = [(r[0], r[1], int(r[2] or 0), _rp_status(r[3]), r[4] or "", r[5] or "", r[6] or "") for r in raw]
+            sheets.append({"name": "Lich su rut", "headers": ["Mã", "User ID", "Số tiền (đ)", "Trạng thái", "Thời gian", "Admin xử lý", "Ghi chú"],
+                           "rows": rows, "money_cols": [2], "sum_cols": [2]})
+        if kind == "all":
+            raw = query("SELECT user_id,balance,bank,stk,name,refs,COALESCE(total_bet,0) FROM users ORDER BY user_id ASC") or []
+            rows = [(r[0], int(r[1] or 0), r[2] or "", r[3] or "", r[4] or "", int(r[5] or 0), int(r[6] or 0)) for r in raw]
+            sheets.append({"name": "Danh sach user", "headers": ["User ID", "Số dư (đ)", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Số người mời", "Tổng cược (đ)"],
+                           "rows": rows, "money_cols": [1, 6], "sum_cols": []})
+            raw = query("SELECT id,user_id,amount,note,time FROM history ORDER BY id ASC") or []
+            rows = [(r[0], r[1], int(r[2] or 0), r[3] or "", r[4] or "") for r in raw]
+            sheets.append({"name": "Bien dong so du", "headers": ["Mã", "User ID", "Biến động (đ)", "Nội dung", "Thời gian"],
+                           "rows": rows, "money_cols": [2], "sum_cols": [], "signed_col": 2})
+        title = {"nap": "TOÀN BỘ LỊCH SỬ NẠP HỆ THỐNG", "rut": "TOÀN BỘ LỊCH SỬ RÚT HỆ THỐNG",
+                 "all": "BÁO CÁO TOÀN HỆ THỐNG"}[kind]
+        total = sum(len(sh["rows"]) for sh in sheets)
+        try:
+            bio = await asyncio.to_thread(_rp_build_xlsx, title, "Báo cáo admin — dữ liệu toàn hệ thống", sheets)
+            fname = f"{kind}_toan_he_thong_{nowtag}.xlsx"
+        except ImportError:
+            bio = await asyncio.to_thread(_rp_build_csv, title, "Báo cáo admin — dữ liệu toàn hệ thống", sheets)
+            fname = f"{kind}_toan_he_thong_{nowtag}.csv"
+        bio.seek(0)
+        await msg.reply_document(document=bio, filename=fname,
+                                 caption=f"📊 <b>{title}</b>\n📄 Tổng số dòng: <b>{total}</b>\n🕒 {get_vietnam_datetime_db()}",
+                                 parse_mode=ParseMode.HTML)
+    except Exception as e:
+        traceback.print_exc()
+        await msg.reply_text(f"❌ Không thể xuất báo cáo: {html.escape(str(e))[:300]}",
+                             parse_mode=ParseMode.HTML)
+
+@admin_only
+async def xuatnapall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _system_export(update, "nap")
+
+@admin_only
+async def xuatrutall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _system_export(update, "rut")
+
+@admin_only
+async def xuathethong_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _system_export(update, "all")
+
+@admin_only
+async def lsnaptatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = query("SELECT id,user_id,amount,status,time FROM deposit_history ORDER BY id DESC LIMIT 50") or []
+    if not rows:
+        return await update.effective_message.reply_text("Chưa có lịch sử nạp.")
+    text = "📥 <b>50 LỊCH SỬ NẠP MỚI NHẤT</b>\n\n" + "\n".join(
+        f"#{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[3] or ""))} · {html.escape(str(r[4] or ""))}"
+        for r in rows)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def lsruttatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = query("SELECT id,user_id,amount,status,time FROM withdraw_history ORDER BY id DESC LIMIT 50") or []
+    if not rows:
+        return await update.effective_message.reply_text("Chưa có lịch sử rút.")
+    text = "📤 <b>50 LỊCH SỬ RÚT MỚI NHẤT</b>\n\n" + "\n".join(
+        f"#{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[3] or ""))} · {html.escape(str(r[4] or ""))}"
+        for r in rows)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 async def _on_error(update, context):
     """Không để lỗi bị nuốt im lặng: in log và báo cho admin nếu lỗi đến từ thao tác của admin."""
     print(f"❌ Lỗi handler: {context.error}")
@@ -7635,6 +7887,16 @@ application.add_handler(CommandHandler("tongket", tongket_cmd))
 application.add_handler(CommandHandler("xuatls", xuatls_cmd))
 application.add_handler(CommandHandler("huy", huy_cmd))
 application.add_handler(CommandHandler("resetbank", resetbank_cmd))
+application.add_handler(CommandHandler("camhoan", camhoan_cmd))
+application.add_handler(CommandHandler("resethoan", resethoan_cmd))
+application.add_handler(CommandHandler("mohoan", mohoan_cmd))
+application.add_handler(CommandHandler("resetuser", resetuser_cmd))
+application.add_handler(CommandHandler("xuatnapall", xuatnapall_cmd))
+application.add_handler(CommandHandler("xuatrutall", xuatrutall_cmd))
+application.add_handler(CommandHandler("xuathethong", xuathethong_cmd))
+application.add_handler(CommandHandler("lsnaptatca", lsnaptatca_cmd))
+application.add_handler(CommandHandler("lsruttatca", lsruttatca_cmd))
+application.add_handler(CallbackQueryHandler(reset_balance_callback, pattern=r"^resetbal_(yes|no)_\d+$"))
 application.add_handler(CallbackQueryHandler(admin_report_callback, pattern=r"^ar:"))
 application.add_handler(CallbackQueryHandler(legacy_report_callback, pattern=r"^(admreport_|admperiod_)"))
 application.add_error_handler(_on_error)
