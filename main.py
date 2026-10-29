@@ -2379,18 +2379,25 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = (user.id, chat.id)
     previous = _interaction_seen.get(key)
     if previous:
-        # Giới hạn mềm: tối đa 2 tin hợp lệ trong 10 giây cho mỗi người/nhóm.
-        # Tin giống hệt tin gần nhất trong 10 giây không được tính thêm.
-        recent_times = [t for t in previous.get("times", [])
-                        if (now - t).total_seconds() < 10]
+        # Bộ lọc cân bằng: tối đa 2 tin hợp lệ trong mỗi cửa sổ 10 giây
+        # cho từng người trong từng nhóm. Tin trùng nội dung liên tiếp bị bỏ qua.
+        recent_times = [
+            t for t in previous.get("times", [])
+            if (now - t).total_seconds() < 10
+        ]
         last_text = previous.get("last_text", "")
         last_at = previous.get("last_at", now)
+
         if normalized == last_text and (now - last_at).total_seconds() < 10:
             previous["times"] = recent_times
             return
+
         if len(recent_times) >= 2:
             previous["times"] = recent_times
+            previous["last_text"] = normalized
+            previous["last_at"] = now
             return
+
         recent_times.append(now)
         previous["times"] = recent_times
         previous["last_text"] = normalized
