@@ -13,7 +13,7 @@ from io import BytesIO
 import psycopg2
 from psycopg2 import extras
 import pytz
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions
+from telegram import (Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats)
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
 import aiohttp
@@ -167,6 +167,45 @@ CUSTOM_EMOJI = {
     "🗓": "5274055917766202507", "🧲": "5377535110289576661"
 }
 
+# Ưu tiên ID emoji premium mới do chủ bot cung cấp.
+CUSTOM_EMOJI.update({
+    "🗑": "5445267414562389170", "⌛": "5386367538735104399",
+    "🚨": "5395695537687123235", "✏️": "5395444784611480792",
+    "✉️": "5253742260054409879", "➕": "5397916757333654639",
+    "📍": "5391032818111363540", "🔄": "5375338737028841420",
+    "🔝": "5415655814079723871", "🔗": "5271604874419647061",
+    "🖥": "5282843764451195532", "🛡": "5251203410396458957",
+    "➡️": "5416117059207572332", "💸": "5231005931550030290",
+    "📌": "5397782960512444700", "🚗": "6280407793631498213",
+    "😃": "6111737246732262016", "🇻🇳": "6190651897792174993",
+    "🔋": "5307905813451397794", "💳": "5445353829304387411",
+    "⛏": "5197371802136892976", "📥": "5443127283898405358",
+    "💰": "5278467510604160626", "🏦": "5332455502917949981",
+    "↗️": "5429651785352501917", "🛒": "5312361253610475399",
+    "⚖️": "5400250414929041085", "💻": "5193177581888755275",
+    "🖼": "5262517101578443800", "💡": "5262844652964303985",
+    "🎯": "5256131095094652290", "📞": "5285238101344544669",
+    "🎲": "5280816565657300091", "🔓": "5291873529464122510",
+    "☺️": "5238015713314086319", "🖐": "5237759703198474072",
+    "💩": "5235622845299565321", "🚘": "5240037474679398914",
+    "😳": "5238083517962793068", "😏": "5237903859480796749",
+    "🏃‍♀️": "5237981615568723131", "😱": "5235640209852343235",
+    "🤩": "5195357093107868151", "😕": "5197226061011623665",
+    "🍌": "5237784970491074950", "🤓": "5240209101572545926",
+    "😡": "5240408207666455054", "🔫": "5235762367312173706",
+    "😨": "5242500342070909767", "😭": "5460741258311900209",
+    "🤪": "5240076365608264313", "👅": "5239944638961294456",
+    "😧": "5237721297600912488", "🍔": "5239948040575393823",
+    "🐶": "5242395424609803673", "🤫": "6226686020570584326",
+    "🤘": "6163685838250054493", "🌟": "6195233300752111114",
+    "🍀": "6161347086823461532", "💥": "6161101981629814014",
+    "🎖": "6165926565638051547", "🤬": "6168156972219635148",
+    "🍑": "6165529117954413678", "🕺": "6186015776948885249",
+    "🌷": "6197378228894568973", "🐉": "6188171511229060434",
+    "👋": "6190629722876023613", "😍": "6192639363843626187",
+    "😇": "6195191910152279859", "🚊": "6208671312823456804",
+    "🤨": "6208304964998010180",
+})
 # Emoji chưa có ID premium riêng -> dùng tạm emoji premium gần nghĩa nhất cho ICON NÚT BẤM
 ICON_ALIAS = {
     "🌸": "🌷", "🍕": "🍭", "🔍": "👀", "🔴": "🚩", "⚪": "🏳️", "⚪️": "🏳️",
@@ -1986,12 +2025,22 @@ def mask_user_id(user_id):
 def _parse_db_date(value):
     if not value:
         return None
-    value = str(value)
+    if hasattr(value, "date") and not isinstance(value, str):
+        try:
+            return value.date()
+        except Exception:
+            pass
+    value = str(value).strip()
     for fmt in ("%H:%M - %d/%m/%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
         try:
             return datetime.strptime(value, fmt).date()
         except (ValueError, TypeError):
             continue
+    # Hỗ trợ timestamp ISO có microsecond hoặc múi giờ, ví dụ 2026-10-29T11:59:00+07:00.
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except (ValueError, TypeError):
+        pass
     match = re.search(r"(\d{2}/\d{2}/\d{4})", value)
     if match:
         try:
@@ -2357,7 +2406,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             jackpot_contribution = 0
 
             if total_lose > total_win:
-                jackpot_contribution = int(total_lose * 0.044)
+                jackpot_contribution = int(total_lose * 0.03)
                 jackpot_amount += jackpot_contribution
                 update_jackpot(jackpot_amount)
 
@@ -2406,7 +2455,6 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 f'┃ {ce("💰")} Tổng thắng: {fmt_money(total_win)}\n'
                 f'┃ {ce("❌")} Tổng thua: {fmt_money(total_lose)}\n'
                 f'┃\n'
-                f'┃ {ce("🤑")} Trích hũ (4.4% tổng thua): +{fmt_money(jackpot_contribution)}\n'
                 f'┃ {ce("🎁")} Hũ hiện tại: {fmt_money(jackpot_amount)}đ\n'
                 f'┗━━━━━━━━━━━━━\n'
                 f'<b>Cầu gần đây:</b>\n'
@@ -3242,6 +3290,10 @@ async def ls_room_tx_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ================= START & MAIN MENU =================
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    # Menu chính chỉ hiển thị trong chat riêng; /start ở nhóm được bỏ qua.
+    chat = update.effective_chat
+    if not chat or chat.type != "private":
+        return
     uid = update.effective_user.id
     if is_banned(uid):
         return
@@ -6176,31 +6228,31 @@ async def _export_user_report(message, bot, uid, kind, period, ctx):
     if kind in ("all", "history"):
         raw = query("SELECT amount,note,time FROM history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
         rows = [("Lịch sử", uid, target_name, r[0], r[1], r[2]) for r in raw
-                if (period == "date" and date_filter in str(r[2])) or
+                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
                    (period != "date" and _in_report_period(r[2], period))]
         headers = ["Loại", "ID người dùng", "@username / Tên", "Số tiền", "Nội dung", "Thời gian"]
     elif kind == "nap":
         raw = query("SELECT amount,status,time,ref_code,admin_id FROM deposit_history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
         rows = [(uid, target_name, r[0], r[1], r[2], r[3], r[4]) for r in raw
-                if (period == "date" and date_filter in str(r[2])) or
+                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
                    (period != "date" and _in_report_period(r[2], period))]
         headers = ["ID người nạp", "@username / Tên", "Số tiền", "Trạng thái", "Thời gian", "Mã giao dịch", "Admin xử lý"]
     elif kind == "rut":
         raw = query("SELECT amount,status,time,admin_id,admin_note,id FROM withdraw_history WHERE user_id=%s ORDER BY id DESC LIMIT 20000", (uid,)) or []
         rows = [(uid, target_name, r[0], r[1], r[2], r[3], r[4], r[5]) for r in raw
-                if (period == "date" and date_filter in str(r[2])) or
+                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
                    (period != "date" and _in_report_period(r[2], period))]
         headers = ["ID người rút", "@username / Tên", "Số tiền", "Trạng thái", "Thời gian", "Admin xử lý", "Ghi chú", "Mã yêu cầu"]
     elif kind == "code":
         raw = query("SELECT code,used_date FROM code_usage WHERE user_id=%s ORDER BY used_date DESC LIMIT 20000", (uid,)) or []
         rows = [(uid, target_name, r[0], "Đã sử dụng", r[1]) for r in raw
-                if (period == "date" and date_filter in str(r[1])) or
+                if (period == "date" and _parse_db_date(r[1]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
                    (period != "date" and _in_report_period(r[1], period))]
         headers = ["ID người nhập", "@username / Tên", "Mã code", "Trạng thái", "Thời gian nhập"]
     elif kind == "cuoc":
         raw = query("SELECT amount,note,time FROM history WHERE user_id=%s AND amount<0 AND note ILIKE '%cược%' ORDER BY id DESC LIMIT 20000", (uid,)) or []
         rows = [(uid, target_name, abs(int(r[0] or 0)), r[1], r[2]) for r in raw
-                if (period == "date" and date_filter in str(r[2])) or
+                if (period == "date" and _parse_db_date(r[2]) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
                    (period != "date" and _in_report_period(r[2], period))]
         headers = ["ID người cược", "@username / Tên", "Giá trị cược", "Game / Nội dung", "Thời gian"]
     elif kind in ("mua", "gift"):
@@ -6216,7 +6268,7 @@ async def _export_user_report(message, bot, uid, kind, period, ctx):
             if kind == "gift" and int(used_by or 0) != uid:
                 continue
             when = r[2] if kind == "mua" else (r[8] or r[2])
-            if not ((period == "date" and date_filter in str(when)) or
+            if not ((period == "date" and _parse_db_date(when) == datetime.strptime(date_filter, "%d/%m/%Y").date()) or
                     (period != "date" and _in_report_period(when, period))):
                 continue
             buyer_name = await _telegram_name(bot, created_by, name_cache)
@@ -6380,6 +6432,27 @@ async def auto_settle_tich_luy_loop(bot):
 async def main():
     global _bot_instance
     await application.initialize()
+    # Gợi ý lệnh khi người dùng gõ "/" trong nhóm; chỉ đưa các lệnh dùng cho thành viên.
+    group_commands = [
+        BotCommand("nap", "Nạp tiền"),
+        BotCommand("rut", "Rút tiền"),
+        BotCommand("top", "Top người chơi"),
+        BotCommand("topnap", "Top nạp tiền"),
+        BotCommand("topsodu", "Top số dư"),
+        BotCommand("topcuoc", "Top cược"),
+        BotCommand("checktt", "Kiểm tra tương tác hôm nay"),
+        BotCommand("help", "Hướng dẫn sử dụng"),
+        BotCommand("sd", "Xem số dư"),
+        BotCommand("his", "Lịch sử giao dịch"),
+    ]
+    try:
+        await application.bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())
+        await application.bot.set_my_commands(
+            [BotCommand("start", "Mở menu bot"), *group_commands],
+            scope=BotCommandScopeAllPrivateChats()
+        )
+    except Exception as e:
+        print(f"Không thể cập nhật gợi ý lệnh Telegram: {e}")
     await application.start()
     _bot_instance = application.bot
     
