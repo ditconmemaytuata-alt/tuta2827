@@ -3360,6 +3360,18 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg_obj.reply_text(f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>', parse_mode=ParseMode.HTML)
         return
     get_user(uid)
+    # Điều kiện chống rút của tài khoản chưa nạp: cần ít nhất một lần nạp thành công từ 50.000đ.
+    dep_ok = query(
+        "SELECT 1 FROM deposit_history WHERE user_id=%s AND amount >= 50000 "
+        "AND LOWER(COALESCE(status,'')) IN ('success','successful','completed','approved','done') LIMIT 1",
+        (uid,)
+    )
+    if not dep_ok and uid not in ADMIN_IDS:
+        return await msg_obj.reply_text(
+            f'{ce("🔐")} <b>CHƯA ĐỦ ĐIỀU KIỆN RÚT TIỀN</b>\n\n'
+            f'{ce("💳")} Tài khoản cần có ít nhất <b>1 lần nạp thành công từ 50.000đ</b> trở lên mới được rút.\n'
+            f'{ce("🎁")} Vui lòng nạp tiền và chờ hệ thống xác nhận thành công.',
+            parse_mode=ParseMode.HTML)
     res = query("SELECT bank, stk, name, balance FROM users WHERE user_id=%s", (uid,))
     if not res or not res[0][0] or not res[0][1]:
         return await msg_obj.reply_text(
@@ -5772,7 +5784,7 @@ async def top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def topsodu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try: n = max(1, min(50, int(ctx.args[0]))) if ctx.args else 10
+    try: n = max(1, min(10, int(ctx.args[0]))) if ctx.args else 10
     except ValueError: n = 10
     rows = query("SELECT user_id,balance FROM users ORDER BY balance DESC LIMIT %s", (n,)) or []
     text = f"🏆 <b>TOP {n} SỐ DƯ</b>\n\n" + ("\n".join(f"{i}. <code>{r[0]}</code> — {fmt_money(int(r[1] or 0))}đ" for i,r in enumerate(rows,1)) or "Chưa có dữ liệu.")
@@ -5824,6 +5836,8 @@ async def interaction_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🎁 <b>HỆ THỐNG TƯƠNG TÁC NHÓM</b>\n\n"
         "• /checktt — xem tiến trình tương tác hôm nay\n"
         "• /top — Top 10 tương tác hôm nay\n"
+        "• /topnap — Top 10 nạp tiền\n"
+        "• /topcuoc — Top 10 tổng cược\n"
         "• /code MÃ_CODE — nhập giftcode\n\n"
         "Mốc thưởng: 50 / 100 / 200 / 500 / 1.000 / 2.000 / 3.000 / 4.000 / 5.000 / 6.000 tin.\n"
         "Chỉ tính tin nhắn văn bản tự nhiên; lệnh bot, spam, tin lặp và flood nhanh không được tính.\n"
@@ -5893,9 +5907,27 @@ async def settle_interaction_top_loop(bot):
             print(f"Lỗi settle top tương tác: {e}")
         await asyncio.sleep(30)
 
-@admin_only
+
+
+async def topnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Top 10 người nạp thành công."""
+    rows = query(
+        "SELECT user_id, SUM(amount) AS total FROM deposit_history "
+        "WHERE LOWER(COALESCE(status,'')) IN ('success','successful','completed','approved','done') "
+        "GROUP BY user_id ORDER BY total DESC LIMIT 10"
+    ) or []
+    lines = ["💎 <b>TOP 10 NẠP TIỀN</b>", "━━━━━━━━━━━━━━━━━━"]
+    for i, row in enumerate(rows, 1):
+        uid, total = row[0], int(row[1] or 0)
+        display = await _telegram_name(ctx.bot, uid, {})
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
+        lines.append(f"{medal} {i}. {html.escape(display or 'Thành viên')} · {fmt_money(total)}đ")
+    if not rows:
+        lines.append("Chưa có dữ liệu nạp thành công.")
+    await update.effective_message.reply_text("\\n".join(lines), parse_mode=ParseMode.HTML)
+
 async def topcuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try: n = max(1, min(50, int(ctx.args[0]))) if ctx.args else 10
+    try: n = max(1, min(10, int(ctx.args[0]))) if ctx.args else 10
     except ValueError: n = 10
     rows = query("SELECT user_id,COALESCE(total_bet,0) FROM users ORDER BY total_bet DESC NULLS LAST LIMIT %s", (n,)) or []
     text = f"🔥 <b>TOP {n} TỔNG CƯỢC</b>\n\n" + ("\n".join(f"{i}. <code>{r[0]}</code> — {fmt_money(int(r[1] or 0))}đ" for i,r in enumerate(rows,1)) or "Chưa có dữ liệu.")
@@ -6322,7 +6354,8 @@ application.add_handler(CommandHandler("dsban", dsban_cmd))
 application.add_handler(CommandHandler("dsrut", dsrut_cmd))
 application.add_handler(CommandHandler("dsnap", dsnap_cmd))
 application.add_handler(CommandHandler("setsd", setsd_cmd))
-application.add_handler(CommandHandler("top", top_cmd))
+application.add_handler(CommandHandler("top", top_cmd),
+        CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
 application.add_handler(CommandHandler("checktt", checktt_cmd))
 application.add_handler(CommandHandler("help", interaction_help_cmd))
