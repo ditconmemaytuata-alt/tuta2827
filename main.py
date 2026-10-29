@@ -13,7 +13,7 @@ from io import BytesIO
 import psycopg2
 from psycopg2 import extras
 import pytz
-from telegram import (Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
+from telegram import (Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ApplicationHandlerStop
 from telegram.constants import ParseMode
 import aiohttp
@@ -2286,7 +2286,7 @@ INTERACTION_MILESTONES = [
 ]
 TOP_INTERACTION_PRIZES = {1: 18888, 2: 13333, 3: 10000, 4: 9999,
                           5: 7777, 6: 7777, 7: 7777, 8: 7777, 9: 7777, 10: 7777}
-_interaction_seen = {}
+_interaction_seen = {}  # key -> {times: [...], last_text: str, last_at: datetime}
 
 def mask_user_id(user_id):
     """Ẩn 5 chữ số đầu khi đưa ID lên nhóm công khai."""
@@ -2379,13 +2379,24 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = (user.id, chat.id)
     previous = _interaction_seen.get(key)
     if previous:
-        prev_text, prev_at = previous
-        # Bỏ tin lặp trong 60 giây và flood nhanh dưới 2 giây.
-        if normalized == prev_text and (now - prev_at).total_seconds() < 60:
+        # Giới hạn mềm: tối đa 2 tin hợp lệ trong 10 giây cho mỗi người/nhóm.
+        # Tin giống hệt tin gần nhất trong 10 giây không được tính thêm.
+        recent_times = [t for t in previous.get("times", [])
+                        if (now - t).total_seconds() < 10]
+        last_text = previous.get("last_text", "")
+        last_at = previous.get("last_at", now)
+        if normalized == last_text and (now - last_at).total_seconds() < 10:
+            previous["times"] = recent_times
             return
-        if (now - prev_at).total_seconds() < 2:
+        if len(recent_times) >= 2:
+            previous["times"] = recent_times
             return
-    _interaction_seen[key] = (normalized, now)
+        recent_times.append(now)
+        previous["times"] = recent_times
+        previous["last_text"] = normalized
+        previous["last_at"] = now
+    else:
+        _interaction_seen[key] = {"times": [now], "last_text": normalized, "last_at": now}
     # Giới hạn cache trong bộ nhớ.
     if len(_interaction_seen) > 10000:
         for old_key in list(_interaction_seen)[:2000]:
@@ -6410,6 +6421,69 @@ async def admin_user_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception: pass
 
 
+
+# ============================================================
+# TẮT/BẬT TIN NHẮN BOT TRONG ROOM
+# /tatroom — chặn bot gửi tin nhắn vào nhóm đã cấu hình
+# /moroom  — bật lại tin nhắn bot trong nhóm
+# Trạng thái được lưu trong bảng settings nên tồn tại sau khi restart.
+# ============================================================
+def _room_mute_key(chat_id):
+    return f"room_muted_{int(chat_id)}"
+
+def _is_room_muted(chat_id):
+    try:
+        rows = query("SELECT value FROM settings WHERE key=%s", (_room_mute_key(chat_id),))
+        return bool(rows and str(rows[0][0]) == "1")
+    except Exception:
+        return False
+
+async def _room_mute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE, muted: bool):
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or user.id not in ADMIN_IDS:
+        if msg:
+            await msg.reply_text("⛔ Bạn không có quyền dùng lệnh này.")
+        return
+    chat = update.effective_chat
+    target_group = chat.id if chat and chat.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
+    if target_group is None:
+        return await msg.reply_text("❌ Chưa cấu hình nhóm trong GROUP_IDS.")
+    query(
+        "INSERT INTO settings (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+        (_room_mute_key(target_group), "1" if muted else "0")
+    )
+    state_text = "đã tắt tin nhắn bot" if muted else "đã bật lại tin nhắn bot"
+    # Confirmation is sent to the admin's private chat when the command is used privately.
+    await msg.reply_text(
+        f"{'🔇' if muted else '🔊'} Room <code>{target_group}</code> {state_text}.",
+        parse_mode=ParseMode.HTML
+    )
+
+@admin_only
+async def tatroom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _room_mute_command(update, ctx, True)
+
+@admin_only
+async def moroom_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _room_mute_command(update, ctx, False)
+
+# Guard Bot.send_message so scheduled tasks and handlers also respect room mute.
+_original_bot_send_message = Bot.send_message
+async def _send_message_respecting_room_mute(self, chat_id, text, *args, **kwargs):
+    try:
+        numeric_chat_id = int(chat_id)
+    except (TypeError, ValueError):
+        numeric_chat_id = None
+    if numeric_chat_id in GROUP_IDS and _is_room_muted(numeric_chat_id):
+        # Keep only the explicit mute/unmute confirmation visible in the group.
+        if not str(text or "").startswith(("🔇", "🔊")):
+            return None
+    return await _original_bot_send_message(self, chat_id, text, *args, **kwargs)
+
+Bot.send_message = _send_message_respecting_room_mute
+
 application = ApplicationBuilder().token(TOKEN).build()
 
 # ============================================================
@@ -7475,6 +7549,8 @@ application.add_handler(CommandHandler("top", top_cmd))
 application.add_handler(CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
 application.add_handler(CommandHandler("checktt", checktt_cmd))
+application.add_handler(CommandHandler("tatroom", tatroom_cmd))
+application.add_handler(CommandHandler("moroom", moroom_cmd))
 application.add_handler(CommandHandler("help", interaction_help_cmd))
 application.add_handler(CommandHandler("topcuoc", topcuoc_cmd))
 application.add_handler(CallbackQueryHandler(admin_user_callback, pattern=r"^admuser_"))
