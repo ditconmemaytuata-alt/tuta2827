@@ -5859,10 +5859,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # WEBHOOK SEPAY
 # ============================================================
 async def sepay_webhook(request):
-    # Xác thực API Key (Header Authorization: Bearer <API_KEY>)
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer ") or auth_header.split(" ")[1] != SEPAY_API_KEY:
-        print("SePay Webhook: Unauthorized")
+    # Xác thực API Key. SePay gửi header "Authorization: Apikey <KEY>" (cũng chấp nhận "Bearer <KEY>").
+    import hmac
+    auth_header = request.headers.get("Authorization", "").strip()
+    parts = auth_header.split(None, 1)
+    given_key = parts[1].strip() if len(parts) == 2 and parts[0].lower() in ("apikey", "bearer") else ""
+    if not SEPAY_API_KEY:
+        print("SePay Webhook: CHƯA đặt biến môi trường SEPAY_API_KEY trên server -> từ chối mọi webhook")
+        return web.Response(status=401, text="SEPAY_API_KEY not configured")
+    if not given_key or not hmac.compare_digest(given_key, SEPAY_API_KEY):
+        print(f"SePay Webhook: Sai API key (header nhận được: {auth_header[:12]}...)")
         return web.Response(status=401, text="Unauthorized")
 
     try:
@@ -5876,15 +5882,21 @@ async def sepay_webhook(request):
 
         if amount <= 0:
             return web.Response(status=200, text="Amount <= 0")
+        if str(data.get("transferType", "in")).lower() != "in":
+            return web.Response(status=200, text="Not incoming")
 
-        # Tìm user_id từ nội dung chuyển khoản
-        # Nội dung có dạng: "anh yeu em 123456" -> tìm số ID ở cuối
-        match = re.search(r'(\d+)$', content.strip())
-        if not match:
+        # Tìm user_id từ nội dung chuyển khoản.
+        # Nội dung gốc: "doi tac 7884394252" nhưng ngân hàng hay chèn thêm mã phía sau
+        # (vd "doi tac 7884394252 I2T82W15/054424") nên KHÔNG lấy số ở cuối chuỗi.
+        # Chỉ xét các từ gồm toàn chữ số (>=5 số), ưu tiên ID đã tồn tại trong bảng users.
+        candidates = [int(t) for t in re.findall(r'(?<![\w/])(\d{5,15})(?![\w/])', content)]
+        if not candidates:
             print(f"SePay Webhook: Không tìm thấy ID trong nội dung: {content}")
             return web.Response(status=200, text="No ID found")
-
-        user_id = int(match.group(1))
+        user_id = next((c for c in candidates if query("SELECT 1 FROM users WHERE user_id=%s", (c,))), None)
+        if user_id is None:
+            print(f"SePay Webhook: ID {candidates} không có trong bảng users: {content}")
+            return web.Response(status=200, text="User not found")
         get_user(user_id)
 
         # Kiểm tra giao dịch đã xử lý chưa (dựa vào ref_code)
@@ -5971,12 +5983,19 @@ async def sepay_webhook(request):
 
 async def start_webhook_server():
     app = web.Application()
-    app.router.add_post('/sepay_webhook', sepay_webhook)
+    # Nhận webhook ở cả gốc "/" lẫn /sepay_webhook (SePay đang gọi thẳng tên miền, không kèm đường dẫn).
+    for path in ('/', '/sepay_webhook', '/webhook', '/sepay'):
+        app.router.add_post(path, sepay_webhook)
+    async def _health(request):
+        return web.Response(text="OK")
+    app.router.add_get('/', _health)
+    app.router.add_get('/health', _health)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    port = int(os.getenv("PORT", "8080"))   # Railway cấp cổng qua biến PORT
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print("✅ Webhook server started on port 8080")
+    print(f"✅ Webhook server started on port {port} (SEPAY_API_KEY {'đã đặt' if SEPAY_API_KEY else 'CHƯA ĐẶT'})")
 
 # ============================================================
 # ADMIN TOOLS: help, per-game maintenance, bot status and user tools
