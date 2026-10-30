@@ -7,14 +7,17 @@ import hashlib
 import csv
 import traceback
 import html
-from urllib.parse import urlencode
+import json
+import hmac
+import time
+from urllib.parse import urlencode, parse_qsl
 from datetime import datetime, timedelta
 from io import BytesIO
 
 import psycopg2
 from psycopg2 import extras
 import pytz
-from telegram import (Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
+from telegram import (Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, WebAppInfo, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ApplicationHandlerStop
 from telegram.constants import ParseMode
 import aiohttp
@@ -5298,6 +5301,7 @@ MT_ITEMS = {
     'mt_taixiumd5': {'name': 'TÀI XỈU MD5', 'type': 'game', 'icon': '👌'},
     'mt_baucua': {'name': 'BẦU CUA', 'type': 'game', 'icon': '🦌'},
     'mt_xocdia6': {'name': 'XÓC ĐĨA 6 VỊ', 'type': 'game', 'icon': '⚪'},
+    'mt_tx3d': {'name': 'TÀI XỈU 3D', 'type': 'game', 'icon': '🎲'},
     'mt_nap': {'name': 'NẠP TIỀN', 'type': 'feature', 'icon': '💳'},
     'mt_rut': {'name': 'RÚT TIỀN', 'type': 'feature', 'icon': '💸'},
 }
@@ -5328,6 +5332,7 @@ async def baotri_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [btn(f"Tài Xỉu MD5: {st('mt_taixiumd5')}", ic('mt_taixiumd5'), callback_data="tg_mt_taixiumd5")],
         [btn(f"Bầu Cua: {st('mt_baucua')}", ic('mt_baucua'), callback_data="tg_mt_baucua")],
         [btn(f"Xóc Đĩa 6 Vị: {st('mt_xocdia6')}", ic('mt_xocdia6'), callback_data="tg_mt_xocdia6")],
+        [btn(f"Tài Xỉu 3D: {st('mt_tx3d')}", ic('mt_tx3d'), callback_data="tg_mt_tx3d")],
         [btn(f"Nạp Tiền: {st('mt_nap')}", ic('mt_nap'), callback_data="tg_mt_nap"),
          btn(f"Rút Tiền: {st('mt_rut')}", ic('mt_rut'), callback_data="tg_mt_rut")],
         [btn("ĐÓNG BẢNG", "❌", callback_data="close_admin")]
@@ -5474,6 +5479,591 @@ async def show_user_manage(q, target_id: int, current_page: int):
     except Exception:
         pass
 
+# ============================================================
+# MINIAPP TÀI XỈU 3D
+#  • Giao diện: index.html (Telegram Web App) — phục vụ tại  GET /app
+#  • API: GET /api/state , POST /api/bet  (xác thực bằng initData của Telegram)
+#  • Số dư dùng CHUNG với bot chính (bảng users) → cược/thắng/hoàn đều ghi vào lịch sử, thống kê, vòng cược
+#  • Phiên chạy chung cho mọi người chơi: đặt cược -> úp bát -> mở bát -> phiên mới
+#  • /hu [số tiền]  : đặt tiền trong hũ của game 3D (admin)
+#  • /ep ...        : chế độ TEST kết quả (admin, chat riêng) — chỉ có tác dụng khi phiên KHÔNG có người chơi thật cược
+#  • Bảo trì: /baotri (nút "Tài Xỉu 3D") hoặc /baotrigame tx3d on|off
+# ============================================================
+TX3D_NAME = "TÀI XỈU 3D"
+TX3D_MT_KEY = "mt_tx3d"          # khoá bảo trì trong bảng settings
+TX3D_POT_KEY = "tx3d_pot"        # khoá lưu tiền hũ trong bảng settings
+TX3D_GAME_ID = 11                # id game dùng cho /camgame (banned_games)
+TX3D_BET_SECONDS = 30            # thời gian đặt cược mỗi phiên
+TX3D_COVER_SECONDS = 15          # thời gian úp bát / mở bát trước khi sang phiên mới
+TX3D_MIN_BET = 1000
+TX3D_MAX_BET = 10 ** 12
+TX3D_PAYOUT = 1.97               # thắng Tài/Xỉu nhận x1.97 (giống Tài Xỉu Room)
+TX3D_POT_DEFAULT = 100000        # tiền hũ khi mới tạo / sau khi nổ
+TX3D_POT_RATE = 0.03             # % tiền thua cộng vào hũ (khi nhà thắng phiên đó)
+TX3D_BAO_REFUND = False          # True = Bão (3 mặt giống nhau, trừ 111 và 666) hoàn tiền cược; False = nhà ăn
+TX3D_HIST_MAX = 180              # số phiên hiển thị trên cầu
+TX3D_USER_TTL = 3.0              # giây cache số dư mỗi người chơi (giảm tải DB khi app gọi liên tục)
+TX3D_INITDATA_MAX_AGE = 86400    # initData Telegram hợp lệ tối đa 24 giờ
+
+query("""
+CREATE TABLE IF NOT EXISTS tx3d_rounds (
+    id BIGINT PRIMARY KEY,
+    d1 INTEGER, d2 INTEGER, d3 INTEGER,
+    created TEXT
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS tx3d_bets (
+    round_id BIGINT,
+    user_id BIGINT,
+    side TEXT,
+    amount BIGINT,
+    PRIMARY KEY (round_id, user_id)
+)
+""")
+query("INSERT INTO settings (key, value) VALUES ('mt_tx3d', '0') ON CONFLICT (key) DO NOTHING")
+query("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (TX3D_POT_KEY, str(TX3D_POT_DEFAULT)))
+
+
+class _TX3DState:
+    def __init__(self):
+        self.lock = None
+        self.round_id = 0
+        self.phase = "bet"          # bet | cover
+        self.phase_end = time.time() + TX3D_BET_SECONDS
+        self.bets = {}              # uid -> {"side","amt","name"}
+        self.dice = None            # chỉ có từ lúc úp bát
+        self.result = None          # kết quả đã tính (chưa trả tiền) trong lúc úp bát
+        self.applied = False
+        self.pot = TX3D_POT_DEFAULT
+        self.hist = []              # mới nhất ở đầu: [[d1,d2,d3], ...]
+        self.last = None            # kết quả phiên vừa xong (để người chưa kịp mở bát vẫn thấy)
+        self.force = None           # {"dice": [..] | None, "kind": "tai"|"xiu"|None, "by": uid}
+        self.users = {}             # uid -> (ts, balance, banned, game_banned)
+        self.flags = {}
+        self.flags_ts = 0.0
+        self.ready = False
+
+TX3D = _TX3DState()
+
+
+def _tx3d_lock():
+    if TX3D.lock is None:
+        TX3D.lock = asyncio.Lock()
+    return TX3D.lock
+
+
+def tx3d_url():
+    """Địa chỉ HTTPS của miniapp. Ưu tiên biến MINIAPP_URL, nếu không có thì dùng domain Railway."""
+    u = (os.getenv("MINIAPP_URL") or "").strip()
+    if not u:
+        dom = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_STATIC_URL") or "").strip()
+        if dom:
+            dom = dom.replace("https://", "").replace("http://", "").strip("/")
+            u = f"https://{dom}/app"
+    return u or None
+
+
+# ---------- xác thực Telegram Web App ----------
+def tx3d_verify_init(init_data):
+    """Trả về dict user của Telegram nếu initData hợp lệ, ngược lại None."""
+    if not init_data or not TOKEN:
+        return None
+    try:
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        got_hash = pairs.pop("hash", None)
+        if not got_hash:
+            return None
+        check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+        secret = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
+        calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc, got_hash):
+            return None
+        if TX3D_INITDATA_MAX_AGE and time.time() - int(pairs.get("auth_date", "0")) > TX3D_INITDATA_MAX_AGE:
+            return None
+        user = json.loads(pairs.get("user", "{}"))
+        if not isinstance(user, dict) or not user.get("id"):
+            return None
+        return user
+    except Exception:
+        return None
+
+
+def _tx3d_auth(request):
+    u = tx3d_verify_init(request.headers.get("X-Init", ""))
+    if not u:
+        return None
+    name = (u.get("first_name") or u.get("username") or str(u["id"])).strip() or str(u["id"])
+    return int(u["id"]), name
+
+
+def _tx3d_mask(name):
+    name = (name or "").strip() or "Player"
+    return name[:3] + "***"
+
+
+# ---------- truy vấn DB (chạy trong thread để không chặn bot) ----------
+def _tx3d_user_row(uid):
+    sql = ("SELECT balance, EXISTS(SELECT 1 FROM banned b WHERE b.user_id=%s), "
+           "EXISTS(SELECT 1 FROM banned_games g WHERE g.user_id=%s AND g.game_id=%s) "
+           "FROM users WHERE user_id=%s")
+    args = (uid, uid, TX3D_GAME_ID, uid)
+    rows = query(sql, args)
+    if not rows:
+        get_user(uid)
+        rows = query(sql, args)
+    if not rows:
+        return None
+    bal, banned, gban = rows[0]
+    return int(bal or 0), bool(banned), bool(gban)
+
+
+async def _tx3d_user(uid, fresh=False):
+    ent = TX3D.users.get(uid)
+    now = time.time()
+    if ent and not fresh and now - ent[0] < TX3D_USER_TTL:
+        return ent[1], ent[2], ent[3]
+    row = await asyncio.to_thread(_tx3d_user_row, uid)
+    if row is None:
+        return None
+    if len(TX3D.users) > 5000:
+        TX3D.users.clear()
+    TX3D.users[uid] = (now, row[0], row[1], row[2])
+    return row
+
+
+def _tx3d_load_flags():
+    rows = query("SELECT key, value FROM settings WHERE key IN (%s, 'mt_tongbao', 'system_maintenance')", (TX3D_MT_KEY,)) or []
+    return {k: v for k, v in rows}
+
+
+async def _tx3d_flags():
+    if time.time() - TX3D.flags_ts > 2.0:
+        try:
+            TX3D.flags = await asyncio.to_thread(_tx3d_load_flags)
+        except Exception as e:
+            print(f"[tx3d] lỗi đọc cờ bảo trì: {e}")
+        TX3D.flags_ts = time.time()
+    return TX3D.flags
+
+
+def _tx3d_sub_sync(uid, amt, note):
+    """Trừ tiền cược nguyên tử (không bao giờ âm). Trả về số dư mới hoặc None nếu không đủ."""
+    rows = query(
+        "UPDATE users SET balance=balance-%s, total_bet=COALESCE(total_bet,0)+%s "
+        "WHERE user_id=%s AND balance>=%s RETURNING balance", (amt, amt, uid, amt))
+    if not rows:
+        return None
+    query("INSERT INTO history(user_id, amount, note, time) VALUES(%s,%s,%s,%s)",
+          (uid, -amt, note, get_vietnam_datetime_db()))
+    record_daily(uid, bet=amt)
+    return int(rows[0][0])
+
+
+def _tx3d_boot_sync():
+    """Chạy 1 lần khi khởi động: nạp cầu, tiền hũ, hoàn tiền các cược dở dang do bot bị tắt giữa phiên."""
+    rows = query("SELECT id, d1, d2, d3 FROM tx3d_rounds ORDER BY id DESC LIMIT %s", (TX3D_HIST_MAX,)) or []
+    TX3D.hist = [[int(r[1]), int(r[2]), int(r[3])] for r in rows]
+    TX3D.round_id = int(rows[0][0]) if rows else 0
+    try:
+        TX3D.pot = int(get_setting(TX3D_POT_KEY, str(TX3D_POT_DEFAULT)) or TX3D_POT_DEFAULT)
+    except ValueError:
+        TX3D.pot = TX3D_POT_DEFAULT
+    left = query("SELECT round_id, user_id, amount FROM tx3d_bets") or []
+    for rid, uid, amt in left:
+        try:
+            add_money(int(uid), int(amt), f"Hoàn cược Tài Xỉu 3D (phiên #{rid} bị gián đoạn)")
+            query("DELETE FROM tx3d_bets WHERE round_id=%s AND user_id=%s", (rid, uid))
+        except Exception as e:
+            print(f"[tx3d] lỗi hoàn cược dở {uid}: {e}")
+    if left:
+        print(f"[tx3d] đã hoàn {len(left)} cược dở dang sau khi khởi động lại")
+
+
+# ---------- logic phiên ----------
+_TX3D_RNG = random.SystemRandom()
+
+
+def _tx3d_dice_for(kind):
+    for _ in range(500):
+        d = [_TX3D_RNG.randint(1, 6) for _ in range(3)]
+        if d[0] == d[1] == d[2]:
+            continue
+        if kind == "tai" and sum(d) >= 11:
+            return d
+        if kind == "xiu" and sum(d) <= 10:
+            return d
+    return [4, 5, 6] if kind == "tai" else [1, 2, 3]
+
+
+def _tx3d_compute(dice, bets, rid, pot):
+    """Tính kết quả phiên (CHƯA trả tiền). Trả về dict mô tả thắng/thua, hũ và lãi/lỗ từng người."""
+    total = sum(dice)
+    triple = dice[0] == dice[1] == dice[2]
+    win, jp_side = None, None
+    if triple:
+        if dice[0] == 6:
+            win = jp_side = "tai"
+        elif dice[0] == 1:
+            win = jp_side = "xiu"
+    else:
+        win = "tai" if total >= 11 else "xiu"
+    pay, refund = {}, {}
+    total_win = total_lose = 0
+    for uid, b in bets.items():
+        if win and b["side"] == win:
+            pay[uid] = int(b["amt"] * TX3D_PAYOUT)
+            total_win += pay[uid]
+        elif triple and not win and TX3D_BAO_REFUND:
+            refund[uid] = b["amt"]
+        else:
+            total_lose += b["amt"]
+    contrib = int(total_lose * TX3D_POT_RATE) if total_lose > total_win else 0
+    pot_total = pot + contrib
+    pot_after = pot_total
+    share, jp = {}, None
+    if jp_side:
+        winners = [(uid, b) for uid, b in bets.items() if b["side"] == jp_side]
+        tb = sum(b["amt"] for _, b in winners)
+        if winners and pot_total > 0 and tb > 0:
+            for uid, b in winners:
+                share[uid] = int(pot_total * b["amt"] / tb)
+            jp = {"id": rid, "total": pot_total, "n": len(winners),
+                  "winners": sorted(((uid, _tx3d_mask(b["name"]), b["amt"], share[uid]) for uid, b in winners),
+                                    key=lambda w: -w[3])[:5]}
+            pot_after = TX3D_POT_DEFAULT
+    nets = {uid: pay.get(uid, 0) + refund.get(uid, 0) + share.get(uid, 0) - b["amt"] for uid, b in bets.items()}
+    return {"win": win, "dice": list(dice), "pay": pay, "refund": refund, "share": share, "jp": jp,
+            "nets": nets, "pot_after": pot_after}
+
+
+def _tx3d_jp_view(jp, uid):
+    if not jp:
+        return None
+    me = next((w[3] for w in jp["winners"] if w[0] == uid), 0)
+    if not me:
+        me = 0
+    return {"id": jp["id"], "total": jp["total"], "n": jp["n"], "me": me,
+            "top": [{"name": w[1], "bet": w[2], "amt": w[3], "me": w[0] == uid} for w in jp["winners"]]}
+
+
+def _tx3d_apply_sync(rid, bets, res, test):
+    """Trả tiền thắng / hoàn / nổ hũ, xoá cược dở, lưu lịch sử phiên."""
+    for uid, b in bets.items():
+        try:
+            side = b["side"].upper()
+            if res["pay"].get(uid):
+                add_money(uid, res["pay"][uid], f"Thắng Tài Xỉu 3D {side}")
+            if res["refund"].get(uid):
+                add_money(uid, res["refund"][uid], f"Hoàn tiền Tài Xỉu 3D (Bão) {side}")
+            if res["share"].get(uid):
+                add_money(uid, res["share"][uid], f"Nổ hũ Tài Xỉu 3D +{res['share'][uid]:,}đ")
+            query("DELETE FROM tx3d_bets WHERE round_id=%s AND user_id=%s", (rid, uid))
+        except Exception as e:
+            print(f"[tx3d] lỗi trả thưởng {uid}: {e}")
+    set_setting(TX3D_POT_KEY, res["pot_after"])
+    if not test:
+        d = res["dice"]
+        query("INSERT INTO tx3d_rounds(id,d1,d2,d3,created) VALUES(%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
+              (rid, d[0], d[1], d[2], get_vietnam_datetime_db()))
+
+
+def _tx3d_refund_sync(rid, bets):
+    for uid, b in bets.items():
+        try:
+            add_money(uid, b["amt"], f"Hoàn cược Tài Xỉu 3D (lỗi phiên #{rid})")
+            query("DELETE FROM tx3d_bets WHERE round_id=%s AND user_id=%s", (rid, uid))
+        except Exception as e:
+            print(f"[tx3d] lỗi hoàn cược {uid}: {e}")
+
+
+def _tx3d_take_dice():
+    """Chọn xúc xắc cho phiên. /ep chỉ được dùng khi phiên không có người chơi thật đặt cược (chế độ test)."""
+    forced, TX3D.force = TX3D.force, None
+    if forced:
+        real = [u for u in TX3D.bets if u not in ADMIN_IDS]
+        if real:
+            _tx3d_notify_admin(forced.get("by"),
+                               f"⚠️ /ep KHÔNG được áp dụng cho phiên #{TX3D.round_id}: đã có người chơi thật đặt cược. "
+                               f"Lệnh /ep chỉ dùng để test khi phiên chỉ có admin hoặc không có ai cược.")
+        else:
+            dice = forced["dice"] or _tx3d_dice_for(forced["kind"])
+            return list(dice), True
+    return [_TX3D_RNG.randint(1, 6) for _ in range(3)], False
+
+
+def _tx3d_notify_admin(uid, text):
+    if not uid or _bot_instance is None:
+        return
+    try:
+        asyncio.get_running_loop().create_task(_bot_instance.send_message(uid, text))
+    except Exception as e:
+        print(f"[tx3d] không gửi được thông báo admin: {e}")
+
+
+async def tx3d_loop():
+    G = TX3D
+    await asyncio.to_thread(_tx3d_boot_sync)
+    G.ready = True
+    print(f"✅ Miniapp {TX3D_NAME}: sẵn sàng (hũ {G.pot:,}đ, phiên kế tiếp #{G.round_id + 1})")
+    test = False
+    while True:
+        try:
+            async with _tx3d_lock():
+                G.round_id += 1
+                G.phase, G.bets, G.dice, G.result, G.applied = "bet", {}, None, None, False
+                G.phase_end = time.time() + TX3D_BET_SECONDS
+            await asyncio.sleep(max(0.0, G.phase_end - time.time()))
+
+            async with _tx3d_lock():
+                dice, test = _tx3d_take_dice()
+                G.dice = dice
+                G.result = _tx3d_compute(dice, G.bets, G.round_id, G.pot)
+                G.phase = "cover"
+                G.phase_end = time.time() + TX3D_COVER_SECONDS
+            await asyncio.sleep(max(0.0, G.phase_end - time.time()))
+
+            async with _tx3d_lock():
+                G.applied = True
+                rid, res, bets = G.round_id, G.result, dict(G.bets)
+                await asyncio.to_thread(_tx3d_apply_sync, rid, bets, res, test)
+                G.pot = res["pot_after"]
+                if not test:
+                    G.hist.insert(0, list(res["dice"]))
+                    del G.hist[TX3D_HIST_MAX:]
+                G.last = {"id": rid, "dice": list(res["dice"]), "win": res["win"], "jp": res["jp"],
+                          "bets": {u: {b["side"]: b["amt"]} for u, b in bets.items()},
+                          "nets": dict(res["nets"]), "t": time.time()}
+                for u in bets:
+                    G.users.pop(u, None)      # buộc đọc lại số dư mới
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[tx3d] lỗi vòng lặp: {e}")
+            traceback.print_exc()
+            try:
+                if G.bets and not G.applied:
+                    G.applied = True
+                    await asyncio.to_thread(_tx3d_refund_sync, G.round_id, dict(G.bets))
+                    G.bets = {}
+            except Exception as e2:
+                print(f"[tx3d] lỗi hoàn cược sau sự cố: {e2}")
+            await asyncio.sleep(3)
+
+
+# ---------- API ----------
+def _tx3d_json(data, status=200):
+    return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
+
+
+def _tx3d_state(uid, bal, mt):
+    G, now = TX3D, time.time()
+    tot = {"tai": [0, 0], "xiu": [0, 0]}
+    for b in G.bets.values():
+        tot[b["side"]][0] += b["amt"]
+        tot[b["side"]][1] += 1
+    mine = G.bets.get(uid)
+    st = {"id": G.round_id, "phase": G.phase, "left": round(max(0.0, G.phase_end - now), 2),
+          "bal": bal, "pot": G.pot, "tot": tot,
+          "my": {mine["side"]: mine["amt"]} if mine else {},
+          "hist": G.hist, "mt": 1 if mt else 0}
+    if G.phase == "cover" and G.result:
+        st["dice"] = G.dice
+        st["win"] = G.result["win"]
+        st["net"] = G.result["nets"].get(uid, 0)
+        st["jp"] = _tx3d_jp_view(G.result["jp"], uid)
+    L = G.last
+    if L and now - L["t"] < 60:
+        st["last"] = {"id": L["id"], "dice": L["dice"], "win": L["win"], "my": L["bets"].get(uid, {}),
+                      "net": L["nets"].get(uid, 0), "jp": _tx3d_jp_view(L["jp"], uid), "ago": int(now - L["t"])}
+    return st
+
+
+async def tx3d_api_state(request):
+    me = _tx3d_auth(request)
+    if not me:
+        return _tx3d_json({"err": 1, "msg": "Hãy mở từ nút trong bot Telegram"})
+    uid, _name = me
+    if not TX3D.ready:
+        return _tx3d_json({"err": 1, "msg": "Game đang khởi động, thử lại sau vài giây"})
+    flags, info = await _tx3d_flags(), await _tx3d_user(uid)
+    if info is None:
+        return _tx3d_json({"err": 1, "msg": "Không tìm thấy tài khoản, hãy gửi /start cho bot"})
+    bal, banned, gban = info
+    is_admin = uid in ADMIN_IDS
+    if (banned or gban) and not is_admin:
+        return _tx3d_json({"err": 1, "msg": "Tài khoản của bạn đã bị khóa"})
+    if (flags.get("mt_tongbao") == "1" or flags.get("system_maintenance") == "1") and not is_admin:
+        return _tx3d_json({"err": 1, "msg": "Hệ thống đang bảo trì, vui lòng quay lại sau"})
+    mt = flags.get(TX3D_MT_KEY) == "1" and not is_admin
+    return _tx3d_json(_tx3d_state(uid, bal, mt))
+
+
+async def tx3d_api_bet(request):
+    me = _tx3d_auth(request)
+    if not me:
+        return _tx3d_json({"err": "Hãy mở từ nút trong bot Telegram"})
+    uid, name = me
+    try:
+        body = await request.json()
+        side = str(body.get("side", "")).lower()
+        amt = int(body.get("amt", 0))
+    except Exception:
+        return _tx3d_json({"err": "Dữ liệu cược không hợp lệ"})
+    if side not in ("tai", "xiu"):
+        return _tx3d_json({"err": "Cửa cược không hợp lệ"})
+    if amt < TX3D_MIN_BET:
+        return _tx3d_json({"err": f"Cược tối thiểu {fmt_money(TX3D_MIN_BET)}đ"})
+    if amt > TX3D_MAX_BET:
+        return _tx3d_json({"err": "Số tiền cược quá lớn"})
+    if not TX3D.ready:
+        return _tx3d_json({"err": "Game đang khởi động, thử lại sau vài giây"})
+    flags = await _tx3d_flags()
+    is_admin = uid in ADMIN_IDS
+    if not is_admin:
+        if flags.get(TX3D_MT_KEY) == "1":
+            return _tx3d_json({"err": "Game Tài Xỉu 3D đang bảo trì"})
+        if flags.get("mt_tongbao") == "1" or flags.get("system_maintenance") == "1":
+            return _tx3d_json({"err": "Hệ thống đang bảo trì"})
+    info = await _tx3d_user(uid, fresh=True)
+    if info is None:
+        return _tx3d_json({"err": "Không tìm thấy tài khoản"})
+    if (info[1] or info[2]) and not is_admin:
+        return _tx3d_json({"err": "Tài khoản của bạn đã bị khóa"})
+    async with _tx3d_lock():
+        G = TX3D
+        if G.phase != "bet" or time.time() >= G.phase_end - 0.25:
+            return _tx3d_json({"err": "Đã hết giờ đặt cược"})
+        cur = G.bets.get(uid)
+        if cur and cur["side"] != side:
+            return _tx3d_json({"err": "Mỗi phiên chỉ cược một cửa"})
+        rid = G.round_id
+        new_bal = await asyncio.to_thread(_tx3d_sub_sync, uid, amt, f"Cược Tài Xỉu 3D {side.upper()}")
+        if new_bal is None:
+            return _tx3d_json({"err": "Số dư không đủ"})
+        total = (cur["amt"] if cur else 0) + amt
+        G.bets[uid] = {"side": side, "amt": total, "name": name}
+        await asyncio.to_thread(
+            query,
+            "INSERT INTO tx3d_bets(round_id,user_id,side,amount) VALUES(%s,%s,%s,%s) "
+            "ON CONFLICT (round_id,user_id) DO UPDATE SET amount=EXCLUDED.amount, side=EXCLUDED.side",
+            (rid, uid, side, total))
+        TX3D.users[uid] = (time.time(), new_bal, info[1], info[2])
+    try:
+        update_bet_progress(uid, amt)       # tiến độ vòng cược khuyến mãi (giống các game khác)
+    except Exception as e:
+        print(f"[tx3d] lỗi cập nhật vòng cược: {e}")
+    return _tx3d_json({"ok": 1, "bal": new_bal})
+
+
+async def tx3d_page(request):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    if not os.path.exists(path):
+        return web.Response(status=404, text="Không tìm thấy index.html (hãy đặt cùng thư mục với main_9.py)")
+    return web.FileResponse(path, headers={"Cache-Control": "no-cache"})
+
+
+def tx3d_register_routes(app):
+    app.router.add_get("/app", tx3d_page)
+    app.router.add_get("/app/", tx3d_page)
+    app.router.add_get("/api/state", tx3d_api_state)
+    app.router.add_post("/api/bet", tx3d_api_bet)
+
+
+# ---------- lệnh admin ----------
+def _tx3d_parse_money(raw):
+    s = (raw or "").strip().lower().replace(" ", "")
+    mult = 1
+    for suf, m in (("tỷ", 10 ** 9), ("ty", 10 ** 9), ("tr", 10 ** 6), ("m", 10 ** 6), ("k", 10 ** 3)):
+        if s.endswith(suf):
+            s, mult = s[: -len(suf)], m
+            break
+    if mult == 1:
+        s = s.replace(".", "").replace(",", "")
+    else:
+        s = s.replace(",", ".")
+    return int(round(float(s) * mult))
+
+
+@admin_only
+async def hu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not ctx.args:
+        return await msg.reply_text(
+            f'{ce("🎁")} <b>HŨ {TX3D_NAME}</b>\n\n'
+            f'{ce("💰")} Hiện tại: <code>{fmt_money(TX3D.pot)}đ</code>\n\n'
+            f'{ce("✍️")} <b>Cú pháp:</b> <code>/hu [số_tiền]</code>\n'
+            f'VD: <code>/hu 50000000</code> · <code>/hu 50m</code> · <code>/hu 1.5tỷ</code>',
+            parse_mode=ParseMode.HTML)
+    try:
+        amount = _tx3d_parse_money(ctx.args[0])
+    except ValueError:
+        return await msg.reply_text(f'{ce("❌")} Số tiền không hợp lệ! VD: <code>/hu 50m</code>', parse_mode=ParseMode.HTML)
+    if amount < 0 or amount > 10 ** 13:
+        return await msg.reply_text(f'{ce("❌")} Số tiền phải từ 0 đến 10 nghìn tỷ!', parse_mode=ParseMode.HTML)
+    old = TX3D.pot
+    TX3D.pot = amount
+    set_setting(TX3D_POT_KEY, amount)
+    await msg.reply_text(
+        f'{ce("✅")} <b>ĐÃ CẬP NHẬT HŨ {TX3D_NAME}</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("📊")} <b>Số cũ:</b> <code>{fmt_money(old)}đ</code>\n'
+        f'{ce("💰")} <b>Số mới:</b> <code>{fmt_money(amount)}đ</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━', parse_mode=ParseMode.HTML)
+
+
+async def ep_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/ep 1 3 4 | /ep t | /ep x | /ep off  — chế độ TEST, chỉ áp dụng cho phiên không có người chơi thật cược."""
+    uid = update.effective_user.id
+    msg = update.effective_message
+    if uid not in ADMIN_IDS or is_admin_banned(uid):
+        return
+    if update.effective_chat.type != "private":     # không để lộ lệnh trong nhóm
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return
+    args = [a.strip().lower() for a in (ctx.args or []) if a.strip()]
+    nxt = TX3D.round_id if TX3D.phase == "bet" else TX3D.round_id + 1
+    note = ("\n\n<i>Chỉ có tác dụng khi phiên đó chỉ có admin cược hoặc không ai cược; "
+            "phiên test không được ghi vào cầu.</i>")
+    if not args:
+        cur = TX3D.force
+        cur_txt = "không có"
+        if cur:
+            cur_txt = " ".join(map(str, cur["dice"])) if cur["dice"] else ("TÀI" if cur["kind"] == "tai" else "XỈU")
+        return await msg.reply_text(
+            f'{ce("🛠")} <b>TEST KẾT QUẢ {TX3D_NAME}</b>\n'
+            f'• <code>/ep 1 3 4</code> — ra 1-3-4\n'
+            f'• <code>/ep t</code> — ra Tài · <code>/ep x</code> — ra Xỉu\n'
+            f'• <code>/ep off</code> — huỷ\n\n'
+            f'Đang chờ: <b>{cur_txt}</b>' + note, parse_mode=ParseMode.HTML)
+    if args[0] in ("off", "huy", "hủy", "0"):
+        TX3D.force = None
+        return await msg.reply_text(f'{ce("✅")} Đã huỷ chế độ test kết quả.', parse_mode=ParseMode.HTML)
+    forced = None
+    if args[0] in ("t", "tai", "tài"):
+        forced = {"dice": None, "kind": "tai", "by": uid}
+        label = "TÀI"
+    elif args[0] in ("x", "xiu", "xỉu"):
+        forced = {"dice": None, "kind": "xiu", "by": uid}
+        label = "XỈU"
+    else:
+        digits = [c for a in args for c in a if not c.isspace()]
+        if len(digits) == 3 and all(c in "123456" for c in digits):
+            d = [int(c) for c in digits]
+            forced = {"dice": d, "kind": None, "by": uid}
+            label = " - ".join(map(str, d))
+    if not forced:
+        return await msg.reply_text(
+            f'{ce("❌")} Cú pháp: <code>/ep 1 3 4</code> · <code>/ep t</code> · <code>/ep x</code> · <code>/ep off</code>',
+            parse_mode=ParseMode.HTML)
+    TX3D.force = forced
+    await msg.reply_text(f'{ce("✅")} Đã đặt kết quả test <b>{label}</b> cho phiên <b>#{nxt}</b>.' + note,
+                         parse_mode=ParseMode.HTML)
+
+
 # ================= HỆ THỐNG DANH SÁCH GAME (DẠNG NÚT BẤM) =================
 AMOUNT_BUTTONS = [("1k", 1000), ("5k", 5000), ("10k", 10000), ("20k", 20000), ("50k", 50000),
                   ("100k", 100000), ("200k", 200000), ("500k", 500000), ("1m", 1000000)]
@@ -5509,9 +6099,10 @@ GAMES = {
     "xd6": {"name": "XÓC ĐĨA 6 VỊ", "icon": "💿", "rows": [
         [("CHẴN", "chan", "🆗"), ("LẺ", "le", "❓")],
     ]},
+    "tx3d": {"name": "TÀI XỈU 3D", "icon": "🎲", "rows": None},
 }
 
-GAME_ROWS = [["room", "xx"], ["lh", "mp"], ["bcr", "xd4"], ["md5", "bc"], ["xd6"]]
+GAME_ROWS = [["room", "xx"], ["lh", "mp"], ["bcr", "xd4"], ["md5", "bc"], ["xd6", "tx3d"]]
 
 GAME_RULES = {
     "room": (
@@ -5620,6 +6211,19 @@ GAME_RULES = {
     ),
 }
 
+GAME_RULES["tx3d"] = (
+    f'{ce("🎲")} <b>TÀI XỈU 3D (MINIAPP)</b>\n\n'
+    f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
+    f'━━━━━━━━━━━━━━━━━━━━━\n'
+    f'• Mỗi phiên lắc 3 viên xúc xắc, kéo bát để mở kết quả.\n'
+    f'• Tài: tổng 11-18 · Xỉu: tổng 3-10 · Thắng nhận x{TX3D_PAYOUT}.\n'
+    f'• Mỗi phiên chỉ được cược một cửa (có thể cược thêm nhiều lần).\n'
+    f'• Bão (3 mặt giống nhau): {"hoàn tiền cược" if TX3D_BAO_REFUND else "nhà cái ăn cả hai cửa"}.\n'
+    f'• Nổ hũ: 3 con 6 → cửa Tài ăn hũ · 3 con 1 → cửa Xỉu ăn hũ (chia theo tiền cược).\n'
+    f'• Số dư dùng chung với bot chính, cược/thắng tự cập nhật ngay.\n\n'
+    f'{ce("💡")} <b>Bấm nút bên dưới để vào game.</b>'
+)
+
 GAME_LIST_TEXT = (
     f'{ce("🛍")} <b>DANH SÁCH GAME</b>\n'
     f'{ce("😃")} Chúc bạn chơi vui vẻ! {ce("✍️")}\n\n'
@@ -5710,6 +6314,20 @@ async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
                 [btn("Quay lại", "🔙", callback_data="game_list")]
             ])
             return await safe_edit(q, GAME_RULES["room"], kb)
+        if g == "tx3d":
+            back = [btn("Quay lại", "🔙", callback_data="game_list")]
+            if check_mt(TX3D_MT_KEY) and uid not in ADMIN_IDS:
+                return await safe_edit(q, f'{ce("⚙️")} Game Tài Xỉu 3D đang bảo trì!', InlineKeyboardMarkup([back]))
+            if is_game_banned(uid, TX3D_GAME_ID) and uid not in ADMIN_IDS:
+                return await safe_edit(q, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', InlineKeyboardMarkup([back]))
+            if q.message and q.message.chat.type != "private":
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 MỞ BOT ĐỂ CHƠI", url=f"https://t.me/{BOT_USERNAME}")], back])
+                return await safe_edit(q, GAME_RULES[g] + f'\n\n{ce("⚠️")} Miniapp chỉ mở được trong chat riêng với bot.', kb)
+            url = tx3d_url()
+            if not url:
+                return await safe_edit(q, GAME_RULES[g] + f'\n\n{ce("⚠️")} Miniapp chưa cấu hình địa chỉ (biến MINIAPP_URL).', InlineKeyboardMarkup([back]))
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 VÀO CHƠI TÀI XỈU 3D", web_app=WebAppInfo(url=url))], back])
+            return await safe_edit(q, GAME_RULES[g], kb)
         if not game.get("rows"):
             text = GAME_RULES[g] + f'\n\n{ce("⬇️")} <b>Chọn số tiền cược:</b>'
             return await safe_edit(q, text, game_amount_kb(g, "x"))
@@ -6254,6 +6872,7 @@ async def start_webhook_server():
         return web.Response(text="OK")
     app.router.add_get('/', _health)
     app.router.add_get('/health', _health)
+    tx3d_register_routes(app)      # miniapp Tài Xỉu 3D: /app , /api/state , /api/bet
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8080"))   # Railway cấp cổng qua biến PORT
@@ -6274,10 +6893,12 @@ ADMIN_GAMES = {
     "md5": ("mt_taixiumd5", 8, "Tài Xỉu MD5"),
     "bc": ("mt_baucua", 9, "Bầu Cua"),
     "xd6": ("mt_xocdia6", 10, "Xóc Đĩa 6 Vị"),
+    "tx3d": (TX3D_MT_KEY, TX3D_GAME_ID, "Tài Xỉu 3D"),
 }
 ADMIN_FEATURES = {"nap": ("mt_nap", "Nạp tiền"), "rut": ("mt_rut", "Rút tiền")}
 GAME_ALIAS = {"tx":"room", "taixiu":"room", "xucxac":"xx", "longho":"lh", "minipoker":"mp",
               "baccarat":"bcr", "xocdia4":"xd4", "txmd5":"md5", "baucua":"bc", "xocdia6":"xd6",
+              "3d":"tx3d", "taixiu3d":"tx3d", "tx3d":"tx3d",
               "naptien":"nap", "ruttien":"rut"}
 
 def _admin_norm(value):
@@ -6302,7 +6923,8 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<code>/baotrigame games on|off</code> — tất cả game\n"
         "<code>/baotrigame nap rut on|off</code> — nạp/rút\n"
         "<code>/baotriht</code>, <code>/baotriall on|off</code>, <code>/baotritc on|off</code> — bảo trì hệ thống hiện có\n"
-        "<code>/trangthai</code> — tổng quan bot\n\n"
+        "<code>/trangthai</code> — tổng quan bot\n"
+        "<code>/hu số_tiền</code> — đặt hũ Tài Xỉu 3D; <code>/ep 1 3 4</code> | <code>/ep t</code> | <code>/ep x</code> | <code>/ep off</code> — test kết quả 3D (chat riêng, chỉ phiên không có người chơi thật cược)\n\n"
         "<b>👥 Người dùng</b>\n<code>/user ID</code> — hồ sơ; <code>/timuser từ_khóa</code> — tìm user\n"
         "<code>/ban ID</code> / <code>/unban ID</code> — khóa/mở tài khoản\n"
         "<code>/camgame ID game</code> / <code>/mogame ID game|all</code> — khóa/mở game\n"
@@ -6344,7 +6966,7 @@ async def baotrigame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args or []
     msg = update.effective_message
     if len(args) < 2 or args[-1].lower() not in ("on", "off"):
-        return await msg.reply_text("Cú pháp: <code>/baotrigame [game...] on|off</code>\nGame: room xx lh mp bcr xd4 md5 bc xd6; tính năng: nap rut; nhóm: games all\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
+        return await msg.reply_text("Cú pháp: <code>/baotrigame [game...] on|off</code>\nGame: room xx lh mp bcr xd4 md5 bc xd6 tx3d; tính năng: nap rut; nhóm: games all\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
     action = args[-1].lower()
     value = "1" if action == "on" else "0"
     keys, names, invalid = [], [], []
@@ -6423,7 +7045,7 @@ async def camgame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         target = int(ctx.args[0]); game = _admin_norm(ctx.args[1]); gid = ADMIN_GAMES[game][1]
     except (IndexError, ValueError, KeyError):
-        return await update.effective_message.reply_text("Cú pháp: <code>/camgame ID room|xx|lh|mp|bcr|xd4|md5|bc|xd6</code>", parse_mode=ParseMode.HTML)
+        return await update.effective_message.reply_text("Cú pháp: <code>/camgame ID room|xx|lh|mp|bcr|xd4|md5|bc|xd6|tx3d</code>", parse_mode=ParseMode.HTML)
     query("INSERT INTO banned_games(user_id,game_id) VALUES(%s,%s) ON CONFLICT DO NOTHING", (target,gid))
     await update.effective_message.reply_text(f"Đã cấm user <code>{target}</code> chơi {html.escape(ADMIN_GAMES[game][2])}.", parse_mode=ParseMode.HTML)
 
@@ -8672,6 +9294,8 @@ _ADM_CATS = [
         ("use", "resethoan", "Xoá thưởng hoàn trả đang chờ nhận", "x", "/resethoan [ID] ngay|tuan|all", "/resethoan 123456789 all"),
         ("use", "sethoancuoc", "Đặt % hoàn cược", "x", "/sethoancuoc ngay|tuan [%]", "/sethoancuoc ngay 2"),
         ("use", "sethu", "Đặt hũ Jackpot", "x", "/sethu [số tiền]", "/sethu 50m"),
+        ("use", "hu", "Đặt hũ Tài Xỉu 3D (miniapp)", "x", "/hu [số tiền]", "/hu 50m"),
+        ("use", "ep", "Test kết quả Tài Xỉu 3D (chỉ phiên không có người chơi thật cược)", "x", "/ep [1 3 4 | t | x | off]", "/ep 1 3 4"),
     ]),
     ("cd", "🎁", "GIFTCODE", "Tạo, xem và xoá các loại code.", [
         ("run", "taogift", "Tạo giftcode nhiều loại (từng bước)", "taogift", None, None),
@@ -8884,6 +9508,8 @@ application.add_handler(CommandHandler("xoalsall", xoalsall_cmd))
 application.add_handler(CommandHandler("xoals", xoals_user_cmd))
 application.add_handler(CommandHandler("setname", set_bot_name_cmd))
 application.add_handler(CommandHandler("sethu", sethu_cmd))
+application.add_handler(CommandHandler("hu", hu_cmd))
+application.add_handler(CommandHandler("ep", ep_cmd))
 application.add_handler(CommandHandler("taocode", tao_code))
 application.add_handler(CommandHandler("taocodeall", taocodeall_cmd))
 application.add_handler(CommandHandler("xoacode", xoacode_cmd))
@@ -9010,6 +9636,7 @@ async def main():
     _bg_tasks.append(asyncio.create_task(auto_settle_tich_luy_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(settle_interaction_top_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(promo_golden_loop(application.bot)))
+    _bg_tasks.append(asyncio.create_task(tx3d_loop()))
     
     # Khởi động webhook server
     await start_webhook_server()
