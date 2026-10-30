@@ -10,7 +10,7 @@ import html
 import json
 import hmac
 import time
-from urllib.parse import urlencode, parse_qsl
+from urllib.parse import urlencode, parse_qsl, urlparse
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -3099,11 +3099,11 @@ async def bet_group_handler(update: Update, ctx, choice: str, amount=None):
                 return
 
     success, message = await place_bet_in_group(ctx.bot, user_id, group_id, choice, amount, username)
-    await update.effective_message.reply_text(message, parse_mode=ParseMode.HTML)
+    await reply_bet_notice(update.effective_message, message, success, private=(update.effective_chat.type == "private"))
     # Báo riêng về bot để người chơi nhận xác nhận kể cả khi nhóm bị trôi tin.
     if success:
         try:
-            await ctx.bot.send_message(chat_id=user_id, text=message, parse_mode=ParseMode.HTML)
+            await send_bet_notice(ctx.bot, user_id, message)
         except Exception as e:
             print(f"Không gửi được xác nhận cược riêng uid={user_id}: {e}")
 
@@ -3754,6 +3754,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await update.effective_message.reply_text(
                 'Không thể hiển thị menu nạp tiền lúc này. Vui lòng thử lại sau.'
             )
+    if ctx.args and ctx.args[0].lower() == "tx3d":
+        _t, _k = tx3d_entry_view(uid, private=True, back=False)
+        return await update.effective_message.reply_text(_t, reply_markup=_k, parse_mode=ParseMode.HTML)
     if ctx.args:
         try:
             ref = int(ctx.args[0])
@@ -4423,7 +4426,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML)
             target_group = GROUP_IDS[0]
             success, message = await place_anonymous_bet(ctx.bot, uid, target_group, choice, amount)
-            return await update.effective_message.reply_text(message, parse_mode=ParseMode.HTML)
+            return await reply_bet_notice(update.effective_message, message, success, private=True)
 
 async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -4448,7 +4451,7 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         amount = get_balance(uid) if arg in ["max", "all"] else int(arg)
                         if amount >= 1000:
                             success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], choice, amount)
-                            await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+                            await reply_bet_notice(update.effective_message, msg, success, private=True)
                             return
                     except: pass
 
@@ -4459,7 +4462,7 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             amount = get_balance(uid) if parts[2].lower() in ["max", "all"] else int(parts[2])
                             if amount >= 1000:
                                 success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], f"d1_{face}", amount)
-                                await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+                                await reply_bet_notice(update.effective_message, msg, success, private=True)
                                 return
                         except: pass
                 if cmd == "D2" and len(parts) == 3:
@@ -4469,7 +4472,7 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             amount = get_balance(uid) if parts[2].lower() in ["max", "all"] else int(parts[2])
                             if amount >= 1000:
                                 success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], f"d2_{faces}", amount)
-                                await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+                                await reply_bet_notice(update.effective_message, msg, success, private=True)
                                 return
                         except: pass
                 if cmd == "D3" and len(parts) == 3:
@@ -4479,7 +4482,7 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             amount = get_balance(uid) if parts[2].lower() in ["max", "all"] else int(parts[2])
                             if amount >= 1000:
                                 success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], f"d3_{sum_val}", amount)
-                                await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+                                await reply_bet_notice(update.effective_message, msg, success, private=True)
                                 return
                     except: pass
 
@@ -5553,15 +5556,63 @@ def _tx3d_lock():
     return TX3D.lock
 
 
-def tx3d_url():
-    """Địa chỉ HTTPS của miniapp. Ưu tiên biến MINIAPP_URL, nếu không có thì dùng domain Railway."""
-    u = (os.getenv("MINIAPP_URL") or "").strip()
+def _tx3d_norm_url(raw):
+    """Chuẩn hoá link miniapp: thêm https://, thêm /app nếu thiếu đường dẫn, bỏ link GitHub."""
+    u = (raw or "").strip().strip("\"'").strip()
     if not u:
-        dom = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_STATIC_URL") or "").strip()
-        if dom:
-            dom = dom.replace("https://", "").replace("http://", "").strip("/")
-            u = f"https://{dom}/app"
-    return u or None
+        return None
+    if u.lower().startswith("http://"):
+        u = "https://" + u[7:]
+    elif not u.lower().startswith("https://"):
+        u = "https://" + u.lstrip("/")
+    pr = urlparse(u)
+    host = (pr.netloc or "").lower()
+    if not host or "." not in host or host.endswith("github.com") or host.endswith("githubusercontent.com"):
+        return None
+    path = pr.path if pr.path not in ("", "/") else "/app"
+    return f"https://{host}{path}"
+
+
+def tx3d_url():
+    """Địa chỉ HTTPS của miniapp: ưu tiên biến MINIAPP_URL, nếu sai/thiếu thì dùng domain Railway."""
+    for raw in (os.getenv("MINIAPP_URL"), os.getenv("RAILWAY_PUBLIC_DOMAIN"), os.getenv("RAILWAY_STATIC_URL")):
+        u = _tx3d_norm_url(raw)
+        if u:
+            return u
+    return None
+
+
+def tx3d_play_kb(private=True):
+    """Nút 'CHƠI TÀI XỈU 3D NGAY' gắn dưới thông báo đặt cược (web_app trong chat riêng, link /start trong nhóm)."""
+    url = tx3d_url()
+    if not url:
+        return None
+    if private:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🎮 CHƠI TÀI XỈU 3D NGAY", web_app=WebAppInfo(url=url))]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🎮 CHƠI TÀI XỈU 3D NGAY", url=f"https://t.me/{BOT_USERNAME}?start=tx3d")]])
+
+
+async def reply_bet_notice(msg_obj, text, success=True, private=True):
+    """Trả lời thông báo đặt cược, kèm nút vào miniapp (nếu lỗi nút vẫn gửi tin như cũ)."""
+    kb = tx3d_play_kb(private) if success else None
+    try:
+        return await msg_obj.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e:
+        if kb is None:
+            raise
+        print(f"[tx3d] không gắn được nút vào thông báo cược: {e}")
+        return await msg_obj.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def send_bet_notice(bot, chat_id, text):
+    kb = tx3d_play_kb(True)
+    try:
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e:
+        if kb is None:
+            raise
+        print(f"[tx3d] không gắn được nút vào xác nhận cược riêng: {e}")
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
 
 
 # ---------- xác thực Telegram Web App ----------
@@ -6224,6 +6275,24 @@ GAME_RULES["tx3d"] = (
     f'{ce("💡")} <b>Bấm nút bên dưới để vào game.</b>'
 )
 
+def tx3d_entry_view(uid, private=True, back=True):
+    """Nội dung + nút vào game Tài Xỉu 3D. Trả về (text, keyboard)."""
+    rows_back = [[btn("Quay lại", "🔙", callback_data="game_list")]] if back else []
+    if check_mt(TX3D_MT_KEY) and uid not in ADMIN_IDS:
+        return f'{ce("⚙️")} Game Tài Xỉu 3D đang bảo trì!', InlineKeyboardMarkup(rows_back) if rows_back else None
+    if is_game_banned(uid, TX3D_GAME_ID) and uid not in ADMIN_IDS:
+        return f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', InlineKeyboardMarkup(rows_back) if rows_back else None
+    kb = tx3d_play_kb(private)
+    if kb is None:
+        return (GAME_RULES["tx3d"] + f'\n\n{ce("⚠️")} Miniapp chưa cấu hình địa chỉ (biến MINIAPP_URL hoặc domain Railway).',
+                InlineKeyboardMarkup(rows_back) if rows_back else None)
+    if private:
+        text = GAME_RULES["tx3d"]
+    else:
+        text = GAME_RULES["tx3d"] + f'\n\n{ce("⚠️")} Miniapp chỉ mở được trong chat riêng với bot.'
+    rows = list(kb.inline_keyboard) + rows_back
+    return text, InlineKeyboardMarkup(rows)
+
 GAME_LIST_TEXT = (
     f'{ce("🛍")} <b>DANH SÁCH GAME</b>\n'
     f'{ce("😃")} Chúc bạn chơi vui vẻ! {ce("✍️")}\n\n'
@@ -6315,19 +6384,17 @@ async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
             ])
             return await safe_edit(q, GAME_RULES["room"], kb)
         if g == "tx3d":
-            back = [btn("Quay lại", "🔙", callback_data="game_list")]
-            if check_mt(TX3D_MT_KEY) and uid not in ADMIN_IDS:
-                return await safe_edit(q, f'{ce("⚙️")} Game Tài Xỉu 3D đang bảo trì!', InlineKeyboardMarkup([back]))
-            if is_game_banned(uid, TX3D_GAME_ID) and uid not in ADMIN_IDS:
-                return await safe_edit(q, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', InlineKeyboardMarkup([back]))
-            if q.message and q.message.chat.type != "private":
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 MỞ BOT ĐỂ CHƠI", url=f"https://t.me/{BOT_USERNAME}")], back])
-                return await safe_edit(q, GAME_RULES[g] + f'\n\n{ce("⚠️")} Miniapp chỉ mở được trong chat riêng với bot.', kb)
-            url = tx3d_url()
-            if not url:
-                return await safe_edit(q, GAME_RULES[g] + f'\n\n{ce("⚠️")} Miniapp chưa cấu hình địa chỉ (biến MINIAPP_URL).', InlineKeyboardMarkup([back]))
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 VÀO CHƠI TÀI XỈU 3D", web_app=WebAppInfo(url=url))], back])
-            return await safe_edit(q, GAME_RULES[g], kb)
+            in_private = (not q.message) or q.message.chat.type == "private"
+            text, kb = tx3d_entry_view(uid, private=in_private, back=True)
+            try:
+                return await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                if "not modified" in str(e).lower():
+                    return
+                print(f"[tx3d] lỗi hiển thị nút miniapp (url={tx3d_url()}): {e}")
+                detail = f"\n<code>{html.escape(str(e))[:200]}</code>\nLink đang dùng: <code>{html.escape(str(tx3d_url()))}</code>" if uid in ADMIN_IDS else ""
+                return await safe_edit(q, f'{ce("⚠️")} Miniapp chưa sẵn sàng, vui lòng thử lại sau hoặc liên hệ admin.{detail}',
+                                       InlineKeyboardMarkup([[btn("Quay lại", "🔙", callback_data="game_list")]]))
         if not game.get("rows"):
             text = GAME_RULES[g] + f'\n\n{ce("⬇️")} <b>Chọn số tiền cược:</b>'
             return await safe_edit(q, text, game_amount_kb(g, "x"))
