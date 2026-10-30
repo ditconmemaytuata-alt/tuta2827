@@ -4681,7 +4681,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             masked_id = "*****" + masked_id[5:]
             
         try:
-            await ctx.bot.send_message(chat_id=LOG_GROUP_ID,
+            await send_group_notice(ctx.bot, chat_id=LOG_GROUP_ID,
                 text=f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("👥")} ID: <code>{masked_id}</code>\n{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>',
                 parse_mode=ParseMode.HTML)
         except: pass
@@ -6864,7 +6864,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 target_name = ("@" + target_chat.username) if getattr(target_chat, "username", None) else (getattr(target_chat, "full_name", None) or "Thành viên")
             except Exception:
                 target_name = "Thành viên"
-            try: await ctx.bot.send_message(chat_id=LOG_GROUP_ID, text=f'{ce("📤")} <b>RÚT TIỀN THÀNH CÔNG</b>\n👤 Người rút: {html.escape(target_name)}\n🆔 ID: <code>{mask_user_id(u_id)}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✅")} Trạng thái: Thành công\n⏰ {get_vietnam_datetime_db()}', parse_mode=ParseMode.HTML)
+            try: await send_group_notice(ctx.bot, chat_id=LOG_GROUP_ID, text=f'{ce("📤")} <b>RÚT TIỀN THÀNH CÔNG</b>\n👤 Người rút: {html.escape(target_name)}\n🆔 ID: <code>{mask_user_id(u_id)}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✅")} Trạng thái: Thành công\n⏰ {get_vietnam_datetime_db()}', parse_mode=ParseMode.HTML)
             except Exception as e: pass
             try: await ctx.bot.send_message(u_id, f'{ce("✅")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> đã được duyệt!\n{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(u_id))}đ</code>', parse_mode=ParseMode.HTML)
             except: pass
@@ -6967,7 +6967,8 @@ async def sepay_webhook(request):
         if len(masked_id) > 5:
             masked_id = "*****" + masked_id[5:]
         try:
-            await _bot_instance.send_message(
+            await send_group_notice(
+                _bot_instance,
                 LOG_GROUP_ID,
                 f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN TỰ ĐỘNG</b>\n'
                 f'{ce("👥")} ID: <code>{masked_id}</code>\n'
@@ -7528,6 +7529,17 @@ _ROOM_MUTE_CACHE = {}          # chat_id -> (muted: bool, checked_at: float)
 _ROOM_MUTE_CACHE_TTL = 20      # giây
 # Tin xác nhận bật/tắt room (bắt đầu bằng 🔇/🔊) vẫn được gửi vào nhóm.
 _ROOM_MUTE_ALLOW_PREFIX = ("🔇", "🔊")
+# Thông báo NẠP / RÚT thành công vẫn gửi lên nhóm kể cả khi room đã tắt (gửi qua send_group_notice).
+import contextvars as _contextvars
+_ROOM_MUTE_BYPASS = _contextvars.ContextVar("room_mute_bypass", default=False)
+
+async def send_group_notice(bot, *args, **kwargs):
+    """bot.send_message nhưng KHÔNG bị chặn bởi chế độ tắt room (dùng cho thông báo nạp/rút thành công)."""
+    tok = _ROOM_MUTE_BYPASS.set(True)
+    try:
+        return await bot.send_message(*args, **kwargs)
+    finally:
+        _ROOM_MUTE_BYPASS.reset(tok)
 
 def _is_room_muted(chat_id):
     try:
@@ -7621,7 +7633,7 @@ def _guard_room_mute(method_name, text_kw=None, allow_prefix=False):
             numeric = int(chat_id)
         except (TypeError, ValueError):
             numeric = None
-        if numeric is not None and numeric < 0 and _is_room_muted(numeric):
+        if numeric is not None and numeric < 0 and _is_room_muted(numeric) and not _ROOM_MUTE_BYPASS.get():
             if allow_prefix:
                 text = kwargs.get(text_kw, args[1] if len(args) > 1 else "")
                 if str(text or "").startswith(_ROOM_MUTE_ALLOW_PREFIX):
