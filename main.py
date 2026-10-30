@@ -2689,7 +2689,8 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 try:
                     new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
                         [btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap')],
-                        [btn('BOT CHƠI GAME', '🎮', url='https://t.me/Jav88gamebot')]
+                        [btn('BOT CHƠI GAME', '🎮', url='https://t.me/Jav88gamebot')],
+                        [btn('CHƠI TÀI XỈU 3D NGAY', '🎮', url=f'https://t.me/{BOT_USERNAME}?start=tx3d')]
                     ]))
                     stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
@@ -5489,7 +5490,7 @@ async def show_user_manage(q, target_id: int, current_page: int):
 #  • Số dư dùng CHUNG với bot chính (bảng users) → cược/thắng/hoàn đều ghi vào lịch sử, thống kê, vòng cược
 #  • Phiên chạy chung cho mọi người chơi: đặt cược -> úp bát -> mở bát -> phiên mới
 #  • /hu [số tiền]  : đặt tiền trong hũ của game 3D (admin)
-#  • /ep ...        : chế độ TEST kết quả (admin, chat riêng) — chỉ có tác dụng khi phiên KHÔNG có người chơi thật cược
+#  • /ep ...        : ÉP kết quả (admin, chat riêng) — áp dụng cả khi có người chơi thật cược
 #  • Bảo trì: /baotri (nút "Tài Xỉu 3D") hoặc /baotrigame tx3d on|off
 # ============================================================
 TX3D_NAME = "TÀI XỈU 3D"
@@ -5829,17 +5830,12 @@ def _tx3d_refund_sync(rid, bets):
 
 
 def _tx3d_take_dice():
-    """Chọn xúc xắc cho phiên. /ep chỉ được dùng khi phiên không có người chơi thật đặt cược (chế độ test)."""
+    """Chọn xúc xắc cho phiên. Admin dùng /ep để ÉP kết quả, áp dụng cả khi đã có người chơi thật đặt cược.
+    Phiên bị ép vẫn trả thưởng và ghi vào cầu như phiên bình thường (trả về test=False)."""
     forced, TX3D.force = TX3D.force, None
     if forced:
-        real = [u for u in TX3D.bets if u not in ADMIN_IDS]
-        if real:
-            _tx3d_notify_admin(forced.get("by"),
-                               f"⚠️ /ep KHÔNG được áp dụng cho phiên #{TX3D.round_id}: đã có người chơi thật đặt cược. "
-                               f"Lệnh /ep chỉ dùng để test khi phiên chỉ có admin hoặc không có ai cược.")
-        else:
-            dice = forced["dice"] or _tx3d_dice_for(forced["kind"])
-            return list(dice), True
+        dice = forced["dice"] or _tx3d_dice_for(forced["kind"])
+        return list(dice), False
     return [_TX3D_RNG.randint(1, 6) for _ in range(3)], False
 
 
@@ -6064,7 +6060,7 @@ async def hu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def ep_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/ep 1 3 4 | /ep t | /ep x | /ep off  — chế độ TEST, chỉ áp dụng cho phiên không có người chơi thật cược."""
+    """/ep 1 3 4 | /ep t | /ep x | /ep off  — admin ép kết quả phiên kế tiếp, kể cả khi có người chơi thật cược."""
     uid = update.effective_user.id
     msg = update.effective_message
     if uid not in ADMIN_IDS or is_admin_banned(uid):
@@ -6077,22 +6073,21 @@ async def ep_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     args = [a.strip().lower() for a in (ctx.args or []) if a.strip()]
     nxt = TX3D.round_id if TX3D.phase == "bet" else TX3D.round_id + 1
-    note = ("\n\n<i>Chỉ có tác dụng khi phiên đó chỉ có admin cược hoặc không ai cược; "
-            "phiên test không được ghi vào cầu.</i>")
+    note = "\n\n<i>Áp dụng cho phiên kế tiếp kể cả khi đã có người chơi thật cược (vẫn trả thưởng và ghi vào cầu bình thường).</i>"
     if not args:
         cur = TX3D.force
         cur_txt = "không có"
         if cur:
             cur_txt = " ".join(map(str, cur["dice"])) if cur["dice"] else ("TÀI" if cur["kind"] == "tai" else "XỈU")
         return await msg.reply_text(
-            f'{ce("🛠")} <b>TEST KẾT QUẢ {TX3D_NAME}</b>\n'
+            f'{ce("🛠")} <b>ÉP KẾT QUẢ {TX3D_NAME}</b>\n'
             f'• <code>/ep 1 3 4</code> — ra 1-3-4\n'
             f'• <code>/ep t</code> — ra Tài · <code>/ep x</code> — ra Xỉu\n'
             f'• <code>/ep off</code> — huỷ\n\n'
             f'Đang chờ: <b>{cur_txt}</b>' + note, parse_mode=ParseMode.HTML)
     if args[0] in ("off", "huy", "hủy", "0"):
         TX3D.force = None
-        return await msg.reply_text(f'{ce("✅")} Đã huỷ chế độ test kết quả.', parse_mode=ParseMode.HTML)
+        return await msg.reply_text(f'{ce("✅")} Đã huỷ ép kết quả.', parse_mode=ParseMode.HTML)
     forced = None
     if args[0] in ("t", "tai", "tài"):
         forced = {"dice": None, "kind": "tai", "by": uid}
@@ -6111,7 +6106,7 @@ async def ep_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'{ce("❌")} Cú pháp: <code>/ep 1 3 4</code> · <code>/ep t</code> · <code>/ep x</code> · <code>/ep off</code>',
             parse_mode=ParseMode.HTML)
     TX3D.force = forced
-    await msg.reply_text(f'{ce("✅")} Đã đặt kết quả test <b>{label}</b> cho phiên <b>#{nxt}</b>.' + note,
+    await msg.reply_text(f'{ce("✅")} Đã ép kết quả <b>{label}</b> cho phiên <b>#{nxt}</b>.' + note,
                          parse_mode=ParseMode.HTML)
 
 
@@ -6991,7 +6986,7 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<code>/baotrigame nap rut on|off</code> — nạp/rút\n"
         "<code>/baotriht</code>, <code>/baotriall on|off</code>, <code>/baotritc on|off</code> — bảo trì hệ thống hiện có\n"
         "<code>/trangthai</code> — tổng quan bot\n"
-        "<code>/hu số_tiền</code> — đặt hũ Tài Xỉu 3D; <code>/ep 1 3 4</code> | <code>/ep t</code> | <code>/ep x</code> | <code>/ep off</code> — test kết quả 3D (chat riêng, chỉ phiên không có người chơi thật cược)\n\n"
+        "<code>/hu số_tiền</code> — đặt hũ Tài Xỉu 3D; <code>/ep 1 3 4</code> | <code>/ep t</code> | <code>/ep x</code> | <code>/ep off</code> — ép kết quả 3D (chat riêng, áp dụng cả khi có người chơi thật cược)\n\n"
         "<b>👥 Người dùng</b>\n<code>/user ID</code> — hồ sơ; <code>/timuser từ_khóa</code> — tìm user\n"
         "<code>/ban ID</code> / <code>/unban ID</code> — khóa/mở tài khoản\n"
         "<code>/camgame ID game</code> / <code>/mogame ID game|all</code> — khóa/mở game\n"
@@ -9362,7 +9357,7 @@ _ADM_CATS = [
         ("use", "sethoancuoc", "Đặt % hoàn cược", "x", "/sethoancuoc ngay|tuan [%]", "/sethoancuoc ngay 2"),
         ("use", "sethu", "Đặt hũ Jackpot", "x", "/sethu [số tiền]", "/sethu 50m"),
         ("use", "hu", "Đặt hũ Tài Xỉu 3D (miniapp)", "x", "/hu [số tiền]", "/hu 50m"),
-        ("use", "ep", "Test kết quả Tài Xỉu 3D (chỉ phiên không có người chơi thật cược)", "x", "/ep [1 3 4 | t | x | off]", "/ep 1 3 4"),
+        ("use", "ep", "Ép kết quả Tài Xỉu 3D (áp dụng cả khi có người chơi thật cược)", "x", "/ep [1 3 4 | t | x | off]", "/ep 1 3 4"),
     ]),
     ("cd", "🎁", "GIFTCODE", "Tạo, xem và xoá các loại code.", [
         ("run", "taogift", "Tạo giftcode nhiều loại (từng bước)", "taogift", None, None),
