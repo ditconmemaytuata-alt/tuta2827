@@ -5502,6 +5502,8 @@ TX3D_COVER_SECONDS = 15          # thời gian úp bát / mở bát trước khi
 TX3D_MIN_BET = 1000
 TX3D_MAX_BET = 10 ** 12
 TX3D_PAYOUT = 1.97               # thắng Tài/Xỉu nhận x1.97 (giống Tài Xỉu Room)
+TX3D_JP_MULT_MIN = 10            # nổ hũ: mỗi người nhận x10 đến x12 tiền cược (không ăn cả hũ)
+TX3D_JP_MULT_MAX = 12
 TX3D_POT_DEFAULT = 100000        # tiền hũ khi mới tạo / sau khi nổ
 TX3D_POT_RATE = 0.03             # % tiền thua cộng vào hũ (khi nhà thắng phiên đó)
 TX3D_BAO_REFUND = False          # True = Bão (3 mặt giống nhau, trừ 111 và 666) hoàn tiền cược; False = nhà ăn
@@ -5779,11 +5781,16 @@ def _tx3d_compute(dice, bets, rid, pot):
         tb = sum(b["amt"] for _, b in winners)
         if winners and pot_total > 0 and tb > 0:
             for uid, b in winners:
-                share[uid] = int(pot_total * b["amt"] / tb)
-            jp = {"id": rid, "total": pot_total, "n": len(winners),
+                share[uid] = int(b["amt"] * _TX3D_RNG.randint(TX3D_JP_MULT_MIN, TX3D_JP_MULT_MAX))
+            paid = sum(share.values())
+            if paid > pot_total:                      # hũ không đủ: chia lại theo tỉ lệ, không vượt quá hũ
+                for uid in share:
+                    share[uid] = int(share[uid] * pot_total / paid)
+                paid = sum(share.values())
+            jp = {"id": rid, "total": paid, "n": len(winners),
                   "winners": sorted(((uid, _tx3d_mask(b["name"]), b["amt"], share[uid]) for uid, b in winners),
                                     key=lambda w: -w[3])[:5]}
-            pot_after = TX3D_POT_DEFAULT
+            pot_after = max(pot_total - paid, TX3D_POT_DEFAULT)   # chỉ trừ phần đã trả, hũ không bị nổ sạch
     nets = {uid: pay.get(uid, 0) + refund.get(uid, 0) + share.get(uid, 0) - b["amt"] for uid, b in bets.items()}
     return {"win": win, "dice": list(dice), "pay": pay, "refund": refund, "share": share, "jp": jp,
             "nets": nets, "pot_after": pot_after}
@@ -5836,7 +5843,11 @@ def _tx3d_take_dice():
     if forced:
         dice = forced["dice"] or _tx3d_dice_for(forced["kind"])
         return list(dice), False
-    return [_TX3D_RNG.randint(1, 6) for _ in range(3)], False
+    # Ngẫu nhiên tự nhiên: tỉ lệ nổ hũ = 0% (không bao giờ ra 1-1-1 / 6-6-6). Chỉ admin ép /ep 1 1 1 hoặc /ep 6 6 6 mới nổ.
+    while True:
+        d = [_TX3D_RNG.randint(1, 6) for _ in range(3)]
+        if not (d[0] == d[1] == d[2] and d[0] in (1, 6)):
+            return d, False
 
 
 def _tx3d_notify_admin(uid, text):
@@ -6265,7 +6276,7 @@ GAME_RULES["tx3d"] = (
     f'• Tài: tổng 11-18 · Xỉu: tổng 3-10 · Thắng nhận x{TX3D_PAYOUT}.\n'
     f'• Mỗi phiên chỉ được cược một cửa (có thể cược thêm nhiều lần).\n'
     f'• Bão (3 mặt giống nhau): {"hoàn tiền cược" if TX3D_BAO_REFUND else "nhà cái ăn cả hai cửa"}.\n'
-    f'• Nổ hũ: 3 con 6 → cửa Tài ăn hũ · 3 con 1 → cửa Xỉu ăn hũ (chia theo tiền cược).\n'
+    f'• Nổ hũ: 3 con 6 → cửa Tài ăn hũ · 3 con 1 → cửa Xỉu ăn hũ (người thắng hũ nhận x10–x12 tiền cược).\n'
     f'• Số dư dùng chung với bot chính, cược/thắng tự cập nhật ngay.\n\n'
     f'{ce("💡")} <b>Bấm nút bên dưới để vào game.</b>'
 )
@@ -9405,7 +9416,19 @@ def _adm_runner(key):
         "adminhelp": admin_help_cmd,
     }.get(key)
 
-def _adm_home():
+def _adm_ep_state():
+    """Mô tả lệnh ép Tài Xỉu 3D đang chờ + phiên sẽ áp dụng."""
+    nxt = TX3D.round_id if TX3D.phase == "bet" else TX3D.round_id + 1
+    f = TX3D.force
+    if not f:
+        return nxt, "không có"
+    return nxt, (" ".join(map(str, f["dice"])) if f["dice"] else ("TÀI" if f["kind"] == "tai" else "XỈU"))
+
+def _adm_ep_rows():
+    return [[btn("Ép TÀI", "🔵", callback_data="adm2:ep:t"), btn("Ép XỈU", "🔴", callback_data="adm2:ep:x")],
+            [btn("Huỷ ép", "🚫", callback_data="adm2:ep:off")]]
+
+def _adm_home(private=False):
     def sc(sql):
         return int(_sum(sql) or 0)
     pend_w = sc("SELECT COUNT(*) FROM withdraw_history WHERE status='pending'")
@@ -9427,6 +9450,10 @@ def _adm_home():
         f'• {ce("🛡")} Bảo trì hệ thống: <b>{"BẬT" if is_system_maintenance() else "TẮT"}</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━'
     )
+    if private:
+        _n, _cur = _adm_ep_state()
+        text += (f'\n{ce("🎲")} <b>ÉP KẾT QUẢ TÀI XỈU 3D</b> — phiên <b>#{_n}</b>: <b>{_cur}</b>\n'
+                 f'<i>Bấm Ép TÀI / Ép XỈU: kết quả phiên đó chắc chắn về bên đã chọn (kể cả khi có người chơi thật cược).</i>')
     rows, cur = [], []
     for key, em, title, _d, _items in _ADM_CATS:
         cur.append(btn(title.title(), em, callback_data=f"adm2:cat:{key}"))
@@ -9435,6 +9462,8 @@ def _adm_home():
             cur = []
     if cur:
         rows.append(cur)
+    if private:
+        rows += _adm_ep_rows()
     rows.append([btn("Hướng dẫn dạng chữ", "📜", callback_data="adm2:help"), btn("Làm mới", "🔄", callback_data="adm2:home")])
     rows.append([btn("Đóng", "❌", callback_data="adm2:close")])
     return text, InlineKeyboardMarkup(rows)
@@ -9460,7 +9489,7 @@ def _adm_cat(key):
 
 @admin_only
 async def admin_panel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text, kb = _adm_home()
+    text, kb = _adm_home(update.effective_chat.type == "private")
     await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 async def admin_panel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -9470,9 +9499,24 @@ async def admin_panel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts = (q.data or "").split(":")
     act = parts[1] if len(parts) > 1 else ""
     try:
+        if act == "ep" and len(parts) > 2:
+            if q.message.chat.type != "private":      # không để lộ thao tác ép trong nhóm
+                return await q.answer("Chỉ dùng được trong chat riêng với bot.", show_alert=True)
+            mode = parts[2]
+            if mode == "off":
+                TX3D.force = None
+                toast = "Đã huỷ ép kết quả."
+            elif mode in ("t", "x"):
+                TX3D.force = {"dice": None, "kind": "tai" if mode == "t" else "xiu", "by": q.from_user.id}
+                toast = f"Đã ép {'TÀI' if mode == 't' else 'XỈU'} cho phiên #{_adm_ep_state()[0]}."
+            else:
+                return await q.answer()
+            await q.answer(toast, show_alert=True)
+            text, kb = _adm_home(True)
+            return await safe_edit(q, text, kb)
         if act == "home":
             await q.answer()
-            text, kb = _adm_home()
+            text, kb = _adm_home(q.message.chat.type == "private")
             return await safe_edit(q, text, kb)
         if act == "cat" and len(parts) > 2 and parts[2] in _ADM_CAT_MAP:
             await q.answer()
