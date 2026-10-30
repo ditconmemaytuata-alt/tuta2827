@@ -275,6 +275,26 @@ button:focus-visible{outline:3px solid #fff;outline-offset:2px}
 #jp .jr .a{color:#ffe08a;font-weight:900;font-size:14px;white-space:nowrap;text-shadow:0 0 8px #ffb30088}
 #jp .jx{position:absolute;bottom:6px;left:0;right:0;text-align:center;font-size:10px;color:#ffffff88;letter-spacing:2px}
 @media(prefers-reduced-motion:reduce){#jp.on,#jp .jrays,#jp .gold,#jp .jt1,#jp .jtot,#jp .jme,#jp .jcr,#jp .jr{animation:none;opacity:1}#jp .jcoins{display:none}}
+
+/* ===== Bát mới (vòng ngoài viền giữ nguyên) ===== */
+.bowl{background:
+  radial-gradient(ellipse 38% 24% at 31% 21%,#fffdf0ee,#fff6cc00),
+  radial-gradient(ellipse 62% 38% at 68% 90%,#ffd98a66,#ffd98a00),
+  repeating-radial-gradient(circle at 50% 50%,#0000 0 8px,#3a1c0620 8px 9px),
+  radial-gradient(circle at 38% 30%,#fff0bd 0,#f2c869 20%,#cf9a3e 46%,#9a6420 72%,#4d2d0c 100%);
+ border:0;place-items:end center;padding-bottom:20px;font-size:11px;letter-spacing:1.5px;color:#4a2a0a;text-shadow:0 1px 0 #fff9,0 -1px 0 #0003;
+ box-shadow:0 8px 14px #000a,inset 0 -10px 16px #4d2d0ccc,inset 0 7px 12px #fff9,inset 0 0 0 3px #f7e0a0cc,inset 0 0 0 5px #7a4c1488}
+.bowl::before{content:"";position:absolute;inset:9px;border-radius:50%;border:2px solid #fff3c8aa;box-shadow:0 0 0 1px #6b411199,inset 0 0 0 1px #6b411199;pointer-events:none}
+.bowl::after{inset:22px;border:1px solid #fff5;background:radial-gradient(circle at 50% 18%,#ffffff38,#fff0 58%)}
+#pop.on{animation:popIn .45s cubic-bezier(.2,1.6,.4,1)}
+@keyframes popIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
+.fly{position:absolute;left:0;top:0;z-index:36;pointer-events:none;font-weight:900;white-space:nowrap;will-change:transform,opacity}
+.fly.w{color:#ffe08a;text-shadow:0 0 12px #ffb300,0 0 26px #ff8c00,0 3px 0 #7a4a00}
+.fly.l{color:#ff7b8e;text-shadow:0 0 10px #c8324e,0 3px 0 #4a0510}
+#bal.hit{animation:balHit .8s cubic-bezier(.3,1.6,.5,1)}
+#bal.hit.w{--g:#ffd05a}#bal.hit.l{--g:#ff5a6e}
+@keyframes balHit{0%{transform:scale(1)}30%{transform:scale(1.35) translateY(-3px);box-shadow:0 0 22px 4px var(--g),inset 0 0 8px #0008;color:#fff}100%{transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){#pop.on,#bal.hit{animation:none}}
 </style>
 </head>
 <body>
@@ -377,12 +397,12 @@ function fx(R,live){
   if(!stake)return;
   const p=$('#pop');
   if(net>0){
-    p.className='on w';{const fl=$('#flash');fl.classList.remove('on');void fl.offsetWidth;fl.classList.add('on')}window.SFX&&SFX.win();p.innerHTML=`<b>+${f(net)}</b><small>Nhận về ${f(net+stake)}</small>`;
+    p.className='on w';{const fl=$('#flash');fl.classList.remove('on');void fl.offsetWidth;fl.classList.add('on')}window.SFX&&SFX.win();p.innerHTML=`<b style="opacity:0">+${f(net)}</b><small>Nhận về ${f(net+stake)}</small>`;flyBal('+'+f(net),true,468,100,64,3200,.4);
     const c=$('#coins');c.innerHTML='';
     for(let i=0;i<40;i++){const e=document.createElement('span');e.textContent=['🪙','🪙','✨','💰'][i%4];e.style.left=(190+Math.random()*540)+'px';e.style.animationDelay=(Math.random()*.7)+'s';c.appendChild(e)}
     setTimeout(()=>c.innerHTML='',2400);
-  }else{window.SFX&&SFX.lose();p.className='on l';p.innerHTML=`<b>${f(net)}</b><small>Chúc may mắn phiên sau</small>`}
-  clearTimeout(popT);popT=setTimeout(()=>{p.className='';p.innerHTML=''},4000);
+  }else{window.SFX&&SFX.lose();p.className='on l';p.innerHTML=`<b style="opacity:0">${f(net)}</b><small>Chúc may mắn phiên sau</small>`;flyBal(f(net),false,468,100,64,3200,.4)}
+  clearTimeout(popT);popT=setTimeout(()=>{p.className='';p.innerHTML=''},1500);
 }
 
 function render(){
@@ -430,6 +450,22 @@ function addChip(){
   addSide(s);
 }
 function floatTxt(t,txt){const e=document.createElement('div');e.className='flt';e.textContent=txt;t.appendChild(e);setTimeout(()=>e.remove(),950)}
+/* ===== Tiền cộng/trừ bay từ từ vào ô Số dư rồi nảy lên ===== */
+function sp(el){let x=0,y=0,e=el;while(e&&e!==st){x+=e.offsetLeft;y+=e.offsetTop;e=e.offsetParent}return[x+el.offsetWidth/2,y+el.offsetHeight/2]}
+function flyBal(txt,w,x0,y0,size,dur,hold){
+ const b=$('#bal'),[x1,y1]=sp(b),e=document.createElement('div');
+ const hit=()=>{b.classList.remove('hit','w','l');void b.offsetWidth;b.classList.add('hit',w?'w':'l');setTimeout(()=>b.classList.remove('hit','w','l'),900)};
+ if(matchMedia('(prefers-reduced-motion:reduce)').matches||!e.animate){setTimeout(hit,dur*hold);return}
+ e.className='fly '+(w?'w':'l');e.textContent=txt;e.style.fontSize=size+'px';st.appendChild(e);
+ const T=(x,y,k)=>`translate(${x}px,${y}px) translate(-50%,-50%) scale(${k})`,m=hold+(1-hold)*.55,E='cubic-bezier(.45,0,.25,1)';
+ e.animate([
+  {transform:T(x0,y0,.5),opacity:0,offset:0},
+  {transform:T(x0,y0,1.12),opacity:1,offset:.1},
+  {transform:T(x0,y0,1),opacity:1,offset:hold,easing:E},
+  {transform:T(x0+(x1-x0)*.55,y0+(y1-y0)*.4-24,.7),opacity:1,offset:m,easing:E},
+  {transform:T(x1,y1,16/size),opacity:.9,offset:1}
+ ],{duration:dur,fill:'forwards'}).onfinish=()=>{e.remove();hit()};
+}
 /* hiệu ứng sóng khi bấm bất kỳ nút nào */
 document.addEventListener('pointerdown',e=>{
   const b=e.target.closest&&e.target.closest('.chip,.bt,.tile');if(!b)return;
@@ -460,7 +496,7 @@ $('#ok').onclick=async()=>{
   if(!S||S.phase!=='bet')return err('Đã hết giờ đặt cược');
   if(!pend.s||!pend.a)return err('Chọn chip rồi chạm Tài hoặc Xỉu');
   const r=await api('/api/bet',{side:pend.s,amt:pend.a});
-  if(r.err)err(r.err);else{pend={s:null,a:0};tg.HapticFeedback?.impactOccurred('light')}
+  if(r.err)err(r.err);else{const t=$(pend.s==='tai'?'#bt':'#bx'),a=pend.a,[x,y]=sp(t);flyBal('-'+f(a),false,x,y,28,2000,.2);pend={s:null,a:0};tg.HapticFeedback?.impactOccurred('light')}
   tick();
 };
 
@@ -604,7 +640,7 @@ function sky(n){ /* Đã tắt hiệu ứng tia sét và tiếng sấm theo yêu
 function quake(){const s=$('#st');s.classList.remove('quake');void s.offsetWidth;s.classList.add('quake')}
 window.SHOW={wave(big){shock.push({r:30,max:big?150:100,a:1,big})},bolts(n){sky(n)},
  burst(n,k){const pal=k==='lose'?['120,170,255','200,220,255','160,140,255']:['255,215,90','255,150,190','255,255,230','255,190,60'];
-  for(let i=0;i<n;i++){const a=rnd()*TAU,v=110+rnd()*260;FP.push({x:CX,y:CY,vx:Math.cos(a)*v,vy:Math.sin(a)*v,l:.7+rnd()*.7,m:1.4,s:2+rnd()*3,sp:1,c:pal[i%pal.length]})}},
+  for(let i=0;i<n;i++){const a=rnd()*TAU,v=110+rnd()*260;FP.push({x:CX+Math.cos(a)*54,y:CY+Math.sin(a)*54,vx:Math.cos(a)*v,vy:Math.sin(a)*v,l:.7+rnd()*.7,m:1.4,s:2+rnd()*3,sp:1,c:pal[i%pal.length]})}},
  rays(k){rays={t:0,max:4,c:k==='lose'?'130,170,255':'255,214,106'}}};
 /* --- vòng xoay quanh bát --- */
 function drawRing(tm,inten,hot){
@@ -634,8 +670,8 @@ function frame(now){requestAnimationFrame(frame);
  /* tia sáng toả ra khi có kết quả (4 giây) */
  if(rays){rays.t+=dt;if(rays.t>=rays.max)rays=null;else{const u=rays.t/rays.max,al=(u<.1?u/.1:1-(u-.1)/.9)*.3;
   g.save();g.translate(CX,CY);g.globalCompositeOperation='lighter';g.rotate(rays.t*.45);
-  for(let i=0;i<14;i++){g.rotate(TAU/14);const gr=g.createLinearGradient(0,0,0,-130);gr.addColorStop(0,`rgba(${rays.c},${al})`);gr.addColorStop(1,`rgba(${rays.c},0)`);
-   g.fillStyle=gr;g.beginPath();g.moveTo(-3,0);g.lineTo(3,0);g.lineTo(13,-130);g.lineTo(-13,-130);g.closePath();g.fill()}
+  for(let i=0;i<14;i++){g.rotate(TAU/14);const gr=g.createLinearGradient(0,-56,0,-130);gr.addColorStop(0,`rgba(${rays.c},${al})`);gr.addColorStop(1,`rgba(${rays.c},0)`);
+   g.fillStyle=gr;g.beginPath();g.moveTo(-3,-56);g.lineTo(3,-56);g.lineTo(13,-130);g.lineTo(-13,-130);g.closePath();g.fill()}
   g.restore()}}
  /* tia lửa */
  g.save();g.globalCompositeOperation='lighter';
