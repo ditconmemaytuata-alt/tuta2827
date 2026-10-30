@@ -6407,6 +6407,15 @@ def game_amount_kb(g, c):
     rows.append([btn("Quay lại", "🔙", callback_data=back_cb)])
     return InlineKeyboardMarkup(rows)
 
+async def _edit_text_or_caption(q, text, reply_markup=None):
+    """Sửa tin nhắn dù nó là tin chữ hay ảnh/file có chú thích (tin yêu cầu rút có kèm ảnh QR)."""
+    try:
+        return await q.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        if "no text in the message" in str(e).lower():
+            return await q.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        raise
+
 async def safe_edit(q, text, kb=None):
     try:
         await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -6844,7 +6853,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pending = query("SELECT id FROM withdraw_history WHERE user_id=%s AND amount=%s AND status='pending' ORDER BY id DESC LIMIT 1", (u_id, amt))
         if not pending:
             await q.answer("⚠️ Yêu cầu này đã được xử lý rồi!", show_alert=True)
-            try: await q.edit_message_text(f'{ce("⚠️")} Yêu cầu rút này đã được xử lý trước đó.', parse_mode=ParseMode.HTML)
+            try: await _edit_text_or_caption(q, f'{ce("⚠️")} Yêu cầu rút này đã được xử lý trước đó.')
             except: pass
             return
         wid = pending[0][0]
@@ -6859,7 +6868,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception as e: pass
             try: await ctx.bot.send_message(u_id, f'{ce("✅")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> đã được duyệt!\n{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(u_id))}đ</code>', parse_mode=ParseMode.HTML)
             except: pass
-            await q.edit_message_text(f'{ce("✅")} ĐÃ DUYỆT ID <code>{u_id}</code> | <code>{fmt_money(amt)}đ</code>', parse_mode=ParseMode.HTML)
+            await _edit_text_or_caption(q, f'{ce("✅")} ĐÃ DUYỆT ID <code>{u_id}</code> | <code>{fmt_money(amt)}đ</code>')
         else:
             query("UPDATE withdraw_history SET status='rejected', admin_id=%s, admin_note='Từ chối' WHERE id=%s", (uid, wid))
             add_money(u_id, amt, "Hoàn tiền rút")
@@ -6872,7 +6881,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Người rút vẫn nhận thông báo riêng bên dưới và tiền được hoàn theo luồng hiện có.
             try: await ctx.bot.send_message(u_id, f'{ce("❌")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> bị từ chối.\n{ce("🔄")} Tiền đã được hoàn về số dư của bạn.\n{bal_block(u_id)}', parse_mode=ParseMode.HTML)
             except: pass
-            await q.edit_message_text(f'{ce("❌")} TỪ CHỐI ID <code>{u_id}</code> | <code>{fmt_money(amt)}đ</code>', parse_mode=ParseMode.HTML)
+            await _edit_text_or_caption(q, f'{ce("❌")} TỪ CHỐI ID <code>{u_id}</code> | <code>{fmt_money(amt)}đ</code>')
         return
 
     await q.answer()
