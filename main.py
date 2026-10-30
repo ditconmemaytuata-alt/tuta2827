@@ -1,3 +1,4 @@
+# ADMIN_PANEL_V3
 import os
 import re
 import random
@@ -665,6 +666,8 @@ query("CREATE TABLE IF NOT EXISTS history (user_id BIGINT, amount BIGINT, note T
 query("ALTER TABLE history ADD COLUMN IF NOT EXISTS id SERIAL")
 query("CREATE TABLE IF NOT EXISTS banned (user_id BIGINT PRIMARY KEY)")
 query("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+query("CREATE TABLE IF NOT EXISTS welcome_bonus_log (user_id BIGINT PRIMARY KEY, amount BIGINT DEFAULT 0, created_at TEXT)")
+query("CREATE TABLE IF NOT EXISTS stats_bet_base (user_id BIGINT, day DATE, bet BIGINT DEFAULT 0, win BIGINT DEFAULT 0, PRIMARY KEY (user_id, day))")
 
 # Thêm cột ref_code nếu chưa có
 query("ALTER TABLE deposit_history ADD COLUMN IF NOT EXISTS ref_code TEXT")
@@ -862,7 +865,7 @@ def add_promo_bonus(uid, bonus_main, bonus_order=0, note="Khuyến mãi nạp"):
     bonus_main: phần khuyến mãi phải cược x2.8; bonus_order: phần thưởng 3%/lệnh chỉ cược x1."""
     total = bonus_main + bonus_order
     required = int(round(bonus_main * PROMO_WAGER_MULT)) + int(round(bonus_order * PROMO_ORDER_WAGER_MULT))
-    add_wager_requirement(uid, total, required)
+    add_wager_requirement(uid, total, required, prev_balance=get_balance(uid))
     add_money(uid, total, f"{note} +{total:,}đ (yêu cầu cược {fmt_money(required)}đ)")
     return required
 
@@ -911,6 +914,61 @@ def get_remaining_bet_required(user_id):
         return 0
     required_bet, current_bet = bonus_data[0]
     return max(0, required_bet - current_bet)
+
+# ============================================================
+# ADMIN_PANEL_V3 — TÂN THỦ +3.000đ & TỰ ĐỘNG XOÁ CƯỢC CŨ KHI NẠP/NHẬP CODE MỚI
+# ============================================================
+WELCOME_BONUS = 3000          # tiền tặng cho người dùng MỚI bấm /start lần đầu
+WELCOME_WAGER_MULT = 3        # yêu cầu cược x3 (đặt 0 nếu muốn tặng KHÔNG cần cược)
+WAGER_CLEAR_BALANCE = 5000    # số dư < mức này mà nạp đơn mới / nhập code mới => tự xoá vòng cược cũ
+
+def grant_welcome_bonus(uid):
+    """Tặng quà tân thủ đúng 1 lần cho mỗi tài khoản. Trả về số tiền đã tặng (0 nếu không tặng)."""
+    try:
+        ok = query(
+            "INSERT INTO welcome_bonus_log (user_id, amount, created_at) VALUES (%s,%s,%s) "
+            "ON CONFLICT DO NOTHING RETURNING user_id",
+            (uid, WELCOME_BONUS, get_vietnam_datetime_db()))
+    except Exception as e:
+        print(f"grant_welcome_bonus lỗi: {e}")
+        return 0
+    if not ok:
+        return 0
+    add_money(uid, WELCOME_BONUS, f"Quà tân thủ +{WELCOME_BONUS:,}đ")
+    if WELCOME_WAGER_MULT > 0:
+        add_wager_requirement(uid, WELCOME_BONUS, int(WELCOME_BONUS * WELCOME_WAGER_MULT))
+    return WELCOME_BONUS
+
+def auto_clear_old_wager(uid, prev_balance):
+    """Nếu số dư TRƯỚC khi nạp/nhận code < 5.000đ mà còn vòng cược cũ -> xoá toàn bộ vòng cược cũ.
+    Trả về số tiền cược còn thiếu đã bị xoá (0 nếu không xoá gì)."""
+    try:
+        if int(prev_balance or 0) >= WAGER_CLEAR_BALANCE:
+            return 0
+        remaining = get_remaining_bet_required(uid)
+        if remaining <= 0:
+            return 0
+        query("DELETE FROM user_bonus WHERE user_id=%s", (uid,))
+        return remaining
+    except Exception as e:
+        print(f"auto_clear_old_wager lỗi: {e}")
+        return 0
+
+async def notify_wager_cleared(bot, uid, remaining):
+    if not bot or not remaining or remaining <= 0:
+        return
+    try:
+        await bot.send_message(
+            uid,
+            f'{ce("🔓")} <b>ĐÃ XOÁ VÒNG CƯỢC CŨ!</b>\n'
+            f'━━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("💰")} Số dư trước khi nạp dưới <code>{fmt_money(WAGER_CLEAR_BALANCE)}đ</code> '
+            f'nên yêu cầu cược cũ (còn thiếu <code>{fmt_money(int(remaining))}đ</code>) đã được xoá tự động.\n'
+            f'{ce("✅")} Đơn nạp mới của bạn được tính từ đầu, không bị dính cược cũ.',
+            parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"Không gửi được thông báo xoá cược cho {uid}: {e}")
+
 
 async def check_and_notify_bet_completion(user_id: int, current_bet: int, required_bet: int):
     if current_bet >= required_bet:
@@ -1030,7 +1088,11 @@ async def fetch_qr_image(qr_url: str) -> BytesIO:
 # ---- Tạo QR VietQR ngay trên server (không phụ thuộc img.vietqr.io) ----
 _BANK_BIN = {"MB": "970422", "MBBANK": "970422", "VCB": "970436", "TCB": "970407",
              "ACB": "970416", "BIDV": "970418", "CTG": "970415", "VPB": "970432",
-             "TPB": "970423", "STB": "970403", "VIB": "970441", "OCB": "970448"}
+             "TPB": "970423", "STB": "970403", "VIB": "970441", "OCB": "970448",
+             "MSB": "970426", "SHB": "970443", "LPB": "970449", "HDB": "970437",
+             "AGRIBANK": "970405", "SCB": "970429", "EIB": "970431", "SEAB": "970440",
+             "NAB": "970428", "BAB": "970409", "VAB": "970427", "ABB": "970425",
+             "PVCB": "970412", "OCEANBANK": "970414", "CAKE": "546034", "TIMO": "963388"}
 
 def _crc16_ccitt(text: str) -> str:
     crc = 0xFFFF
@@ -1043,9 +1105,13 @@ def _crc16_ccitt(text: str) -> str:
 def _tlv(tag: str, value: str) -> str:
     return f"{tag}{len(value):02d}{value}"
 
-def build_vietqr_payload(amount: int, content: str) -> str:
-    bin_ = _BANK_BIN.get(str(BANK_ID).upper(), "970422")
-    acc = _tlv("00", bin_) + _tlv("01", str(ACCOUNT_NO))
+def build_vietqr_payload(amount: int, content: str, bank_id=None, account_no=None) -> str:
+    b = str(bank_id or BANK_ID).upper()
+    bin_ = b if b.isdigit() else _BANK_BIN.get(b)
+    if not bin_:
+        raise ValueError(f"Không có mã BIN cho ngân hàng {b}")
+    content = re.sub(r"[^\x20-\x7E]", "", str(content or ""))
+    acc = _tlv("00", bin_) + _tlv("01", str(account_no or ACCOUNT_NO))
     merchant = _tlv("00", "A000000727") + _tlv("01", acc) + _tlv("02", "QRIBFTTA")
     info = _tlv("08", content)
     body = (
@@ -1055,10 +1121,10 @@ def build_vietqr_payload(amount: int, content: str) -> str:
     )
     return body + _crc16_ccitt(body)
 
-def make_local_qr(amount: int, content: str) -> BytesIO:
+def make_local_qr(amount: int, content: str, bank_id=None, account_no=None) -> BytesIO:
     import qrcode
     qr = qrcode.QRCode(box_size=10, border=4)
-    qr.add_data(build_vietqr_payload(amount, content))
+    qr.add_data(build_vietqr_payload(amount, content, bank_id, account_no))
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").get_image().convert("RGB")
     img = img.resize((600, 600))
@@ -1078,7 +1144,7 @@ def _reencode_image(raw: bytes) -> BytesIO:
     buf.seek(0)
     return buf
 
-async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content=""):
+async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content="", bank_id=None, account_no=None):
     """Gửi QR theo nhiều bước dự phòng; bước nào lỗi thì in log rồi thử bước kế tiếp."""
     kw = dict(chat_id=chat_id, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
     raw = None
@@ -1097,7 +1163,7 @@ async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content="
             print(f"[QR bước 2 - chuẩn hoá ảnh] {type(e).__name__}: {e}")
     # 3) Tự vẽ QR VietQR trên server
     try:
-        return await bot.send_photo(photo=make_local_qr(amount, content), **kw)
+        return await bot.send_photo(photo=make_local_qr(amount, content, bank_id, account_no), **kw)
     except Exception as e:
         print(f"[QR bước 3 - QR tự vẽ] {type(e).__name__}: {e}")
     # 4) Gửi dạng file ảnh (document)
@@ -1833,7 +1899,10 @@ def gen_gift_code(ctype):
         if not query("SELECT 1 FROM giftcodes WHERE code=%s", (code,)):
             return code
 
-def add_wager_requirement(uid, bonus_amount, required_bet):
+def add_wager_requirement(uid, bonus_amount, required_bet, prev_balance=None):
+    cleared = 0
+    if prev_balance is not None:
+        cleared = auto_clear_old_wager(uid, prev_balance)
     ex = query("SELECT required_bet FROM user_bonus WHERE user_id=%s", (uid,))
     if ex and (ex[0][0] or 0) > 0:
         query("UPDATE user_bonus SET bonus_amount=bonus_amount+%s, required_bet=required_bet+%s WHERE user_id=%s",
@@ -1842,6 +1911,7 @@ def add_wager_requirement(uid, bonus_amount, required_bet):
         query("DELETE FROM user_bonus WHERE user_id=%s", (uid,))
         query("INSERT INTO user_bonus (user_id, bonus_amount, required_bet, current_bet, created_at) VALUES (%s,%s,%s,0,%s)",
               (uid, bonus_amount, required_bet, get_vietnam_datetime_db()))
+    return cleared
 
 async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
     msg = update.effective_message
@@ -1886,10 +1956,12 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
 
     reward = int(reward)
     wager = int(wager or 0)
+    prev_bal = get_balance(uid)
     add_money(uid, reward, f"Giftcode {gname}: {code_str}")
     required_bet = reward * wager
+    cleared_old = 0
     if required_bet > 0:
-        add_wager_requirement(uid, reward, required_bet)
+        cleared_old = add_wager_requirement(uid, reward, required_bet, prev_balance=prev_bal)
     success_text = (
         f'{ce("🎉")} <b>NHẬN CODE THÀNH CÔNG!</b> {ce("🎉")}\n'
         f'┏━━━━━━━━━━━━━━━━━━━━━━━━━\n'
@@ -1901,6 +1973,10 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
         f'┗━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
         f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>'
     )
+    if cleared_old:
+        success_text += (
+            f'\n\n{ce("🔓")} <i>Số dư trước đó dưới {fmt_money(WAGER_CLEAR_BALANCE)}đ nên vòng cược cũ '
+            f'(còn thiếu {fmt_money(int(cleared_old))}đ) đã được xoá tự động.</i>')
     chat = update.effective_chat
     user = update.effective_user
     if chat and chat.type != "private":
@@ -2479,6 +2555,26 @@ FULL_PERMS = ChatPermissions(
     can_add_web_page_previews=True
 )
 
+async def _refund_round(bot, group_id, game_state, session_id):
+    # Room bị tắt giữa phiên: hoàn toàn bộ tiền cược của phiên đang mở, không để mất tiền người chơi.
+    for bet in list(game_state.get("bets", {}).values()):
+        uid_, amt = bet["user_id"], int(bet["amount"])
+        add_money(uid_, amt, f"Hoàn cược phiên #{session_id} (room tắt)")
+        query("UPDATE users SET total_bet=GREATEST(total_bet-%s,0) WHERE user_id=%s", (amt, uid_))
+        record_daily(uid_, bet=-amt)
+        query("UPDATE user_bonus SET current_bet=GREATEST(current_bet-%s,0) WHERE user_id=%s", (amt, uid_))
+        try:
+            await bot.send_message(
+                uid_,
+                f'{ce("🚫")} <b>ROOM ĐÃ TẮT</b> — phiên #{session_id} bị hủy.\n'
+                f'{ce("💰")} Đã hoàn lại <code>{fmt_money(amt)}đ</code> tiền cược vào số dư của bạn.',
+                parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    game_state.get("bets", {}).clear()
+    group_games.pop(group_id, None)
+
+
 async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
     while True:
         try:
@@ -2525,12 +2621,16 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
 
             current_second = 60
             stats_msg_id = None
+            aborted = False
 
             while current_second > 0:
                 await asyncio.sleep(10)
                 current_second -= 10
                 if current_second < 0:
                     current_second = 0
+                if _is_room_muted(group_id):
+                    aborted = True
+                    break
 
                 tai_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "tai")
                 xiu_count = sum(b["amount"] for b in game_state['bets'].values() if b["choice"] == "xiu")
@@ -2591,6 +2691,17 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                     stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
                     print(f"Lỗi gửi thống kê: {e}")
+
+            if aborted or _is_room_muted(group_id):
+                game_state["status"] = "closed"
+                await _refund_round(bot, group_id, game_state, session_id)
+                if stats_msg_id:
+                    try:
+                        await bot.delete_message(chat_id, stats_msg_id)
+                    except Exception:
+                        pass
+                await asyncio.sleep(5)
+                continue
 
             game_state["status"] = "rolling"
 
@@ -3602,7 +3713,22 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n\nVui lòng quay lại sau ít phút!',
             parse_mode=ParseMode.HTML)
         return
+    _chk = query("SELECT 1 FROM users WHERE user_id=%s", (uid,))
+    is_new_user = (_chk is not None and len(_chk) == 0)
     get_user(uid)
+    if is_new_user:
+        _given = grant_welcome_bonus(uid)
+        if _given:
+            _wg = (f'{ce("🎯")} Yêu cầu cược: <code>x{WELCOME_WAGER_MULT}</code> vòng (<code>{fmt_money(int(_given * WELCOME_WAGER_MULT))}đ</code>) mới được rút.\n'
+                   if WELCOME_WAGER_MULT > 0 else '')
+            await update.effective_message.reply_text(
+                f'{ce("🎁")} <b>QUÀ TÂN THỦ DÀNH CHO BẠN!</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("💰")} Bạn được tặng: <code>+{fmt_money(_given)}đ</code>\n'
+                + _wg +
+                f'{ce("💎")} Số dư hiện tại: <code>{fmt_money(get_balance(uid))}đ</code>\n'
+                f'{ce("🎉")} Chúc bạn chơi vui vẻ và may mắn!',
+                parse_mode=ParseMode.HTML)
     # Deep link từ nút NẠP TIỀN TẠI ĐÂY: mở thẳng menu nạp tiền.
     if ctx.args and ctx.args[0].lower() == "nap":
         if is_feature_banned(uid, 'nap') and uid not in ADMIN_IDS:
@@ -3638,12 +3764,15 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-    menu = ReplyKeyboardMarkup([
+    _menu_rows = [
         [kbtn("DANH SÁCH GAME", "👑"), kbtn("TÀI KHOẢN", "📜")],
         [kbtn("NẠP TIỀN", "💵"), kbtn("RÚT TIỀN", "💸")],
         [kbtn("GIỚI THIỆU", "🌸"), kbtn("ĐUA TOP", "🍕")],
         [kbtn("EVENT", "🎁"), kbtn("LỆNH", "🔍")]
-    ], resize_keyboard=True)
+    ]
+    if uid in ADMIN_IDS:
+        _menu_rows.append([kbtn("ADMIN", "🛠")])   # nút chỉ hiện với admin
+    menu = ReplyKeyboardMarkup(_menu_rows, resize_keyboard=True)
 
     welcome_text = (
         f'{ce("🎉")} <b>CHÀO MỪNG {html.escape(update.effective_user.first_name.upper())} ĐÃ THAM GIA!</b>\n\n'
@@ -3795,7 +3924,9 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "TPB": "TPB", "AGRIBANK": "AGRIBANK", "VIB": "VIB", "SHB": "SHB",
             "MSB": "MSB", "LPBANK": "LPB", "OCB": "OCB", "HDBANK": "HDB"
         }
-        qr_bank = bank_codes.get(bank_key, bank_raw)
+        _code = bank_codes.get(bank_key, bank_key)
+        qr_bank = _BANK_BIN.get(_code) or _code
+        stk = re.sub(r"\s+", "", str(stk or ""))
         qr_url = "https://img.vietqr.io/image/" + str(qr_bank) + "-" + str(stk) + "-compact2.png?" + urlencode({
             "amount": int(amount), "addInfo": transfer_memo, "accountName": str(name or "")
         })
@@ -3815,8 +3946,9 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
                     f'<i>QR là thông tin chuyển khoản để admin xử lý thủ công; vui lòng kiểm tra đúng người nhận trước khi chuyển.</i>'
                 )
-                await ctx.bot.send_photo(admin_id, photo=qr_url, caption=admin_text,
-                                         reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                # Tải ảnh QR về rồi upload (Telegram không tự tải được URL VietQR); lỗi thì tự vẽ QR / gửi dạng chữ.
+                await send_deposit_qr(ctx.bot, admin_id, qr_url, admin_text, keyboard, amount, transfer_memo,
+                                      bank_id=qr_bank, account_no=stk)
             except Exception as e:
                 print(f"Không thể gửi QR/tin nhắn đến admin {admin_id}: {e}")
                 try:
@@ -4105,6 +4237,9 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if await redeem_giftcode(update, uid, code_in):
             return
         return await user_reply.reply_text(f'{ce("❌")} Mã quà tặng không tồn tại.', parse_mode=ParseMode.HTML)
+
+    if key == "ADMIN" and uid in ADMIN_IDS:
+        return await admin_panel_cmd(update, ctx)
 
     if key == "TÀI KHOẢN":
         get_user(uid)
@@ -4468,7 +4603,10 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         now_str = get_vietnam_datetime_db()
         get_user(target_id)
         query("INSERT INTO deposit_history (user_id, amount, admin_id, status, time) VALUES (%s, %s, %s, %s, %s)", (target_id, amount, update.effective_user.id, 'success', now_str))
+        _cleared = auto_clear_old_wager(target_id, get_balance(target_id))
         add_money(target_id, amount, f"Nạp tiền +{amount:,}đ")
+        if _cleared:
+            await notify_wager_cleared(ctx.bot, target_id, _cleared)
         
         # Ẩn ID người nạp (5 số đầu)
         masked_id = str(target_id)
@@ -4683,46 +4821,123 @@ def _sum(q, args=()):
     r = query(q, args)
     return (r[0][0] or 0) if r else 0
 
+# ---------- THỐNG KÊ HỆ THỐNG (đọc từ bảng nạp / rút / bet_daily; có hỗ trợ mốc reset) ----------
+def _ep_int(key):
+    try:
+        return int(get_setting(key, "0") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+def _stat_epoch_note():
+    at = get_setting("stats_epoch_at", "") or ""
+    if not at:
+        return ""
+    return f'{ce("📌")} <i>Thống kê đang tính từ lúc reset: {html.escape(at)}</i>\n'
+
+def stat_dep(like=None):
+    sql = ("SELECT COUNT(*), COALESCE(SUM(amount),0), COUNT(DISTINCT user_id) "
+           "FROM deposit_history WHERE status='success' AND id>%s")
+    args = [_ep_int("stats_epoch_dep")]
+    if like:
+        sql += " AND time LIKE %s"
+        args.append(like)
+    rows = query(sql, tuple(args)) or []
+    r = rows[0] if rows else (0, 0, 0)
+    return int(r[0] or 0), int(r[1] or 0), int(r[2] or 0)
+
+def stat_wd(like=None):
+    sql = ("SELECT COUNT(*), COALESCE(SUM(amount),0) "
+           "FROM withdraw_history WHERE status='success' AND id>%s")
+    args = [_ep_int("stats_epoch_wd")]
+    if like:
+        sql += " AND time LIKE %s"
+        args.append(like)
+    rows = query(sql, tuple(args)) or []
+    r = rows[0] if rows else (0, 0)
+    return int(r[0] or 0), int(r[1] or 0)
+
+def stat_bet_totals(d1, d2):
+    ed = get_setting("stats_epoch_day", "1970-01-01") or "1970-01-01"
+    sql = ("SELECT COALESCE(SUM(GREATEST(b.bet-COALESCE(s.bet,0),0)),0), "
+           "COALESCE(SUM(GREATEST(b.win-COALESCE(s.win,0),0)),0), COUNT(DISTINCT b.user_id) "
+           "FROM bet_daily b LEFT JOIN stats_bet_base s ON s.user_id=b.user_id AND s.day=b.day "
+           "WHERE b.day>=%s AND b.day>=%s AND b.day<=%s")
+    rows = query(sql, (ed, d1, d2)) or []
+    r = rows[0] if rows else (0, 0, 0)
+    return int(r[0] or 0), int(r[1] or 0), int(r[2] or 0)
+
+def _signed_money(n):
+    n = int(n or 0)
+    return f'{"+" if n >= 0 else "−"}{fmt_money(abs(n))}đ'
+
 @admin_only
 async def dashboard_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    now = get_vietnam_time()
     today = get_vietnam_date()
-    this_month = get_vietnam_time().strftime("/%m/%Y")
-    nap_today = _sum("SELECT SUM(amount) FROM history WHERE amount > 0 AND note ILIKE '%%nạp%%' AND time LIKE %s", (f"%{today}%",))
-    rut_today = _sum("SELECT SUM(amount) FROM history WHERE amount < 0 AND note ILIKE '%%Rút%%' AND time LIKE %s", (f"%{today}%",))
-    nap_month = _sum("SELECT SUM(amount) FROM history WHERE amount > 0 AND note ILIKE '%%nạp%%' AND time LIKE %s", (f"%{this_month}%",))
-    rut_month = _sum("SELECT SUM(amount) FROM history WHERE amount < 0 AND note ILIKE '%%Rút%%' AND time LIKE %s", (f"%{this_month}%",))
-    total_cuoc = _sum("SELECT SUM(amount) FROM history WHERE amount < 0 AND note NOT ILIKE '%Rút%' AND note NOT ILIKE '%trừ tiền%' AND note NOT ILIKE '%Chuyển tiền%'")
-    total_thang = _sum("SELECT SUM(amount) FROM history WHERE amount > 0 AND note NOT ILIKE '%nạp%' AND note NOT ILIKE '%Code%' AND note NOT ILIKE '%Checkin%' AND note NOT ILIKE '%Admin%' AND note NOT ILIKE '%Nhận tiền%' AND note NOT ILIKE '%Hoàn%' AND note NOT ILIKE '%Khuyến mãi%' AND note NOT ILIKE '%Ref%'")
-    loi_nhuan = abs(total_cuoc) - total_thang
+    like_day = f"%{today}"
+    like_month = f"%/{now.strftime('%m/%Y')}"
+    d_date = now.date()
+    m_start = d_date.replace(day=1)
+    dn, ds, du = stat_dep(like_day)
+    wn, wsum = stat_wd(like_day)
+    mdn, mds, mdu = stat_dep(like_month)
+    mwn, mws = stat_wd(like_month)
+    adn, ads, adu = stat_dep()
+    awn, aws = stat_wd()
+    tb, tw, tp = stat_bet_totals(d_date, d_date)
+    mb, mw, mpl = stat_bet_totals(m_start, d_date)
+    ab, aw, apl = stat_bet_totals(datetime(2000, 1, 1).date(), d_date)
     msg = (
-        f'{ce("📊")} <b>BẢNG THỐNG KÊ DOANH THU</b>\n'
+        f'{ce("📊")} <b>BẢNG THỐNG KÊ HỆ THỐNG</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━\n'
-        f'{ce("🗓")} <b>Hôm nay ({today}):</b>\n'
-        f'  {ce("📥")} Tổng nạp: <code>+{fmt_money(nap_today)}đ</code>\n'
-        f'  {ce("📤")} Tổng rút: <code>{fmt_money(rut_today)}đ</code>\n\n'
-        f'{ce("🗓")} <b>Tháng này ({get_vietnam_time().month}):</b>\n'
-        f'  {ce("📥")} Tổng nạp: <code>+{fmt_money(nap_month)}đ</code>\n'
-        f'  {ce("📤")} Tổng rút: <code>{fmt_money(rut_month)}đ</code>\n\n'
-        f'{ce("📈")} <b>Tổng kết Game (All time):</b>\n'
-        f'  {ce("💰")} Lợi nhuận ròng: <code>{fmt_money(loi_nhuan)}đ</code>\n'
-        f'━━━━━━━━━━━━━━━━━━━━━'
+        f'{ce("🗓")} <b>HÔM NAY</b> <code>{today}</code>\n'
+        f'  {ce("📥")} Nạp: <code>+{fmt_money(ds)}đ</code> · {dn} lệnh · {du} người\n'
+        f'  {ce("📤")} Rút: <code>{fmt_money(wsum)}đ</code> · {wn} lệnh\n'
+        f'  {ce("🎯")} Cược: <code>{fmt_money(tb)}đ</code> · {tp} người\n'
+        f'  {ce("🏆")} Trả thưởng: <code>{fmt_money(tw)}đ</code>\n'
+        f'  {ce("💰")} Lãi/lỗ game: <code>{_signed_money(tb - tw)}</code>\n\n'
+        f'{ce("🗓")} <b>THÁNG {now.strftime("%m/%Y")}</b>\n'
+        f'  {ce("📥")} Nạp: <code>+{fmt_money(mds)}đ</code> · {mdn} lệnh\n'
+        f'  {ce("📤")} Rút: <code>{fmt_money(mws)}đ</code> · {mwn} lệnh\n'
+        f'  {ce("🎯")} Cược: <code>{fmt_money(mb)}đ</code> · Trả thưởng: <code>{fmt_money(mw)}đ</code>\n'
+        f'  {ce("💰")} Lãi/lỗ game: <code>{_signed_money(mb - mw)}</code>\n\n'
+        f'{ce("📈")} <b>TỔNG TOÀN THỜI GIAN</b>\n'
+        f'  {ce("📥")} Nạp: <code>+{fmt_money(ads)}đ</code> · {adn} lệnh · {adu} người\n'
+        f'  {ce("📤")} Rút: <code>{fmt_money(aws)}đ</code> · {awn} lệnh\n'
+        f'  {ce("💵")} Nạp − Rút: <code>{_signed_money(ads - aws)}</code>\n'
+        f'  {ce("💰")} Lãi/lỗ game: <code>{_signed_money(ab - aw)}</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{_stat_epoch_note()}'
+        f'{ce("💡")} <i>Xoá 1 giao dịch bằng /xoanap hoặc /xoarut, thống kê tự cập nhật. Reset bằng /resetthongke.</i>'
     )
-    await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+    kb = InlineKeyboardMarkup([
+        [btn("Xuất file 30 ngày", "📊", callback_data="adm2:run:xuatthongke|30"),
+         btn("Xuất file 7 ngày", "📥", callback_data="adm2:run:xuatthongke|7")],
+        [btn("Xuất toàn bộ thời gian", "📎", callback_data="adm2:run:xuatthongke|all"),
+         btn("Menu admin", "🏠", callback_data="adm2:home")],
+    ])
+    await update.effective_message.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 @admin_only
 async def tong_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    t_nap = _sum("SELECT SUM(amount) FROM history WHERE amount > 0 AND note ILIKE '%nạp%'")
-    t_rut = _sum("SELECT SUM(amount) FROM history WHERE amount < 0 AND note ILIKE '%Rút%'")
-    t_cuoc = _sum("SELECT SUM(amount) FROM history WHERE amount < 0 AND note NOT ILIKE '%Rút%' AND note NOT ILIKE '%trừ tiền%' AND note NOT ILIKE '%Chuyển tiền%'")
-    t_thang = _sum("SELECT SUM(amount) FROM history WHERE amount > 0 AND note NOT ILIKE '%nạp%' AND note NOT ILIKE '%Code%' AND note NOT ILIKE '%Checkin%' AND note NOT ILIKE '%Admin%' AND note NOT ILIKE '%Nhận tiền%' AND note NOT ILIKE '%Hoàn%' AND note NOT ILIKE '%Khuyến mãi%' AND note NOT ILIKE '%Ref%'")
-    loi_nhuan = abs(t_cuoc) - t_thang
+    adn, ads, adu = stat_dep()
+    awn, aws = stat_wd()
+    ab, aw, apl = stat_bet_totals(datetime(2000, 1, 1).date(), get_vietnam_time().date())
+    pend = _sum("SELECT COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='pending'")
+    bal = _sum("SELECT COALESCE(SUM(balance),0) FROM users")
     msg = (
         f'{ce("📊")} <b>TỔNG QUAN TÀI CHÍNH HỆ THỐNG</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━\n'
-        f'{ce("📥")} <b>Tổng Nạp:</b> <code>+{fmt_money(t_nap)}đ</code>\n'
-        f'{ce("📤")} <b>Tổng Rút:</b> <code>{fmt_money(abs(t_rut))}đ</code>\n'
-        f'{ce("💰")} <b>Lợi Nhuận Thực Tế (Game):</b> <code>{fmt_money(loi_nhuan)}đ</code>\n'
-        f'━━━━━━━━━━━━━━━━━━━━━'
+        f'{ce("📥")} <b>Tổng nạp:</b> <code>+{fmt_money(ads)}đ</code> ({adn} lệnh, {adu} người)\n'
+        f'{ce("📤")} <b>Tổng rút:</b> <code>{fmt_money(aws)}đ</code> ({awn} lệnh)\n'
+        f'{ce("⌛")} <b>Rút đang chờ:</b> <code>{fmt_money(int(pend))}đ</code>\n'
+        f'{ce("💵")} <b>Nạp − Rút:</b> <code>{_signed_money(ads - aws)}</code>\n'
+        f'{ce("🎯")} <b>Tổng cược:</b> <code>{fmt_money(ab)}đ</code>\n'
+        f'{ce("🏆")} <b>Tổng trả thưởng:</b> <code>{fmt_money(aw)}đ</code>\n'
+        f'{ce("💰")} <b>Lãi/lỗ game:</b> <code>{_signed_money(ab - aw)}</code>\n'
+        f'{ce("💎")} <b>Tổng số dư người dùng:</b> <code>{fmt_money(int(bal))}đ</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{_stat_epoch_note()}'
     )
     await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -4929,10 +5144,10 @@ def _today_report_text():
     def one(sql, args=()):
         rows = query(sql, args) or []
         return rows[0] if rows else None
-    dep = one("SELECT COUNT(*), COALESCE(SUM(amount),0), COUNT(DISTINCT user_id) FROM deposit_history WHERE status='success' AND time LIKE %s", (like,)) or (0, 0, 0)
-    wd = one("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='success' AND time LIKE %s", (like,)) or (0, 0)
+    dep = stat_dep(like)
+    wd = stat_wd(like)
     wd_pending = one("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='pending'") or (0, 0)
-    bets = one("SELECT COALESCE(SUM(bet),0), COALESCE(SUM(win),0), COUNT(DISTINCT user_id) FROM bet_daily WHERE day=%s", (now.date(),)) or (0, 0, 0)
+    bets = stat_bet_totals(now.date(), now.date())
     promo = one("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM promo_daily_claims WHERE claim_date=%s", (promo_today_key(),)) or (0, 0)
     jackpot = get_jackpot()
     profit = int(dep[1] or 0) - int(wd[1] or 0)
@@ -5956,7 +6171,10 @@ async def sepay_webhook(request):
         now_str = get_vietnam_datetime_db()
         query("INSERT INTO deposit_history (user_id, amount, admin_id, status, time, ref_code) VALUES (%s, %s, %s, %s, %s, %s)",
               (user_id, amount, 0, 'success', now_str, ref_code))
+        _cleared = auto_clear_old_wager(user_id, get_balance(user_id))
         add_money(user_id, amount, f"Nạp tiền tự động (SePay) +{amount:,}đ")
+        if _cleared:
+            await notify_wager_cleared(_bot_instance, user_id, _cleared)
 
         # Thông báo cho user
         try:
@@ -6110,6 +6328,13 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<b>🔇 Tắt / bật room</b>\n"
         "<code>/tatroom</code> — bot ngừng gửi mọi tin nhắn vào nhóm (dùng trong nhóm, hoặc chat riêng: <code>/tatroom ID_nhóm</code>)\n"
         "<code>/moroom</code> — bật lại; <code>/trangthairoom</code> — xem trạng thái; <code>/tatcuoc on|off</code> — chỉ khóa/mở cược\n\n"
+        "<b>🆕 Mới</b>\n"
+        "<code>/admin</code> — menu admin dạng nút bấm (hoặc nút ADMIN trong menu bot); <code>/adminhelp</code> — bảng chữ này\n"
+        "<code>/xoacuoc ID</code> — xoá vòng cược; <code>/themcuoc ID số_tiền</code> — cộng tiến độ cược\n"
+        "<code>/xuatthongke [kỳ]</code> — xuất file thống kê hệ thống (Excel nhiều sheet + biểu đồ)\n"
+        "<code>/resetthongke</code> — reset thống kê từ đầu (<code>/resetthongke khoiphuc</code> để quay lại)\n"
+        "<code>/xoanap mã_GD</code>, <code>/xoarut mã_GD</code> — xoá giao dịch, thống kê tự trừ\n"
+        "<code>/tatroom all</code>, <code>/moroom all</code> — tắt/bật hoàn toàn mọi room\n\n"
         "<b>Trạng thái bảo trì</b> (🔴 bảo trì, 🟢 hoạt động):\n" + _admin_mt_lines()
     )
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -6562,6 +6787,12 @@ async def _room_mute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE, mut
         if msg:
             await msg.reply_text("⛔ Bạn không có quyền dùng lệnh này.")
         return
+    if ctx.args and str(ctx.args[0]).lower() in ("all", "tatca"):
+        for _g in GROUP_IDS:
+            _set_room_muted(_g, muted)
+        _t = (f"🔇 <b>ĐÃ TẮT TẤT CẢ ROOM</b> ({len(GROUP_IDS)} nhóm). Bot ngừng gửi tin và ngừng chạy game; cược phiên đang mở được hoàn lại. Bật lại: <code>/moroom all</code>."
+              if muted else f"🔊 <b>ĐÃ BẬT LẠI TẤT CẢ ROOM</b> ({len(GROUP_IDS)} nhóm).")
+        return await msg.reply_text(_t, parse_mode=ParseMode.HTML)
     chat = update.effective_chat
     # Trong nhóm: áp dụng cho nhóm đang chat. Trong chat riêng: /tatroom [ID_nhóm] (mặc định nhóm đầu tiên).
     if chat and chat.type != "private":
@@ -6628,7 +6859,7 @@ def _guard_room_mute(method_name, text_kw=None, allow_prefix=False):
 _guard_room_mute("send_message", "text", allow_prefix=True)
 for _m in ("send_photo", "send_animation", "send_video", "send_document", "send_audio",
            "send_voice", "send_sticker", "send_media_group", "send_poll", "copy_message",
-           "pin_chat_message"):
+           "pin_chat_message", "send_dice", "send_video_note"):
     _guard_room_mute(_m)
 
 application = ApplicationBuilder().token(TOKEN).build()
@@ -6861,7 +7092,7 @@ def _rp_collect(kind, uid, start, end):
                 rows.append((r[0], r[3] or "", "Thắng / Hoàn", amt, r[2] or "")); wins += amt; nw += 1
         extra = {"bets": bets, "wins": wins, "net": wins - bets, "n_bet": nb, "n_win": nw}
         return {"headers": ["#", "Thời gian", "Loại", "Số tiền (đ)", "Nội dung"], "rows": rows,
-                "money_cols": [3], "sum_cols": [], "extra": extra}
+                "money_cols": [3], "sum_cols": [], "extra": extra, "status_col": 2}
     if kind == "code":
         raw = query(
             "SELECT cu.code, cu.used_date, COALESCE(g.reward, c.reward), g.ctype "
@@ -6907,7 +7138,7 @@ def _rp_collect(kind, uid, start, end):
                          str(r[5] or "")[:19], r[9] or ""))
         extra = {"sum": total, "used_n": used_n}
         return {"headers": ["Thời gian", "Mã code", "ID tạo/mua", "ID dùng", "Giá trị (đ)", "Vòng cược", "Trạng thái", "Hạn dùng", "Loại"],
-                "rows": rows, "money_cols": [4], "sum_cols": [4], "extra": extra}
+                "rows": rows, "money_cols": [4], "sum_cols": [4], "extra": extra, "status_col": 6}
     return {"headers": [], "rows": [], "money_cols": [], "sum_cols": [], "extra": {}}
 
 def _rp_profile_sync(uid):
@@ -7173,83 +7404,218 @@ async def _rp_render_summary(bot, uid, token):
 # ------------------------------------------------------------
 # XUẤT FILE (XLSX nhiều sheet, tự fallback CSV nếu thiếu openpyxl)
 # ------------------------------------------------------------
+_XL_THEME = {
+    "Tổng quan": ("183153", "1F4E79"), "Theo ngày": ("1F618D", "2874A6"),
+    "Biến động số dư": ("1F618D", "2874A6"), "Danh sách user": ("1F618D", "2874A6"),
+    "Nạp": ("1E8449", "239B56"), "Lịch sử nạp": ("1E8449", "239B56"), "Top nạp": ("1E8449", "239B56"),
+    "Rút": ("B03A2E", "CB4335"), "Lịch sử rút": ("B03A2E", "CB4335"),
+    "Cược & Thắng": ("6C3483", "7D3C98"), "Top cược": ("6C3483", "7D3C98"),
+    "Code đã nhập": ("B9770E", "D68910"), "Top số dư": ("B9770E", "D68910"),
+    "Gift đã mua": ("117A8B", "148F77"), "Gift đã dùng": ("117A8B", "148F77"),
+}
+_XL_STATUS = {
+    "Thành công": ("D5F5E3", "1E8449"), "Đã dùng": ("D5F5E3", "1E8449"), "Thắng / Hoàn": ("D5F5E3", "1E8449"),
+    "Chờ duyệt": ("FCF3CF", "9A7D0A"), "Chưa dùng": ("FCF3CF", "9A7D0A"),
+    "Từ chối": ("FADBD8", "B03A2E"), "Hết hạn": ("FADBD8", "B03A2E"), "Cược": ("FADBD8", "B03A2E"),
+}
+
 def _rp_build_xlsx(title, subtitle, sheets):
+    # File Excel nhiều sheet: banner tiêu đề, thẻ KPI, bảng có zebra, màu trạng thái, dòng tổng, biểu đồ.
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
-    TAB = {"Tổng quan": "183153", "Biến động số dư": "246B8E", "Nạp": "2E8B57", "Rút": "C0392B",
-           "Cược & Thắng": "8E44AD", "Code đã nhập": "D68910", "Gift đã mua": "117A8B", "Gift đã dùng": "117A8B"}
+    from openpyxl.chart import BarChart, LineChart, Reference
+    from openpyxl.worksheet.properties import PageSetupProperties
+
+    def fill(color):
+        return PatternFill("solid", fgColor=color)
+
+    hair = Side(style="hair", color="BFC9D9")
     wb = Workbook()
     wb.remove(wb.active)
     used = set()
-    thin = Side(style="hair", color="C9D6E8")
     for sh in sheets:
         name = re.sub(r"[\\/*?:\[\]]", "", sh["name"])[:31] or "Sheet"
         base, i = name, 2
         while name in used:
-            name = f"{base[:28]}_{i}"; i += 1
+            name = f"{base[:28]}_{i}"
+            i += 1
         used.add(name)
+        dark, mid = _XL_THEME.get(sh["name"], ("183153", "246B8E"))
         ws = wb.create_sheet(name)
-        ws.sheet_properties.tabColor = TAB.get(sh["name"], "246B8E")
-        headers, rows = sh["headers"], sh["rows"]
-        ncol = max(1, len(headers))
+        ws.sheet_properties.tabColor = dark
+        ws.sheet_view.showGridLines = False
+        headers = [str(h) for h in sh["headers"]]
+        rows = sh["rows"]
+        ncol = max(2, len(headers))
         money = set(sh.get("money_cols", []))
-        signed = sh.get("signed_col")
+        signed = set(sh.get("signed_cols", []))
+        if sh.get("signed_col") is not None:
+            signed.add(sh["signed_col"])
+        right = set(sh.get("right_cols", []))
+        status_col = sh.get("status_col")
+
+        # --- banner ---
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncol)
         c = ws.cell(1, 1, title)
-        c.font = Font(name="Arial", size=15, bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="183153")
+        c.font = Font(name="Calibri", size=17, bold=True, color="FFFFFF")
         c.alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[1].height = 32
+        for ci in range(1, ncol + 1):
+            ws.cell(1, ci).fill = fill(dark)
+        ws.row_dimensions[1].height = 38
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncol)
-        c2 = ws.cell(2, 1, f"{subtitle}  |  Xuất lúc: {get_vietnam_datetime_db()}  |  Số dòng: {len(rows)}")
-        c2.font = Font(name="Arial", italic=True, size=9, color="555555")
-        c2.alignment = Alignment(horizontal="center")
+        c2 = ws.cell(2, 1, f"{subtitle}   |   Xuất lúc: {get_vietnam_datetime_db()}   |   Số dòng: {len(rows)}")
+        c2.font = Font(name="Calibri", italic=True, size=10, color="FFFFFF")
+        c2.alignment = Alignment(horizontal="center", vertical="center")
+        for ci in range(1, ncol + 1):
+            ws.cell(2, ci).fill = fill(mid)
+        ws.row_dimensions[2].height = 20
+        ws.row_dimensions[3].height = 8
+
+        # --- thẻ KPI ---
+        r = 4
+        kpis = sh.get("kpis") or []
+        if kpis:
+            per_row = max(1, min(len(kpis), 4 if ncol >= 4 else ncol))
+            span = max(1, ncol // per_row)
+            for g in range(0, len(kpis), per_row):
+                group = kpis[g:g + per_row]
+                for j, (label, val, kind) in enumerate(group):
+                    c1 = 1 + j * span
+                    c2_ = ncol if j == per_row - 1 else c1 + span - 1
+                    if c2_ > c1:
+                        ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2_)
+                        ws.merge_cells(start_row=r + 1, start_column=c1, end_row=r + 1, end_column=c2_)
+                    lab = ws.cell(r, c1, str(label))
+                    lab.font = Font(name="Calibri", size=10, bold=True, color="5D6D7E")
+                    lab.alignment = Alignment(horizontal="center", vertical="center")
+                    vc = ws.cell(r + 1, c1)
+                    numeric = isinstance(val, (int, float)) and not isinstance(val, bool)
+                    color = dark
+                    if kind == "signed" and numeric:
+                        color = "1E8449" if val >= 0 else "C0392B"
+                    if numeric:
+                        vc.value = val
+                        vc.number_format = {"money": '#,##0" đ"', "signed": '+#,##0" đ";-#,##0" đ";0" đ"'}.get(kind, "#,##0")
+                    else:
+                        vc.value = str(val)
+                        vc.data_type = "s"
+                    vc.font = Font(name="Calibri", size=17, bold=True, color=color)
+                    vc.alignment = Alignment(horizontal="center", vertical="center")
+                    for ci in range(c1, c2_ + 1):
+                        ws.cell(r, ci).fill = fill("EAF2F8")
+                        ws.cell(r + 1, ci).fill = fill("F7FBFE")
+                        ws.cell(r, ci).border = Border(top=Side(style="thick", color=mid))
+                        ws.cell(r + 1, ci).border = Border(bottom=hair)
+                ws.row_dimensions[r].height = 20
+                ws.row_dimensions[r + 1].height = 32
+                ws.row_dimensions[r + 2].height = 8
+                r += 3
+        hr = r
+
+        # --- header ---
         for ci, h in enumerate(headers, 1):
-            hc = ws.cell(4, ci, str(h))
-            hc.font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
-            hc.fill = PatternFill("solid", fgColor="246B8E")
+            hc = ws.cell(hr, ci, h)
+            hc.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+            hc.fill = fill(mid)
             hc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.row_dimensions[4].height = 24
-        for ri, row in enumerate(rows, 5):
-            zebra = PatternFill("solid", fgColor="F3F7FB") if ri % 2 == 0 else None
+            hc.border = Border(bottom=Side(style="medium", color=dark))
+        ws.row_dimensions[hr].height = 26
+
+        # --- dữ liệu ---
+        for ri, row in enumerate(rows, hr + 1):
+            first = row[0] if row else None
+            if isinstance(first, str) and first.startswith("—") and (len(row) < 2 or row[1] in ("", None)):
+                ws.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=ncol)
+                sc = ws.cell(ri, 1, first.strip("— ").strip())
+                sc.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+                sc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+                for ci in range(1, ncol + 1):
+                    ws.cell(ri, ci).fill = fill(dark)
+                ws.row_dimensions[ri].height = 22
+                continue
+            zebra = fill("F4F8FC") if (ri - hr) % 2 == 0 else None
             for ci, v in enumerate(row, 1):
+                idx = ci - 1
                 cell = ws.cell(ri, ci)
-                if isinstance(v, (int, float)) and not isinstance(v, bool) and (ci - 1) in money:
+                numeric = isinstance(v, (int, float)) and not isinstance(v, bool)
+                if numeric and idx in money:
                     cell.value = v
                     cell.number_format = "#,##0"
-                    cell.alignment = Alignment(horizontal="right", vertical="top")
-                    if signed is not None and (ci - 1) == signed:
-                        cell.font = Font(name="Arial", size=10, bold=True, color="1E8449" if v >= 0 else "C0392B")
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+                    if idx in signed:
+                        cell.font = Font(name="Calibri", size=11, bold=True, color="1E8449" if v >= 0 else "C0392B")
                     else:
-                        cell.font = Font(name="Arial", size=10)
+                        cell.font = Font(name="Calibri", size=11)
+                elif numeric:
+                    cell.value = v
+                    cell.number_format = "0"
+                    cell.font = Font(name="Calibri", size=11)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
                 else:
                     s = "" if v is None else str(v)
                     cell.value = s
-                    cell.data_type = "s"          # luôn là chuỗi -> không bị hiểu thành công thức Excel
-                    cell.font = Font(name="Arial", size=10)
-                    cell.alignment = Alignment(vertical="top", wrap_text=len(s) > 40)
-                cell.border = Border(bottom=thin)
-                if zebra:
+                    cell.data_type = "s"          # luôn là chuỗi -> không bị Excel hiểu thành công thức
+                    cell.font = Font(name="Calibri", size=11)
+                    cell.alignment = Alignment(vertical="center", wrap_text=len(s) > 42)
+                    if status_col is not None and idx == status_col and s in _XL_STATUS:
+                        bg, fg = _XL_STATUS[s]
+                        cell.fill = fill(bg)
+                        cell.font = Font(name="Calibri", size=11, bold=True, color=fg)
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                if idx in right:
+                    cell.alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
+                if zebra is not None and cell.fill.fgColor.rgb in (None, "00000000"):
                     cell.fill = zebra
-        last = 4 + len(rows)
+                cell.border = Border(bottom=hair)
+        last = hr + len(rows)
+
+        # --- dòng tổng ---
         if sh.get("sum_cols") and rows:
             tr = last + 1
-            ws.cell(tr, 1, "TỔNG").font = Font(name="Arial", bold=True)
+            tl = ws.cell(tr, 1, "TỔNG")
+            tl.font = Font(name="Calibri", bold=True, size=11)
+            for ci in range(1, ncol + 1):
+                ws.cell(tr, ci).fill = fill("FFF2CC")
+                ws.cell(tr, ci).border = Border(top=Side(style="thin", color=dark))
             for ci in sh["sum_cols"]:
-                total = sum(int(r[ci] or 0) for r in rows if isinstance(r[ci], (int, float)))
+                total = sum(int(rw[ci] or 0) for rw in rows if isinstance(rw[ci], (int, float)))
                 tc = ws.cell(tr, ci + 1, total)
                 tc.number_format = "#,##0"
-                tc.font = Font(name="Arial", bold=True)
-                tc.fill = PatternFill("solid", fgColor="FFF2CC")
-        ws.freeze_panes = "A5"
-        if rows:
-            ws.auto_filter.ref = f"A4:{get_column_letter(ncol)}{last}"
+                tc.font = Font(name="Calibri", bold=True, size=11)
+                tc.alignment = Alignment(horizontal="right")
+
+        ws.freeze_panes = f"A{hr + 1}"
+        if rows and not sh.get("no_filter") and ncol >= 3:
+            ws.auto_filter.ref = f"A{hr}:{get_column_letter(ncol)}{last}"
+
         for ci, h in enumerate(headers, 1):
-            vals = [len(str(h))] + [len(str(r[ci - 1])) for r in rows[:300] if r[ci - 1] is not None]
-            ws.column_dimensions[get_column_letter(ci)].width = min(48, max(12, max(vals) + 3))
+            vals = [len(str(h))] + [len(str(rw[ci - 1])) for rw in rows[:300] if ci - 1 < len(rw) and rw[ci - 1] is not None]
+            ws.column_dimensions[get_column_letter(ci)].width = min(46, max(13, max(vals) + 3))
+
+        # --- biểu đồ ---
+        for ch in sh.get("charts", []):
+            if not rows or len(rows) > 400:
+                continue
+            is_bar = ch.get("kind", "bar") == "bar"
+            chart = BarChart() if is_bar else LineChart()
+            if is_bar:
+                chart.type = "col"
+                chart.grouping = "clustered"
+            chart.title = ch["title"]
+            chart.height = ch.get("h", 8.5)
+            chart.width = ch.get("w", 21)
+            for vc in ch["vals"]:
+                chart.add_data(Reference(ws, min_col=vc + 1, min_row=hr, max_row=last), titles_from_data=True)
+            chart.set_categories(Reference(ws, min_col=ch.get("cat", 0) + 1, min_row=hr + 1, max_row=last))
+            ws.add_chart(chart, f"{get_column_letter(ncol + 2)}{hr + ch.get('row_offset', 0)}")
+
         ws.page_setup.orientation = "landscape"
-        ws.print_title_rows = "4:4"
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+        ws.print_title_rows = f"{hr}:{hr}"
+        ws.oddFooter.center.text = "Trang &P / &N"
     wb.properties.title = title
     out = BytesIO()
     wb.save(out)
@@ -7307,7 +7673,11 @@ async def _rp_export(message, bot, uid, kind, token):
             ]
             kv_rows = [(k, v) for k, v in kv]
             sheets = [
-                {"name": "Tổng quan", "headers": ["Chỉ tiêu", "Giá trị"], "rows": kv_rows, "money_cols": [1], "sum_cols": []},
+                {"name": "Tổng quan", "headers": ["Chỉ tiêu", "Giá trị"], "rows": kv_rows, "money_cols": [1], "sum_cols": [],
+                 "right_cols": [1], "no_filter": True,
+                 "kpis": [("Số dư hiện tại", p["balance"] if p else 0, "money"), ("Tổng nạp (kỳ)", data["nap"]["extra"]["ok"], "money"),
+                          ("Tổng rút (kỳ)", data["rut"]["extra"]["ok"], "money"), ("Tổng cược (kỳ)", cx["bets"], "money"),
+                          ("Thắng / hoàn (kỳ)", cx["wins"], "money"), ("Kết quả chơi (kỳ)", cx["net"], "signed")]},
                 {"name": "Biến động số dư", **data["his"]},
                 {"name": "Nạp", **data["nap"]}, {"name": "Rút", **data["rut"]},
                 {"name": "Cược & Thắng", **data["cuoc"]}, {"name": "Code đã nhập", **data["code"]},
@@ -7317,7 +7687,8 @@ async def _rp_export(message, bot, uid, kind, token):
         else:
             data = await asyncio.to_thread(_rp_collect, kind, uid, start, end)
             sheets = [{"name": {"his": "Biến động số dư", "nap": "Nạp", "rut": "Rút", "cuoc": "Cược & Thắng",
-                                "code": "Code đã nhập", "mua": "Gift đã mua", "gift": "Gift đã dùng"}.get(kind, "Báo cáo"), **data}]
+                                "code": "Code đã nhập", "mua": "Gift đã mua", "gift": "Gift đã dùng"}.get(kind, "Báo cáo"), **data,
+                       "kpis": _rp_kpis(kind, data)}]
             total_rows = len(data["rows"])
         head = f"{title} — ID {uid} — {label}"
         sub = f"Tài khoản: {name or 'Chưa lấy được'}"
@@ -7719,49 +8090,6 @@ async def reset_balance_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         f"Số dư trước đó: <code>{fmt_money(old_balance)}đ</code>. Lịch sử vẫn được giữ nguyên.",
         parse_mode=ParseMode.HTML)
 
-async def _system_export(update: Update, kind: str):
-    msg = update.effective_message
-    nowtag = get_vietnam_time().strftime("%Y%m%d_%H%M%S")
-    await msg.reply_text("⏳ Đang tổng hợp toàn bộ lịch sử, vui lòng chờ…")
-    try:
-        sheets = []
-        if kind in ("nap", "all"):
-            raw = query("SELECT id,user_id,amount,status,time,ref_code,admin_id FROM deposit_history ORDER BY id ASC") or []
-            rows = [(r[0], r[1], int(r[2] or 0), _rp_status(r[3]), r[4] or "", r[5] or "", r[6] or "") for r in raw]
-            sheets.append({"name": "Lich su nap", "headers": ["Mã", "User ID", "Số tiền (đ)", "Trạng thái", "Thời gian", "Mã giao dịch", "Admin xử lý"],
-                           "rows": rows, "money_cols": [2], "sum_cols": [2]})
-        if kind in ("rut", "all"):
-            raw = query("SELECT id,user_id,amount,status,time,admin_id,admin_note FROM withdraw_history ORDER BY id ASC") or []
-            rows = [(r[0], r[1], int(r[2] or 0), _rp_status(r[3]), r[4] or "", r[5] or "", r[6] or "") for r in raw]
-            sheets.append({"name": "Lich su rut", "headers": ["Mã", "User ID", "Số tiền (đ)", "Trạng thái", "Thời gian", "Admin xử lý", "Ghi chú"],
-                           "rows": rows, "money_cols": [2], "sum_cols": [2]})
-        if kind == "all":
-            raw = query("SELECT user_id,balance,bank,stk,name,refs,COALESCE(total_bet,0) FROM users ORDER BY user_id ASC") or []
-            rows = [(r[0], int(r[1] or 0), r[2] or "", r[3] or "", r[4] or "", int(r[5] or 0), int(r[6] or 0)) for r in raw]
-            sheets.append({"name": "Danh sach user", "headers": ["User ID", "Số dư (đ)", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Số người mời", "Tổng cược (đ)"],
-                           "rows": rows, "money_cols": [1, 6], "sum_cols": []})
-            raw = query("SELECT id,user_id,amount,note,time FROM history ORDER BY id ASC") or []
-            rows = [(r[0], r[1], int(r[2] or 0), r[3] or "", r[4] or "") for r in raw]
-            sheets.append({"name": "Bien dong so du", "headers": ["Mã", "User ID", "Biến động (đ)", "Nội dung", "Thời gian"],
-                           "rows": rows, "money_cols": [2], "sum_cols": [], "signed_col": 2})
-        title = {"nap": "TOÀN BỘ LỊCH SỬ NẠP HỆ THỐNG", "rut": "TOÀN BỘ LỊCH SỬ RÚT HỆ THỐNG",
-                 "all": "BÁO CÁO TOÀN HỆ THỐNG"}[kind]
-        total = sum(len(sh["rows"]) for sh in sheets)
-        try:
-            bio = await asyncio.to_thread(_rp_build_xlsx, title, "Báo cáo admin — dữ liệu toàn hệ thống", sheets)
-            fname = f"{kind}_toan_he_thong_{nowtag}.xlsx"
-        except ImportError:
-            bio = await asyncio.to_thread(_rp_build_csv, title, "Báo cáo admin — dữ liệu toàn hệ thống", sheets)
-            fname = f"{kind}_toan_he_thong_{nowtag}.csv"
-        bio.seek(0)
-        await msg.reply_document(document=bio, filename=fname,
-                                 caption=f"📊 <b>{title}</b>\n📄 Tổng số dòng: <b>{total}</b>\n🕒 {get_vietnam_datetime_db()}",
-                                 parse_mode=ParseMode.HTML)
-    except Exception as e:
-        traceback.print_exc()
-        await msg.reply_text(f"❌ Không thể xuất báo cáo: {html.escape(str(e))[:300]}",
-                             parse_mode=ParseMode.HTML)
-
 @admin_only
 async def xuatnapall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _system_export(update, "nap")
@@ -7793,6 +8121,709 @@ async def lsruttatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"#{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[3] or ''))} · {html.escape(str(r[4] or ''))}"
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+def _rp_kpis(kind, data):
+    x = data.get("extra", {}) or {}
+    n = len(data.get("rows", []))
+    if kind == "his":
+        return [("Tổng tiền vào", x.get("in", 0), "money"), ("Tổng tiền ra", x.get("out", 0), "money"),
+                ("Chênh lệch", x.get("in", 0) - x.get("out", 0), "signed"), ("Số dòng", n, "int")]
+    if kind in ("nap", "rut"):
+        return [("Thành công", x.get("ok", 0), "money"), ("Số lần thành công", x.get("ok_n", 0), "int"),
+                ("Đang chờ duyệt", x.get("pending", 0), "money"), ("Tổng số dòng", n, "int")]
+    if kind == "cuoc":
+        return [("Tổng cược", x.get("bets", 0), "money"), ("Thắng / hoàn", x.get("wins", 0), "money"),
+                ("Kết quả chơi", x.get("net", 0), "signed"), ("Số lượt", x.get("n_bet", 0) + x.get("n_win", 0), "int")]
+    if kind == "code":
+        return [("Tổng giá trị", x.get("sum", 0), "money"), ("Số code", n, "int")]
+    return [("Tổng giá trị", x.get("sum", 0), "money"), ("Đã dùng", x.get("used_n", 0), "int"), ("Số code", n, "int")]
+
+# ---------- XUẤT THỐNG KÊ TOÀN HỆ THỐNG ----------
+def _stat_bet_rows(start=None, end=None, ignore_epoch=False):
+    ed = "1970-01-01" if ignore_epoch else (get_setting("stats_epoch_day", "1970-01-01") or "1970-01-01")
+    if ignore_epoch:
+        sql = "SELECT b.user_id, b.day, b.bet, b.win FROM bet_daily b WHERE b.day>=%s"
+    else:
+        sql = ("SELECT b.user_id, b.day, GREATEST(b.bet-COALESCE(s.bet,0),0), GREATEST(b.win-COALESCE(s.win,0),0) "
+               "FROM bet_daily b LEFT JOIN stats_bet_base s ON s.user_id=b.user_id AND s.day=b.day WHERE b.day>=%s")
+    args = [ed]
+    if start:
+        sql += " AND b.day>=%s"
+        args.append(start)
+    if end:
+        sql += " AND b.day<=%s"
+        args.append(end)
+    return query(sql, tuple(args)) or []
+
+def _xs_dep_sheet(raw):
+    rows = []
+    ok = ok_n = pend = 0
+    for r in raw:
+        label = _rp_status(r[3])
+        amt = int(r[2] or 0)
+        rows.append((r[0], r[1], amt, label, r[4] or "", r[5] or "", _rp_admin_label(r[6])))
+        if label == "Thành công":
+            ok += amt
+            ok_n += 1
+        elif label == "Chờ duyệt":
+            pend += amt
+    rows.reverse()
+    return {"name": "Lịch sử nạp", "headers": ["Mã GD", "User ID", "Số tiền (đ)", "Trạng thái", "Thời gian", "Mã giao dịch", "Xử lý bởi"],
+            "rows": rows, "money_cols": [2], "status_col": 3,
+            "kpis": [("Tổng nạp thành công", ok, "money"), ("Số lệnh thành công", ok_n, "int"),
+                     ("Đang chờ duyệt", pend, "money"), ("Tổng số lệnh", len(rows), "int")]}
+
+def _xs_wd_sheet(raw):
+    rows = []
+    ok = ok_n = pend = 0
+    for r in raw:
+        label = _rp_status(r[3])
+        amt = int(r[2] or 0)
+        rows.append((r[0], r[1], amt, label, r[4] or "", _rp_admin_label(r[5]) if r[5] else "—", r[6] or ""))
+        if label == "Thành công":
+            ok += amt
+            ok_n += 1
+        elif label == "Chờ duyệt":
+            pend += amt
+    rows.reverse()
+    return {"name": "Lịch sử rút", "headers": ["Mã GD", "User ID", "Số tiền (đ)", "Trạng thái", "Thời gian", "Admin xử lý", "Ghi chú"],
+            "rows": rows, "money_cols": [2], "status_col": 3,
+            "kpis": [("Tổng rút thành công", ok, "money"), ("Số lệnh thành công", ok_n, "int"),
+                     ("Đang chờ duyệt", pend, "money"), ("Tổng số lệnh", len(rows), "int")]}
+
+def _stat_collect_sync(start, end, ignore_epoch=False):
+    ep_dep = 0 if ignore_epoch else _ep_int("stats_epoch_dep")
+    ep_wd = 0 if ignore_epoch else _ep_int("stats_epoch_wd")
+    deps = [r for r in (query("SELECT id,user_id,amount,status,time,ref_code,admin_id FROM deposit_history "
+                              "WHERE id>%s ORDER BY id ASC LIMIT 200000", (ep_dep,)) or [])
+            if _rp_in_range(r[4], start, end)]
+    wds = [r for r in (query("SELECT id,user_id,amount,status,time,admin_id,admin_note FROM withdraw_history "
+                             "WHERE id>%s ORDER BY id ASC LIMIT 200000", (ep_wd,)) or [])
+           if _rp_in_range(r[4], start, end)]
+    bet_rows = _stat_bet_rows(start, end, ignore_epoch)
+
+    per_day = {}
+    def slot(d):
+        return per_day.setdefault(d, [0, 0, 0, 0, 0, 0])   # nạp_n, nạp, rút_n, rút, cược, thắng
+
+    dep_ok = dep_n = dep_pend = wd_ok = wd_n = wd_pend = 0
+    dep_users, wd_users = {}, set()
+    for r in deps:
+        label, amt = _rp_status(r[3]), int(r[2] or 0)
+        if label == "Thành công":
+            dep_ok += amt
+            dep_n += 1
+            u = dep_users.setdefault(r[1], [0, 0, ""])
+            u[0] += amt
+            u[1] += 1
+            u[2] = r[4] or ""
+            d = _rp_date(r[4])
+            if d:
+                s = slot(d)
+                s[0] += 1
+                s[1] += amt
+        elif label == "Chờ duyệt":
+            dep_pend += amt
+    for r in wds:
+        label, amt = _rp_status(r[3]), int(r[2] or 0)
+        if label == "Thành công":
+            wd_ok += amt
+            wd_n += 1
+            wd_users.add(r[1])
+            d = _rp_date(r[4])
+            if d:
+                s = slot(d)
+                s[2] += 1
+                s[3] += amt
+        elif label == "Chờ duyệt":
+            wd_pend += amt
+    bet_total = win_total = 0
+    bet_users = {}
+    for uid_, day, b, w in bet_rows:
+        b, w = int(b or 0), int(w or 0)
+        d = day.date() if isinstance(day, datetime) else day
+        s = slot(d)
+        s[4] += b
+        s[5] += w
+        bu = bet_users.setdefault(uid_, [0, 0])
+        bu[0] += b
+        bu[1] += w
+        bet_total += b
+        win_total += w
+
+    # --- Theo ngày ---
+    days = sorted(per_day)
+    if start and end and (end - start).days <= 92:
+        days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    day_rows = []
+    for d in days:
+        s = per_day.get(d, [0, 0, 0, 0, 0, 0])
+        day_rows.append((d.strftime("%d/%m/%Y"), s[0], s[1], s[2], s[3], s[1] - s[3], s[4], s[5], s[4] - s[5]))
+    day_sheet = {
+        "name": "Theo ngày",
+        "headers": ["Ngày", "Số lệnh nạp", "Nạp (đ)", "Số lệnh rút", "Rút (đ)", "Nạp − Rút (đ)", "Tổng cược (đ)", "Trả thưởng (đ)", "Lãi/lỗ game (đ)"],
+        "rows": day_rows, "money_cols": [2, 4, 5, 6, 7, 8], "signed_cols": [5, 8], "sum_cols": [1, 2, 3, 4, 5, 6, 7, 8],
+        "charts": [{"title": "Nạp / Rút theo ngày", "kind": "bar", "cat": 0, "vals": [2, 4]},
+                   {"title": "Lãi / lỗ game theo ngày", "kind": "line", "cat": 0, "vals": [8], "row_offset": 19}],
+    }
+
+    # --- Top ---
+    all_ids = set(dep_users) | set(bet_users)
+    top_dep = sorted(dep_users.items(), key=lambda kv: kv[1][0], reverse=True)[:20]
+    top_bet = sorted(bet_users.items(), key=lambda kv: kv[1][0], reverse=True)[:20]
+    uinfo = {}
+    ids = list({i for i, _ in top_dep} | {i for i, _ in top_bet})
+    if ids:
+        for r in query("SELECT user_id, name, bank, stk FROM users WHERE user_id = ANY(%s)", (ids,)) or []:
+            uinfo[r[0]] = r
+    def owner(i):
+        r = uinfo.get(i)
+        return (r[1] or "—") if r else "—"
+    top_dep_sheet = {
+        "name": "Top nạp", "headers": ["Hạng", "User ID", "Chủ TK", "Tổng nạp (đ)", "Số lần nạp", "Lần nạp gần nhất"],
+        "rows": [(i + 1, uid_, owner(uid_), v[0], v[1], v[2]) for i, (uid_, v) in enumerate(top_dep)],
+        "money_cols": [3]}
+    top_bet_sheet = {
+        "name": "Top cược", "headers": ["Hạng", "User ID", "Chủ TK", "Tổng cược (đ)", "Tiền thắng (đ)", "Kết quả người chơi (đ)"],
+        "rows": [(i + 1, uid_, owner(uid_), v[0], v[1], v[1] - v[0]) for i, (uid_, v) in enumerate(top_bet)],
+        "money_cols": [3, 4, 5], "signed_cols": [5]}
+    bal_rows = query("SELECT user_id, balance, COALESCE(total_bet,0), name, bank FROM users ORDER BY balance DESC LIMIT 20") or []
+    top_bal_sheet = {
+        "name": "Top số dư", "headers": ["Hạng", "User ID", "Số dư (đ)", "Tổng cược (đ)", "Chủ TK", "Ngân hàng"],
+        "rows": [(i + 1, r[0], int(r[1] or 0), int(r[2] or 0), r[3] or "—", r[4] or "—") for i, r in enumerate(bal_rows)],
+        "money_cols": [2, 3]}
+
+    tot = query("SELECT COUNT(*), COALESCE(SUM(balance),0), COUNT(*) FILTER (WHERE balance>0) FROM users") or [(0, 0, 0)]
+    pend_w = query("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='pending'") or [(0, 0)]
+    rtp = (win_total * 100.0 / bet_total) if bet_total else 0
+    net_dw = dep_ok - wd_ok
+    def m(n):
+        return f"{fmt_money(int(n))} đ"
+    ov_rows = [
+        ("— KẾT QUẢ KỲ BÁO CÁO —", ""),
+        ("Tổng nạp thành công", m(dep_ok)), ("Số lệnh nạp thành công", str(dep_n)), ("Số người đã nạp", str(len(dep_users))),
+        ("Nạp trung bình / lệnh", m(dep_ok / dep_n) if dep_n else "0 đ"),
+        ("Tổng rút thành công", m(wd_ok)), ("Số lệnh rút thành công", str(wd_n)), ("Số người đã rút", str(len(wd_users))),
+        ("Chênh lệch nạp − rút", ("+" if net_dw >= 0 else "−") + m(abs(net_dw))),
+        ("— TRÒ CHƠI —", ""),
+        ("Tổng tiền cược", m(bet_total)), ("Tổng tiền trả thưởng", m(win_total)),
+        ("Lãi / lỗ game (nhà cái)", ("+" if bet_total - win_total >= 0 else "−") + m(abs(bet_total - win_total))),
+        ("Tỉ lệ hoàn trả (RTP)", f"{rtp:.2f}%".replace(".", ",")),
+        ("Số người chơi", str(len(bet_users))),
+        ("Cược trung bình / người", m(bet_total / len(bet_users)) if bet_users else "0 đ"),
+        ("— HIỆN TẠI —", ""),
+        ("Tổng số người dùng", str(int(tot[0][0] or 0))), ("Người dùng còn số dư", str(int(tot[0][2] or 0))),
+        ("Tổng số dư người dùng", m(tot[0][1] or 0)),
+        ("Rút đang chờ duyệt", f"{int(pend_w[0][0] or 0)} lệnh · {m(pend_w[0][1] or 0)}"),
+        ("Nạp đang chờ duyệt", m(dep_pend)),
+        ("Hũ Jackpot hiện tại", m(get_jackpot())),
+    ]
+    if not ignore_epoch and (get_setting("stats_epoch_at", "") or ""):
+        ov_rows.append(("Thống kê tính từ lúc reset", get_setting("stats_epoch_at", "")))
+    overview = {
+        "name": "Tổng quan", "headers": ["Chỉ tiêu", "Giá trị"], "rows": ov_rows, "right_cols": [1], "no_filter": True,
+        "kpis": [("Tổng nạp", dep_ok, "money"), ("Tổng rút", wd_ok, "money"), ("Nạp − Rút", net_dw, "signed"),
+                 ("Tổng cược", bet_total, "money"), ("Trả thưởng", win_total, "money"),
+                 ("Lãi / lỗ game", bet_total - win_total, "signed")],
+    }
+    sheets = [overview, day_sheet, top_dep_sheet, top_bet_sheet, top_bal_sheet, _xs_dep_sheet(deps), _xs_wd_sheet(wds)]
+    summary = {"dep": dep_ok, "dep_n": dep_n, "wd": wd_ok, "wd_n": wd_n, "bet": bet_total, "win": win_total,
+               "days": len(day_rows), "rows": len(deps) + len(wds)}
+    return sheets, summary
+
+@admin_only
+async def xuatthongke_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    raw = " ".join(ctx.args or []).strip()
+    token = _rp_token_from_text(raw) if raw else "n30"
+    if token is None:
+        return await msg.reply_text(
+            f'{ce("❌")} Kỳ không hợp lệ.\n'
+            f'Cú pháp: <code>/xuatthongke [kỳ]</code>\n'
+            f'Ví dụ: <code>/xuatthongke 7</code> · <code>/xuatthongke all</code> · '
+            f'<code>/xuatthongke 01/10/2026 - 29/10/2026</code>',
+            parse_mode=ParseMode.HTML)
+    start, end, label = _rp_range(token)
+    status = await msg.reply_text(f'{ce("⌛")} Đang tổng hợp thống kê hệ thống, vui lòng chờ…', parse_mode=ParseMode.HTML)
+    try:
+        sheets, sm = await asyncio.to_thread(_stat_collect_sync, start, end, False)
+        head, sub = "BÁO CÁO THỐNG KÊ HỆ THỐNG", f"Kỳ báo cáo: {label}"
+        tag = _rp_tag(token)
+        stamp = get_vietnam_time().strftime("%Y%m%d_%H%M")
+        try:
+            bio = await asyncio.to_thread(_rp_build_xlsx, head, sub, sheets)
+            fname, note = f"thongke_{tag}_{stamp}.xlsx", ""
+        except ImportError:
+            bio = await asyncio.to_thread(_rp_build_csv, head, sub, sheets)
+            fname, note = f"thongke_{tag}_{stamp}.csv", "\n⚠️ Server chưa cài <code>openpyxl</code> nên xuất CSV."
+        bio.seek(0)
+        await msg.reply_document(
+            document=bio, filename=fname,
+            caption=(f'{ce("📊")} <b>BÁO CÁO THỐNG KÊ HỆ THỐNG</b>\n'
+                     f'{ce("🗓")} {html.escape(label)}\n'
+                     f'{ce("📥")} Nạp: <b>{fmt_money(sm["dep"])}đ</b> ({sm["dep_n"]} lệnh)\n'
+                     f'{ce("📤")} Rút: <b>{fmt_money(sm["wd"])}đ</b> ({sm["wd_n"]} lệnh)\n'
+                     f'{ce("🎯")} Cược: <b>{fmt_money(sm["bet"])}đ</b> · Trả thưởng: <b>{fmt_money(sm["win"])}đ</b>\n'
+                     f'{ce("💰")} Lãi/lỗ game: <b>{_signed_money(sm["bet"] - sm["win"])}</b>' + note),
+            parse_mode=ParseMode.HTML)
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await status.edit_text(f"❌ Không xuất được file: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+async def _system_export(update: Update, kind: str):
+    msg = update.effective_message
+    nowtag = get_vietnam_time().strftime("%Y%m%d_%H%M%S")
+    status = await msg.reply_text("⏳ Đang tổng hợp toàn bộ lịch sử, vui lòng chờ…")
+    try:
+        sheets = []
+        if kind == "nap":
+            raw = query("SELECT id,user_id,amount,status,time,ref_code,admin_id FROM deposit_history ORDER BY id ASC") or []
+            sheets.append(_xs_dep_sheet(raw))
+            title = "TOÀN BỘ LỊCH SỬ NẠP HỆ THỐNG"
+        elif kind == "rut":
+            raw = query("SELECT id,user_id,amount,status,time,admin_id,admin_note FROM withdraw_history ORDER BY id ASC") or []
+            sheets.append(_xs_wd_sheet(raw))
+            title = "TOÀN BỘ LỊCH SỬ RÚT HỆ THỐNG"
+        else:
+            sheets, _ = await asyncio.to_thread(_stat_collect_sync, None, None, True)
+            raw = query("SELECT user_id,balance,bank,stk,name,refs,COALESCE(total_bet,0) FROM users ORDER BY user_id ASC") or []
+            rows = [(r[0], int(r[1] or 0), r[2] or "", r[3] or "", r[4] or "", int(r[5] or 0), int(r[6] or 0)) for r in raw]
+            sheets.append({"name": "Danh sách user", "headers": ["User ID", "Số dư (đ)", "Ngân hàng", "Số tài khoản", "Chủ tài khoản", "Số người mời", "Tổng cược (đ)"],
+                           "rows": rows, "money_cols": [1, 6],
+                           "kpis": [("Tổng người dùng", len(rows), "int"), ("Tổng số dư", sum(r[1] for r in rows), "money"),
+                                    ("Tổng cược", sum(r[6] for r in rows), "money")]})
+            raw = query("SELECT id,user_id,amount,note,time FROM history ORDER BY id DESC LIMIT 300000") or []
+            rows = [(r[0], r[1], int(r[2] or 0), r[3] or "", r[4] or "") for r in raw]
+            sheets.append({"name": "Biến động số dư", "headers": ["Mã", "User ID", "Biến động (đ)", "Nội dung", "Thời gian"],
+                           "rows": rows, "money_cols": [2], "signed_col": 2})
+            title = "BÁO CÁO TOÀN HỆ THỐNG (TOÀN BỘ THỜI GIAN)"
+        total = sum(len(sh["rows"]) for sh in sheets)
+        try:
+            bio = await asyncio.to_thread(_rp_build_xlsx, title, "Báo cáo admin — dữ liệu toàn hệ thống", sheets)
+            fname = f"{kind}_toan_he_thong_{nowtag}.xlsx"
+        except ImportError:
+            bio = await asyncio.to_thread(_rp_build_csv, title, "Báo cáo admin — dữ liệu toàn hệ thống", sheets)
+            fname = f"{kind}_toan_he_thong_{nowtag}.csv"
+        bio.seek(0)
+        await msg.reply_document(document=bio, filename=fname,
+                                 caption=f"📊 <b>{title}</b>\n📄 Tổng số dòng: <b>{total}</b>\n🕒 {get_vietnam_datetime_db()}",
+                                 parse_mode=ParseMode.HTML)
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        traceback.print_exc()
+        await msg.reply_text(f"❌ Không thể xuất báo cáo: {html.escape(str(e))[:300]}",
+                             parse_mode=ParseMode.HTML)
+
+
+# ============================================================
+# ADMIN_PANEL_V3 — MENU ADMIN NÚT BẤM, XOÁ/THÊM CƯỢC, RESET THỐNG KÊ, XOÁ GIAO DỊCH
+# ============================================================
+class _ProxyUpdate:
+    # Giả lập update không có callback_query để các lệnh gửi tin mới thay vì sửa tin của menu.
+    def __init__(self, upd):
+        self._u = upd
+        self.callback_query = None
+
+    def __getattr__(self, name):
+        return getattr(self._u, name)
+
+# ---------- XOÁ / THÊM CƯỢC ----------
+@admin_only
+async def xoacuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    try:
+        target = int(ctx.args[0])
+    except (IndexError, ValueError, TypeError):
+        return await msg.reply_text(
+            f'{ce("❌")} Cú pháp: <code>/xoacuoc [ID]</code> — xoá toàn bộ yêu cầu vòng cược của user.',
+            parse_mode=ParseMode.HTML)
+    row = query("SELECT bonus_amount, required_bet, current_bet FROM user_bonus WHERE user_id=%s", (target,)) or []
+    if not row:
+        return await msg.reply_text(f'{ce("📊")} ID <code>{target}</code> hiện không có vòng cược nào.', parse_mode=ParseMode.HTML)
+    bonus, req, cur = row[0]
+    query("DELETE FROM user_bonus WHERE user_id=%s", (target,))
+    await msg.reply_text(
+        f'{ce("✅")} <b>ĐÃ XOÁ VÒNG CƯỢC</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🆔")} ID: <code>{target}</code>\n'
+        f'{ce("🎁")} Tiền khuyến mãi: <code>{fmt_money(int(bonus or 0))}đ</code>\n'
+        f'{ce("🎯")} Yêu cầu cược: <code>{fmt_money(int(req or 0))}đ</code>\n'
+        f'{ce("📈")} Đã cược: <code>{fmt_money(int(cur or 0))}đ</code>\n'
+        f'{ce("🔓")} User có thể rút tiền bình thường.',
+        parse_mode=ParseMode.HTML)
+    try:
+        await ctx.bot.send_message(target, f'{ce("🔓")} Admin đã xoá yêu cầu vòng cược của bạn. Bạn có thể rút tiền bình thường.', parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+@admin_only
+async def themcuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    try:
+        target = int(ctx.args[0])
+        amount = parse_money_text(ctx.args[1])
+    except (IndexError, ValueError, TypeError):
+        return await msg.reply_text(
+            f'{ce("❌")} Cú pháp: <code>/themcuoc [ID] [số tiền]</code>\n'
+            f'Ví dụ: <code>/themcuoc 123456 500k</code> (số âm để trừ bớt: <code>-100k</code>)',
+            parse_mode=ParseMode.HTML)
+    row = query("SELECT required_bet, current_bet FROM user_bonus WHERE user_id=%s", (target,)) or []
+    if not row or int(row[0][0] or 0) <= 0:
+        return await msg.reply_text(
+            f'{ce("❌")} ID <code>{target}</code> không có vòng cược để cộng. Dùng <code>/kmnap</code> để tạo khuyến mãi có vòng cược.',
+            parse_mode=ParseMode.HTML)
+    req, cur = int(row[0][0]), int(row[0][1] or 0)
+    new_bet = max(0, cur + amount)
+    query("UPDATE user_bonus SET current_bet=%s WHERE user_id=%s", (new_bet, target))
+    left = req - new_bet
+    await msg.reply_text(
+        f'{ce("✅")} <b>ĐÃ CẬP NHẬT TIẾN ĐỘ CƯỢC</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🆔")} ID: <code>{target}</code>\n'
+        f'{ce("➕")} Thêm: <code>{_signed_money(amount)}</code>\n'
+        f'{ce("📈")} Đã cược: <code>{fmt_money(new_bet)}đ</code> / <code>{fmt_money(req)}đ</code>\n'
+        f'{ce("📌")} Trạng thái: ' + (f'còn thiếu <code>{fmt_money(left)}đ</code>' if left > 0 else 'ĐÃ ĐỦ CƯỢC'),
+        parse_mode=ParseMode.HTML)
+    if new_bet >= req:
+        await check_and_notify_bet_completion(target, new_bet, req)
+
+# ---------- RESET THỐNG KÊ ----------
+@admin_only
+async def resetthongke_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    args = [a.lower() for a in (ctx.args or [])]
+    if args and args[0] in ("khoiphuc", "undo", "huy"):
+        for k in ("stats_epoch_dep", "stats_epoch_wd"):
+            set_setting(k, "0")
+        set_setting("stats_epoch_day", "1970-01-01")
+        set_setting("stats_epoch_at", "")
+        query("DELETE FROM stats_bet_base")
+        return await msg.reply_text(f'{ce("✅")} Đã khôi phục thống kê đầy đủ (bỏ mốc reset).', parse_mode=ParseMode.HTML)
+    kb = InlineKeyboardMarkup([[btn("XÁC NHẬN RESET", "⚠️", callback_data="resetstat_yes"),
+                                btn("Hủy", "❌", callback_data="resetstat_no")]])
+    await msg.reply_text(
+        f'{ce("⚠️")} <b>RESET THỐNG KÊ HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        f'Sau khi xác nhận, các bảng thống kê (/thongke, /tong, /homnay, file xuất thống kê) sẽ đếm lại <b>từ 0</b>.\n\n'
+        f'{ce("✅")} <b>KHÔNG bị xoá:</b> số dư, lịch sử cá nhân của user, điều kiện rút tiền, VIP, hoàn thưởng.\n'
+        f'{ce("🔄")} Muốn quay lại thống kê đầy đủ: <code>/resetthongke khoiphuc</code>\n\n'
+        f'{_stat_epoch_note()}Bạn chắc chắn muốn reset?',
+        reply_markup=kb, parse_mode=ParseMode.HTML)
+
+async def reset_stats_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS or is_admin_banned(q.from_user.id):
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    if q.data == "resetstat_no":
+        await q.answer("Đã hủy.")
+        return await q.edit_message_text("❎ Đã hủy reset thống kê.")
+    dep_max = int(((query("SELECT COALESCE(MAX(id),0) FROM deposit_history") or [(0,)])[0][0]) or 0)
+    wd_max = int(((query("SELECT COALESCE(MAX(id),0) FROM withdraw_history") or [(0,)])[0][0]) or 0)
+    today = get_vietnam_time().date()
+    set_setting("stats_epoch_dep", dep_max)
+    set_setting("stats_epoch_wd", wd_max)
+    query("DELETE FROM stats_bet_base")
+    query("INSERT INTO stats_bet_base (user_id, day, bet, win) SELECT user_id, day, bet, win FROM bet_daily WHERE day=%s", (today,))
+    set_setting("stats_epoch_day", today.isoformat())
+    set_setting("stats_epoch_at", get_vietnam_datetime_db())
+    await q.answer("Đã reset thống kê.")
+    await q.edit_message_text(
+        f'{ce("✅")} <b>ĐÃ RESET THỐNG KÊ TỪ ĐẦU</b>\n'
+        f'{ce("⏰")} Mốc reset: <code>{get_vietnam_datetime_db()}</code>\n'
+        f'{ce("💡")} Xem lại bằng /thongke. Khôi phục: <code>/resetthongke khoiphuc</code>',
+        parse_mode=ParseMode.HTML)
+
+# ---------- XOÁ THỦ CÔNG GIAO DỊCH NẠP / RÚT ----------
+async def _txdel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, kind: str):
+    msg = update.effective_message
+    cmd = "xoanap" if kind == "dep" else "xoarut"
+    ids = []
+    for a in (ctx.args or [])[:10]:
+        if a.isdigit():
+            ids.append(int(a))
+    if not ids:
+        return await msg.reply_text(
+            f'{ce("❌")} Cú pháp: <code>/{cmd} [mã GD] [mã GD...]</code>\n'
+            f'Xem mã GD ở <code>/{"lsnaptatca" if kind == "dep" else "lsruttatca"}</code> (số sau dấu #).\n'
+            f'Xoá xong, thống kê tự động trừ giao dịch đó.',
+            parse_mode=ParseMode.HTML)
+    table = "deposit_history" if kind == "dep" else "withdraw_history"
+    rows = query(f"SELECT id, user_id, amount, status, time FROM {table} WHERE id = ANY(%s) ORDER BY id", (ids,)) or []
+    if not rows:
+        return await msg.reply_text(f'{ce("❌")} Không tìm thấy giao dịch nào với mã đã nhập.', parse_mode=ParseMode.HTML)
+    ok_ids, lines = [], []
+    for r in rows:
+        label = _rp_status(r[3])
+        blocked = (kind == "rut" and label == "Chờ duyệt")
+        lines.append(f'{ce("🚫") if blocked else ce("🧾")} #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(label)} · {html.escape(str(r[4] or ""))}'
+                     + (' <i>(đang chờ duyệt — hãy duyệt/từ chối trước)</i>' if blocked else ''))
+        if not blocked:
+            ok_ids.append(r[0])
+    if not ok_ids:
+        return await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    kb = InlineKeyboardMarkup([[btn("XÁC NHẬN XOÁ", "🗑", callback_data=f"txdel_yes_{kind}_{'-'.join(map(str, ok_ids))}"),
+                                btn("Hủy", "❌", callback_data="txdel_no")]])
+    await msg.reply_text(
+        f'{ce("🗑")} <b>XÁC NHẬN XOÁ GIAO DỊCH {"NẠP" if kind == "dep" else "RÚT"}</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        + "\n".join(lines) +
+        f'\n━━━━━━━━━━━━━━━━━━━━━\n{ce("📌")} Chỉ xoá bản ghi giao dịch (thống kê tự cập nhật). <b>Số dư của user KHÔNG bị thay đổi</b> — nếu cần hãy dùng /sub hoặc /add.'
+        + (f'\n{ce("⚠️")} Giao dịch nạp tự động có mã SePay: xoá bản ghi sẽ mất cơ chế chống nạp trùng cho mã đó.' if kind == "dep" else ''),
+        reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def xoanap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _txdel_cmd(update, ctx, "dep")
+
+@admin_only
+async def xoarut_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _txdel_cmd(update, ctx, "rut")
+
+async def txdel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS or is_admin_banned(q.from_user.id):
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    if q.data == "txdel_no":
+        await q.answer("Đã hủy.")
+        return await q.edit_message_text("❎ Đã hủy xoá giao dịch.")
+    parts = q.data.split("_", 3)
+    if len(parts) < 4:
+        return await q.answer()
+    kind, ids = parts[2], [int(x) for x in parts[3].split("-") if x.isdigit()]
+    table = "deposit_history" if kind == "dep" else "withdraw_history"
+    if kind == "dep":
+        rows = query(f"DELETE FROM {table} WHERE id = ANY(%s) RETURNING id, user_id, amount", (ids,)) or []
+    else:
+        rows = query(f"DELETE FROM {table} WHERE id = ANY(%s) AND status <> 'pending' RETURNING id, user_id, amount", (ids,)) or []
+    await q.answer("Đã xoá.")
+    total = sum(int(r[2] or 0) for r in rows)
+    await q.edit_message_text(
+        f'{ce("✅")} <b>ĐÃ XOÁ {len(rows)} GIAO DỊCH {"NẠP" if kind == "dep" else "RÚT"}</b>\n'
+        f'{ce("💰")} Tổng tiền: <code>{fmt_money(total)}đ</code>\n'
+        f'{ce("📊")} Thống kê đã tự động cập nhật (xem /thongke).',
+        parse_mode=ParseMode.HTML)
+
+# ---------- MENU ADMIN DẠNG NÚT BẤM ----------
+# item = (loại, lệnh hiển thị, mô tả, khoá chạy / khoá usage, cú pháp, ví dụ)
+_ADM_CATS = [
+    ("bt", "🛠", "BẢO TRÌ & ROOM", "Bật/tắt bảo trì game, nạp, rút và tắt/bật room hoàn toàn.", [
+        ("run", "baotri", "Bảng bảo trì từng game", "baotri", None, None),
+        ("run", "baotriht", "Bảng bảo trì hệ thống", "baotriht", None, None),
+        ("run", "trangthai", "Trạng thái tổng quan bot", "trangthai", None, None),
+        ("run", "tatroom", "Tắt room nhóm chính (bot ngừng gửi tin + hoàn cược phiên đang mở)", "tatroom", None, None),
+        ("run", "moroom", "Bật lại room nhóm chính", "moroom", None, None),
+        ("run", "tatroom all", "Tắt TẤT CẢ room", "tatroom|all", None, None),
+        ("run", "moroom all", "Bật TẤT CẢ room", "moroom|all", None, None),
+        ("run", "trangthairoom", "Xem trạng thái các room", "trangthairoom", None, None),
+        ("use", "baotrigame", "Bảo trì nhiều game / nạp / rút", "x", "/baotrigame [game...] on|off", "/baotrigame xx lh on  ·  /baotrigame all off"),
+        ("use", "baotriall", "Bảo trì toàn hệ thống", "x", "/baotriall on|off", "/baotriall on"),
+        ("use", "baotritc", "Bảo trì toàn bộ (kể cả menu)", "x", "/baotritc on|off", "/baotritc off"),
+        ("use", "tatcuoc", "Chỉ khóa/mở cược trong nhóm", "x", "/tatcuoc on|off", "/tatcuoc off"),
+    ]),
+    ("us", "👥", "NGƯỜI DÙNG", "Tra cứu hồ sơ, khóa/mở tài khoản, cấm game, nạp/rút, hoàn trả.", [
+        ("run", "all", "Danh sách người dùng (phân trang)", "all", None, None),
+        ("run", "dsban", "Danh sách tài khoản bị khóa", "dsban", None, None),
+        ("run", "topsodu", "Top 10 số dư", "topsodu", None, None),
+        ("run", "topcuoc", "Top 10 tổng cược", "topcuoc", None, None),
+        ("use", "fulluser", "Hồ sơ đầy đủ + nút xuất Excel", "x", "/fulluser [ID]", "/fulluser 123456789 (hoặc reply tin nhắn của user)"),
+        ("use", "user", "Hồ sơ nhanh + khóa/mở", "x", "/user [ID]", "/user 123456789"),
+        ("use", "timuser", "Tìm user theo ID/STK/tên", "x", "/timuser [từ khóa]", "/timuser NGUYEN VAN A"),
+        ("use", "ban", "Khóa tài khoản", "x", "/ban [ID]", "/ban 123456789"),
+        ("use", "unban", "Mở khóa tài khoản", "x", "/unban [ID]", "/unban 123456789"),
+        ("use", "camgame", "Cấm user chơi 1 game", "x", "/camgame [ID] [game]", "/camgame 123456789 xx"),
+        ("use", "mogame", "Gỡ cấm game", "x", "/mogame [ID] [game|all]", "/mogame 123456789 all"),
+        ("use", "camtn", "Khóa nạp/rút của user", "x", "/camtn [ID] nap|rut", "/camtn 123456789 rut"),
+        ("use", "motn", "Mở khóa nạp/rút", "x", "/motn [ID] nap|rut|all", "/motn 123456789 all"),
+        ("use", "camhoan", "Khóa nhận hoàn trả", "x", "/camhoan [ID] ngay|tuan|all", "/camhoan 123456789 all"),
+        ("use", "mohoan", "Mở nhận hoàn trả", "x", "/mohoan [ID] ngay|tuan|all", "/mohoan 123456789 all"),
+        ("use", "resetbank", "Gỡ liên kết ngân hàng", "x", "/resetbank [ID]", "/resetbank 123456789"),
+    ]),
+    ("mn", "💰", "TIỀN & GIAO DỊCH", "Cộng/trừ tiền, nạp tay, duyệt nạp/rút, xoá giao dịch.", [
+        ("run", "dsnap", "Nạp đang chờ duyệt", "dsnap", None, None),
+        ("run", "dsrut", "Rút đang chờ duyệt", "dsrut", None, None),
+        ("run", "lsnaptatca", "50 lịch sử nạp mới nhất", "lsnaptatca", None, None),
+        ("run", "lsruttatca", "50 lịch sử rút mới nhất", "lsruttatca", None, None),
+        ("run", "soduall", "Số dư của tất cả user", "soduall", None, None),
+        ("run", "hisall", "50 giao dịch gần nhất toàn hệ thống", "hisall", None, None),
+        ("use", "naptien", "Nạp tiền tay cho user", "x", "/naptien [ID] [số tiền]", "/naptien 123456789 100000"),
+        ("use", "add", "Cộng tiền", "x", "/add [ID] [số tiền]", "/add 123456789 50000"),
+        ("use", "sub", "Trừ tiền", "x", "/sub [ID] [số tiền]", "/sub 123456789 50000"),
+        ("use", "setsd", "Đặt số dư bằng giá trị cụ thể", "x", "/setsd [ID] [số tiền]", "/setsd 123456789 500k"),
+        ("use", "resetuser", "Reset số dư 1 user về 0 (có xác nhận)", "x", "/resetuser [ID]", "/resetuser 123456789"),
+        ("use", "xoanap", "Xoá giao dịch NẠP (thống kê tự cập nhật)", "x", "/xoanap [mã GD] [mã GD...]", "/xoanap 15 16"),
+        ("use", "xoarut", "Xoá giao dịch RÚT (thống kê tự cập nhật)", "x", "/xoarut [mã GD] [mã GD...]", "/xoarut 8"),
+    ]),
+    ("bet", "🎯", "CƯỢC & KHUYẾN MÃI", "Quản lý vòng cược, khuyến mãi nạp, hoàn trả, hũ jackpot.", [
+        ("run", "dskm", "Danh sách đang có vòng cược khuyến mãi", "dskm", None, None),
+        ("run", "kmgio", "Xem/điều khiển giờ vàng nạp 15%", "kmgio", None, None),
+        ("run", "homnay", "Báo cáo nhanh hôm nay", "homnay", None, None),
+        ("use", "xoacuoc", "XOÁ toàn bộ vòng cược của user", "x", "/xoacuoc [ID]", "/xoacuoc 123456789"),
+        ("use", "themcuoc", "THÊM tiền cược đã hoàn thành (âm để trừ)", "x", "/themcuoc [ID] [số tiền]", "/themcuoc 123456789 500k"),
+        ("use", "kmnap", "Tặng khuyến mãi có vòng cược", "x", "/kmnap [ID] [số tiền]", "/kmnap 123456789 20000"),
+        ("use", "checkprogressadmin", "Xem tiến độ cược của user", "x", "/checkprogressadmin [ID]", "/checkprogressadmin 123456789"),
+        ("use", "resetprogress", "Reset tiến độ cược", "x", "/resetprogress [ID]", "/resetprogress 123456789"),
+        ("use", "resethoan", "Xoá thưởng hoàn trả đang chờ nhận", "x", "/resethoan [ID] ngay|tuan|all", "/resethoan 123456789 all"),
+        ("use", "sethoancuoc", "Đặt % hoàn cược", "x", "/sethoancuoc ngay|tuan [%]", "/sethoancuoc ngay 2"),
+        ("use", "sethu", "Đặt hũ Jackpot", "x", "/sethu [số tiền]", "/sethu 50m"),
+    ]),
+    ("cd", "🎁", "GIFTCODE", "Tạo, xem và xoá các loại code.", [
+        ("run", "taogift", "Tạo giftcode nhiều loại (từng bước)", "taogift", None, None),
+        ("run", "dsgift", "30 giftcode gần nhất", "dsgift", None, None),
+        ("use", "taocode", "Tạo code thường", "x", "/taocode [số tiền] [lượt dùng]", "/taocode 10000 50"),
+        ("use", "taocodeall", "Tạo nhiều code 1 lượt", "x", "/taocodeall [số tiền] [số lượng]", "/taocodeall 5000 20"),
+        ("use", "xoacode", "Xoá code thường", "x", "/xoacode [mã]", "/xoacode ABC12345"),
+        ("use", "xoagift", "Xoá giftcode", "x", "/xoagift [mã]", "/xoagift JAV88-TANTHU-XXXXXXX"),
+    ]),
+    ("tk", "📊", "THỐNG KÊ & XUẤT FILE", "Thống kê hệ thống và xuất file Excel đẹp nhiều sheet.", [
+        ("run", "thongke", "Bảng thống kê hôm nay / tháng / tổng", "thongke", None, None),
+        ("run", "tong", "Tổng quan tài chính", "tong", None, None),
+        ("run", "xuatthongke 7", "Xuất file thống kê 7 ngày", "xuatthongke|7", None, None),
+        ("run", "xuatthongke 30", "Xuất file thống kê 30 ngày", "xuatthongke|30", None, None),
+        ("run", "xuatthongke all", "Xuất file thống kê toàn bộ", "xuatthongke|all", None, None),
+        ("run", "xuatnapall", "Xuất toàn bộ lịch sử NẠP", "xuatnapall", None, None),
+        ("run", "xuatrutall", "Xuất toàn bộ lịch sử RÚT", "xuatrutall", None, None),
+        ("run", "xuathethong", "Xuất báo cáo toàn hệ thống", "xuathethong", None, None),
+        ("run", "resetthongke", "Reset thống kê từ đầu (có xác nhận)", "resetthongke", None, None),
+        ("use", "xuatthongke", "Xuất thống kê theo kỳ tuỳ chọn", "x", "/xuatthongke [kỳ]", "/xuatthongke 01/10/2026 - 29/10/2026"),
+        ("use", "xuatls", "Xuất FULL Excel của 1 user", "x", "/xuatls [ID] [kỳ]", "/xuatls 123456789 30"),
+        ("use", "tongket", "Tổng kết 1 user theo kỳ", "x", "/tongket [ID] [kỳ]", "/tongket 123456789 7"),
+        ("use", "lsuser", "Biến động số dư của user", "x", "/lsuser [ID] [kỳ]", "/lsuser 123456789 all"),
+    ]),
+    ("cm", "📣", "THÔNG BÁO", "Gửi thông báo và nhắn riêng cho user.", [
+        ("use", "send", "Gửi thông báo cho tất cả user", "x", "/send [nội dung]", "/send Bot bảo trì 10 phút"),
+        ("use", "rep", "Nhắn riêng cho 1 user", "x", "/rep [ID] [nội dung]", "/rep 123456789 Đã duyệt rút của bạn"),
+    ]),
+]
+_ADM_CAT_MAP = {c[0]: c for c in _ADM_CATS}
+
+def _adm_ok(uid):
+    return uid in ADMIN_IDS and not is_admin_banned(uid)
+
+def _adm_runner(key):
+    return {
+        "baotri": baotri_cmd, "baotriht": baotri_he_thong_cmd, "trangthai": trangthai_cmd,
+        "tatroom": tatroom_cmd, "moroom": moroom_cmd, "trangthairoom": trangthairoom_cmd,
+        "all": all_user, "dsban": dsban_cmd, "topsodu": topsodu_cmd, "topcuoc": topcuoc_cmd,
+        "dsnap": dsnap_cmd, "dsrut": dsrut_cmd, "lsnaptatca": lsnaptatca_cmd, "lsruttatca": lsruttatca_cmd,
+        "soduall": soduall_cmd, "hisall": history_all_admin, "dskm": dskm_cmd, "kmgio": kmgio_cmd,
+        "homnay": homnay_cmd, "taogift": gift_flow_start, "dsgift": dsgift_cmd, "thongke": dashboard_cmd,
+        "tong": tong_cmd, "xuatthongke": xuatthongke_cmd, "xuatnapall": xuatnapall_cmd,
+        "xuatrutall": xuatrutall_cmd, "xuathethong": xuathethong_cmd, "resetthongke": resetthongke_cmd,
+        "adminhelp": admin_help_cmd,
+    }.get(key)
+
+def _adm_home():
+    def sc(sql):
+        return int(_sum(sql) or 0)
+    pend_w = sc("SELECT COUNT(*) FROM withdraw_history WHERE status='pending'")
+    pend_d = sc("SELECT COUNT(*) FROM deposit_history WHERE status='pending'")
+    mt_games = sum(1 for v in ADMIN_GAMES.values() if check_mt(v[0]))
+    room_off = bool(GROUP_IDS) and all(_is_room_muted(g) for g in GROUP_IDS)
+    text = (
+        f'{ce("🛠")} <b>TRUNG TÂM QUẢN TRỊ</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("👋")} Bảng điều khiển dành riêng cho <b>Admin</b>. Chọn một danh mục bên dưới để xem toàn bộ lệnh.\n\n'
+        f'{ce("📌")} <b>CÁCH DÙNG</b>\n'
+        f'• {ce("⚡")} <b>Nút ⚡</b>: bấm là chạy ngay lệnh, không cần nhập gì thêm.\n'
+        f'• {ce("✏️")} <b>Nút ✏️</b>: hiện cú pháp + ví dụ, chạm vào dòng lệnh để sao chép rồi gửi kèm ID/số tiền.\n'
+        f'• Các lệnh dùng được cả trong chat riêng lẫn trong nhóm.\n\n'
+        f'{ce("📊")} <b>TÌNH TRẠNG NHANH</b>\n'
+        f'• {ce("📤")} Rút chờ duyệt: <b>{pend_w}</b>   {ce("📥")} Nạp chờ: <b>{pend_d}</b>\n'
+        f'• {ce("🎮")} Game đang bảo trì: <b>{mt_games}/{len(ADMIN_GAMES)}</b>\n'
+        f'• {ce("🏠")} Room: <b>{"ĐANG TẮT" if room_off else "ĐANG BẬT"}</b>\n'
+        f'• {ce("🛡")} Bảo trì hệ thống: <b>{"BẬT" if is_system_maintenance() else "TẮT"}</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━'
+    )
+    rows, cur = [], []
+    for key, em, title, _d, _items in _ADM_CATS:
+        cur.append(btn(title.title(), em, callback_data=f"adm2:cat:{key}"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    rows.append([btn("Hướng dẫn dạng chữ", "📜", callback_data="adm2:help"), btn("Làm mới", "🔄", callback_data="adm2:home")])
+    rows.append([btn("Đóng", "❌", callback_data="adm2:close")])
+    return text, InlineKeyboardMarkup(rows)
+
+def _adm_cat(key):
+    _k, em, title, desc, items = _ADM_CAT_MAP[key]
+    lines = [f'{ce(em)} <b>{title}</b>', '━━━━━━━━━━━━━━━━━━━━━', f'<i>{desc}</i>', '']
+    run_btns, use_btns = [], []
+    for idx, (kind, cmd, label, rkey, _usage, _ex) in enumerate(items):
+        if kind == "run":
+            lines.append(f'{ce("⚡")} <code>/{cmd}</code> — {label}')
+            run_btns.append(btn(f"/{cmd}", "⚡", callback_data=f"adm2:run:{rkey}"))
+        else:
+            lines.append(f'{ce("✏️")} <code>/{cmd}</code> — {label}')
+            use_btns.append(btn(f"/{cmd}", "✏️", callback_data=f"adm2:use:{key}:{idx}"))
+    lines += ['', f'{ce("💡")} <i>⚡ chạy ngay · ✏️ xem cú pháp</i>']
+    rows = []
+    for group in (run_btns, use_btns):
+        for i in range(0, len(group), 2):
+            rows.append(group[i:i + 2])
+    rows.append([btn("Menu admin", "🏠", callback_data="adm2:home")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+@admin_only
+async def admin_panel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text, kb = _adm_home()
+    await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+async def admin_panel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not _adm_ok(q.from_user.id):
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    parts = (q.data or "").split(":")
+    act = parts[1] if len(parts) > 1 else ""
+    try:
+        if act == "home":
+            await q.answer()
+            text, kb = _adm_home()
+            return await safe_edit(q, text, kb)
+        if act == "cat" and len(parts) > 2 and parts[2] in _ADM_CAT_MAP:
+            await q.answer()
+            text, kb = _adm_cat(parts[2])
+            return await safe_edit(q, text, kb)
+        if act == "use" and len(parts) > 3 and parts[2] in _ADM_CAT_MAP:
+            await q.answer()
+            item = _ADM_CAT_MAP[parts[2]][4][int(parts[3])]
+            _kind, cmd, label, _rk, usage, example = item
+            text = (f'{ce("✏️")} <b>/{cmd}</b> — {label}\n━━━━━━━━━━━━━━━━━━━━━\n'
+                    f'{ce("📌")} <b>Cú pháp:</b>\n<code>{html.escape(usage)}</code>\n\n'
+                    f'{ce("💡")} <b>Ví dụ:</b>\n<code>{html.escape(example)}</code>\n\n'
+                    f'<i>Chạm vào dòng lệnh để sao chép, sửa ID/số tiền rồi gửi.</i>')
+            kb = InlineKeyboardMarkup([[btn("Quay lại danh mục", "🔙", callback_data=f"adm2:cat:{parts[2]}"),
+                                        btn("Menu admin", "🏠", callback_data="adm2:home")]])
+            return await safe_edit(q, text, kb)
+        if act == "help":
+            await q.answer()
+            return await admin_help_cmd(_ProxyUpdate(update), ctx)
+        if act == "close":
+            await q.answer()
+            return await q.message.delete()
+        if act == "run" and len(parts) > 2:
+            key, _, arg = parts[2].partition("|")
+            fn = _adm_runner(key)
+            if not fn:
+                return await q.answer("Lệnh không tồn tại.", show_alert=True)
+            await q.answer("⚡ Đang chạy…")
+            ctx.args = [arg] if arg else []
+            return await fn(_ProxyUpdate(update), ctx)
+        await q.answer()
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await q.message.reply_text(f"❌ Lỗi khi chạy lệnh: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
 
 async def _on_error(update, context):
@@ -7874,7 +8905,17 @@ application.add_handler(CommandHandler("baotriall", baotri_hethong_cmd))
 application.add_handler(CommandHandler("baotritc", baotri_tong_cong_cmd))
 application.add_handler(CommandHandler("tatcuoc", tatcuoc_cmd))
 
-application.add_handler(CommandHandler("admin", admin_help_cmd))
+application.add_handler(CommandHandler("admin", admin_panel_cmd))
+application.add_handler(CommandHandler("adminhelp", admin_help_cmd))
+application.add_handler(CommandHandler("xoacuoc", xoacuoc_cmd))
+application.add_handler(CommandHandler("themcuoc", themcuoc_cmd))
+application.add_handler(CommandHandler("resetthongke", resetthongke_cmd))
+application.add_handler(CommandHandler("xoanap", xoanap_cmd))
+application.add_handler(CommandHandler("xoarut", xoarut_cmd))
+application.add_handler(CommandHandler("xuatthongke", xuatthongke_cmd))
+application.add_handler(CallbackQueryHandler(admin_panel_callback, pattern=r"^adm2:"))
+application.add_handler(CallbackQueryHandler(reset_stats_callback, pattern=r"^resetstat_(yes|no)$"))
+application.add_handler(CallbackQueryHandler(txdel_callback, pattern=r"^txdel_"))
 application.add_handler(CommandHandler("fulluser", fulluser_cmd))
 application.add_handler(CommandHandler("lsuser", lsuser_cmd))
 application.add_handler(CommandHandler("lsnap", lsnap_cmd))
