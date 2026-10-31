@@ -4224,17 +4224,42 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
                     f'<i>QR là thông tin chuyển khoản để admin xử lý thủ công; vui lòng kiểm tra đúng người nhận trước khi chuyển.</i>'
                 )
-                # Ưu tiên gửi đúng ảnh QR người dùng đã tải lên khi liên kết.
-                if payout_qr_file_id:
+                # BANKING: luôn tạo QR VietQR động chứa đúng số tiền và nội dung.
+                # MOMO/ZALOPAY: dùng QR ví do người dùng tải lên khi liên kết;
+                # không tự nhúng số tiền/nội dung vào QR ví khi chưa có định dạng/API chính thức.
+                if str(method).upper() == "BANKING":
+                    try:
+                        dynamic_qr = make_local_qr(
+                            amount=amount,
+                            content=transfer_memo,
+                            bank_id=qr_bank,
+                            account_no=stk,
+                        )
+                        await ctx.bot.send_photo(
+                            chat_id=admin_id, photo=dynamic_qr,
+                            caption=admin_text, reply_markup=keyboard,
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception as qr_error:
+                        print(f"Không tạo được QR ngân hàng động: {qr_error}")
+                        await send_deposit_qr(
+                            ctx.bot, admin_id, qr_url, admin_text, keyboard,
+                            amount, transfer_memo, bank_id=qr_bank, account_no=stk
+                        )
+                elif payout_qr_file_id:
                     await ctx.bot.send_photo(
                         chat_id=admin_id, photo=payout_qr_file_id,
                         caption=admin_text, reply_markup=keyboard,
                         parse_mode=ParseMode.HTML
                     )
                 else:
-                    # Tài khoản cũ chưa có ảnh QR: dùng QR VietQR tạo tự động như trước.
-                    await send_deposit_qr(ctx.bot, admin_id, qr_url, admin_text, keyboard, amount, transfer_memo,
-                                          bank_id=qr_bank, account_no=stk)
+                    # Không dùng QR ngân hàng cho ví điện tử vì có thể chuyển sai người nhận.
+                    await ctx.bot.send_message(
+                        chat_id=admin_id,
+                        text=admin_text + "\n\n⚠️ Tài khoản ví chưa có ảnh QR đã lưu. Vui lòng kiểm tra thông tin ví trước khi chuyển.",
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML
+                    )
             except Exception as e:
                 print(f"Không thể gửi QR/tin nhắn đến admin {admin_id}: {e}")
                 try:
