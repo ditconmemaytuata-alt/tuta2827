@@ -37,9 +37,9 @@ MIN_WITHDRAW = 50000
 LOG_GROUP_ID = -1004375247819
 
 # THÔNG TIN NGÂN HÀNG MỚI
-BANK_ID = "MB"
-ACCOUNT_NO = "007399999"
-ACCOUNT_NAME = "NGO VIET HOANG"
+BANK_ID = "BIDV"
+ACCOUNT_NO = "8960726769"
+ACCOUNT_NAME = "TU NGOC LOI"
 
 _bot_instance = None
 GROUP_IDS = [-1004375247819]
@@ -1100,7 +1100,7 @@ def get_deposit_info(user_id, amount=0):
     
     caption = (
         f'{ce("💳")} <b>THÔNG TIN NẠP TIỀN</b>\n\n'
-        f'{ce("🏦")} Ngân hàng: <b>MBBANK</b>\n'
+        f'{ce("🏦")} Ngân hàng: <b>BIDV</b>\n'
         f'{ce("👤")} CTK: <b>{ACCOUNT_NAME}</b>\n'
         f'{ce("💰")} STK: <code>{ACCOUNT_NO}</code>\n'
         f'{ce("✍️")} Nội dung: <code>{content}</code>\n'
@@ -2557,6 +2557,13 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ON CONFLICT (user_id, group_id, date) DO UPDATE SET
             interaction_count = daily_top_interactions.interaction_count + 1
     """, (uid, gid, today))
+    # Bộ đếm dài hạn của /checktt tự bắt đầu chu kỳ mới khi đủ 6.000 tin.
+    cycle_row = query("SELECT interaction_count FROM group_interactions WHERE user_id=%s AND group_id=%s",
+                      (uid, gid))
+    cycle_count = int(cycle_row[0][0] or 0) if cycle_row else 0
+    if cycle_count >= 6000:
+        query("UPDATE group_interactions SET interaction_count=0 WHERE user_id=%s AND group_id=%s",
+              (uid, gid))
     total = query(
         "SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
         (uid, gid, today)
@@ -4422,7 +4429,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("Mời đệ tử", "🧑‍🤝‍🧑", callback_data="ev_moi_de_tu")]
         ])
         return await user_reply.reply_text(
-            f'{ce("🎁")} <b>TRUNG TÂM EVENT ET88</b>\nChọn chương trình bạn muốn xem hoặc nhận thưởng:',
+            f'{ce("🎁")} <b>TRUNG TÂM EVENT JAV88</b>\nChọn chương trình bạn muốn xem hoặc nhận thưởng:',
             reply_markup=kb, parse_mode=ParseMode.HTML)
 
     if key == "LỆNH":
@@ -7304,6 +7311,62 @@ async def _interaction_top_text(bot, group_id, date_text, limit=10):
     ]
     return "\n".join(lines)
 
+@admin_only
+async def reset_system_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Yêu cầu xác nhận trước khi xóa dữ liệu hệ thống."""
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⚠️ XÁC NHẬN XÓA TOÀN BỘ", callback_data="sysreset_yes"),
+        InlineKeyboardButton("Hủy", callback_data="sysreset_no"),
+    ]])
+    await update.effective_message.reply_text(
+        "⚠️ <b>XÁC NHẬN RESET TOÀN BỘ HỆ THỐNG</b>\\n\\n"
+        "Thao tác này sẽ xóa dữ liệu người dùng, số dư, lịch sử giao dịch, cược, giftcode, "
+        "thống kê và dữ liệu vận hành trong cơ sở dữ liệu. Không thể hoàn tác.\\n"
+        "Các cấu hình trong bảng settings được giữ lại để bot tiếp tục khởi động.\\n\\n"
+        "Chỉ nhấn xác nhận nếu bạn đã sao lưu dữ liệu.",
+        reply_markup=kb, parse_mode=ParseMode.HTML
+    )
+
+async def reset_system_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return
+    if q.from_user.id not in ADMIN_IDS:
+        return await q.answer("Bạn không có quyền thực hiện.", show_alert=True)
+    if q.data == "sysreset_no":
+        await q.answer("Đã hủy.")
+        return await q.edit_message_text("Đã hủy reset hệ thống.")
+    if q.data != "sysreset_yes":
+        return
+    await q.answer("Đang thực hiện reset…")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT tablename FROM pg_tables
+            WHERE schemaname='public' AND tablename <> 'settings'
+              AND tablename NOT LIKE 'schema_migrations%'
+            ORDER BY tablename
+        """)
+        tables = [r[0] for r in cur.fetchall()]
+        if tables:
+            quoted = ", ".join('"' + name.replace('"', '""') + '"' for name in tables)
+            cur.execute("TRUNCATE TABLE " + quoted + " RESTART IDENTITY CASCADE")
+        conn.commit()
+        _interaction_seen.clear()
+        await q.edit_message_text(
+            "✅ <b>ĐÃ RESET DỮ LIỆU HỆ THỐNG</b>\\n"
+            f"Đã làm sạch {len(tables)} bảng dữ liệu. Cấu hình settings được giữ lại.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        conn.rollback()
+        print(f"Lỗi reset toàn hệ thống: {e}")
+        await q.edit_message_text("❌ Reset thất bại; cơ sở dữ liệu đã rollback. Kiểm tra log máy chủ.")
+    finally:
+        cur.close()
+        conn.close()
+
 async def top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     group_id = chat.id if chat and chat.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
@@ -7349,12 +7412,17 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not group_id:
         return await update.effective_message.reply_text("Chưa cấu hình nhóm tương tác.")
     today = get_vietnam_date()
-    row = query("SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
-                (user.id, group_id, today))
+    # /checktt dùng bộ đếm chu kỳ riêng: không tự về 0 lúc qua ngày,
+    # chỉ reset khi thành viên đạt đủ 6.000 tin hợp lệ.
+    row = query("SELECT interaction_count FROM group_interactions WHERE user_id=%s AND group_id=%s",
+                (user.id, group_id))
     count = int(row[0][0] or 0) if row else 0
+    daily_row = query("SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
+                      (user.id, group_id, today))
+    daily_count = int(daily_row[0][0] or 0) if daily_row else 0
     rank_rows = query(
         "SELECT COUNT(*) + 1 FROM daily_top_interactions WHERE group_id=%s AND date=%s AND interaction_count > %s",
-        (group_id, today, count)
+        (group_id, today, daily_count)
     ) or []
     rank = int(rank_rows[0][0] or 1) if rank_rows else 1
     claimed_rows = query("SELECT milestone FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s ORDER BY milestone",
@@ -9983,6 +10051,8 @@ application.add_handler(CommandHandler("top", top_cmd))
 application.add_handler(CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
 application.add_handler(CommandHandler("checktt", checktt_cmd))
+application.add_handler(CommandHandler("resetsystem", reset_system_cmd))
+application.add_handler(CallbackQueryHandler(reset_system_callback, pattern=r"^sysreset_(yes|no)$"))
 application.add_handler(CommandHandler("tatroom", tatroom_cmd))
 application.add_handler(CommandHandler("moroom", moroom_cmd))
 application.add_handler(CommandHandler("trangthairoom", trangthairoom_cmd))
