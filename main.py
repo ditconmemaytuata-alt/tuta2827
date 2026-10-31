@@ -496,10 +496,11 @@ CREATE TABLE IF NOT EXISTS withdraw_history (
     time TEXT,
     admin_id BIGINT,
     admin_note TEXT,
-    request_code INTEGER
+    request_code TEXT
 )
 """)
-query("ALTER TABLE withdraw_history ADD COLUMN IF NOT EXISTS request_code INTEGER")
+query("ALTER TABLE withdraw_history ADD COLUMN IF NOT EXISTS request_code TEXT")
+query("ALTER TABLE withdraw_history ALTER COLUMN request_code TYPE TEXT USING request_code::TEXT")
 query("DROP INDEX IF EXISTS idx_withdraw_pending_request_code")
 query("""
 CREATE TABLE IF NOT EXISTS user_payout_accounts (
@@ -1021,6 +1022,41 @@ def auto_clear_old_wager(uid, prev_balance):
     except Exception as e:
         print(f"auto_clear_old_wager lỗi: {e}")
         return 0
+
+DEPOSIT_DIRTY_WAGER_MULT = 5   # còn cược khuyến mãi cũ + số dư >= 5.000đ mà nạp mới => cược x5 tiền nạp mới được rút
+
+def apply_deposit_wager_rule(uid, prev_balance, amount):
+    # Gọi TRƯỚC khi cộng tiền nạp. Trả về (số_cược_cũ_đã_xoá, số_cược_x5_được_thêm).
+    try:
+        remaining = get_remaining_bet_required(uid)
+        if remaining <= 0:
+            return 0, 0
+        if int(prev_balance or 0) < WAGER_CLEAR_BALANCE:
+            return auto_clear_old_wager(uid, prev_balance), 0
+        extra = int(amount) * DEPOSIT_DIRTY_WAGER_MULT
+        add_wager_requirement(uid, 0, extra)
+        return 0, extra
+    except Exception as e:
+        print(f"apply_deposit_wager_rule lỗi: {e}")
+        return 0, 0
+
+async def notify_deposit_wager(bot, uid, cleared, extra):
+    if cleared:
+        return await notify_wager_cleared(bot, uid, cleared)
+    if not bot or not extra:
+        return
+    try:
+        await bot.send_message(
+            uid,
+            f'{ce("⚠️")} <b>ĐƠN NẠP DÍNH CƯỢC KHUYẾN MÃI CŨ!</b>\n'
+            f'━━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("💰")} Bạn nạp khi còn vòng cược khuyến mãi cũ và số dư từ <code>{fmt_money(WAGER_CLEAR_BALANCE)}đ</code> trở lên.\n'
+            f'{ce("🎯")} Cần cược thêm <code>x{DEPOSIT_DIRTY_WAGER_MULT}</code> tiền nạp: <code>+{fmt_money(int(extra))}đ</code>\n'
+            f'{ce("📊")} Tổng cược còn thiếu: <code>{fmt_money(get_remaining_bet_required(uid))}đ</code>\n'
+            f'{ce("🔓")} Cược đủ mới được rút tiền.',
+            parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"Không gửi được thông báo cược x5 cho {uid}: {e}")
 
 async def notify_wager_cleared(bot, uid, remaining):
     if not bot or not remaining or remaining <= 0:
@@ -4181,14 +4217,14 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         bank, stk, name = u[0], u[1], u[2]
         ctx.user_data.pop("withdraw_payout_id", None)
         now_str = get_vietnam_datetime_db()
-        # Mã yêu cầu hiển thị là số ngẫu nhiên 1-50, không chạy tuần tự.
-        # Mỗi mã chỉ dùng một lần trong nhóm yêu cầu đang chờ duyệt.
+        # Mã yêu cầu rút: SHIN + 5 số bất kỳ (VD: SHIN48215), không trùng với các yêu cầu đang chờ duyệt.
         used_codes = {
-            int(row[0]) for row in
+            str(row[0]) for row in
             (query("SELECT request_code FROM withdraw_history WHERE status='pending' AND request_code IS NOT NULL") or [])
         }
-        available_codes = [n for n in range(1, 51) if n not in used_codes]
-        request_code = random.choice(available_codes) if available_codes else random.randint(1, 50)
+        request_code = f"SHIN{random.randint(0, 99999):05d}"
+        while request_code in used_codes:
+            request_code = f"SHIN{random.randint(0, 99999):05d}"
         ins = query(
             "INSERT INTO withdraw_history (user_id, amount, status, time, request_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
             (uid, amount, 'pending', now_str, request_code)
@@ -4931,10 +4967,9 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         now_str = get_vietnam_datetime_db()
         get_user(target_id)
         query("INSERT INTO deposit_history (user_id, amount, admin_id, status, time) VALUES (%s, %s, %s, %s, %s)", (target_id, amount, update.effective_user.id, 'success', now_str))
-        _cleared = auto_clear_old_wager(target_id, get_balance(target_id))
+        _cleared, _extra = apply_deposit_wager_rule(target_id, get_balance(target_id), amount)
         add_money(target_id, amount, f"Nạp tiền +{amount:,}đ")
-        if _cleared:
-            await notify_wager_cleared(ctx.bot, target_id, _cleared)
+        await notify_deposit_wager(ctx.bot, target_id, _cleared, _extra)
         
         # Ẩn ID người nạp (5 số đầu)
         masked_id = str(target_id)
@@ -7202,10 +7237,9 @@ async def sepay_webhook(request):
         now_str = get_vietnam_datetime_db()
         query("INSERT INTO deposit_history (user_id, amount, admin_id, status, time, ref_code) VALUES (%s, %s, %s, %s, %s, %s)",
               (user_id, amount, 0, 'success', now_str, ref_code))
-        _cleared = auto_clear_old_wager(user_id, get_balance(user_id))
+        _cleared, _extra = apply_deposit_wager_rule(user_id, get_balance(user_id), amount)
         add_money(user_id, amount, f"Nạp tiền tự động (SePay) +{amount:,}đ")
-        if _cleared:
-            await notify_wager_cleared(_bot_instance, user_id, _cleared)
+        await notify_deposit_wager(_bot_instance, user_id, _cleared, _extra)
 
         # Thông báo cho user
         try:
