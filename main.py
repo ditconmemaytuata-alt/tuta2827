@@ -499,6 +499,21 @@ CREATE TABLE IF NOT EXISTS withdraw_history (
 )
 """)
 query("""
+CREATE TABLE IF NOT EXISTS user_payout_accounts (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    method TEXT NOT NULL CHECK (method IN ('BANKING', 'MOMO', 'ZALOPAY')),
+    bank_code TEXT,
+    account_number TEXT NOT NULL,
+    account_name TEXT NOT NULL,
+    qr_file_id TEXT NOT NULL,
+    is_default BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+""")
+query("CREATE INDEX IF NOT EXISTS idx_user_payout_accounts_user ON user_payout_accounts(user_id)")
+
+query("""
 CREATE TABLE IF NOT EXISTS banned_admin_commands (
     admin_id BIGINT,
     command TEXT,
@@ -3864,31 +3879,164 @@ async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if is_banned(uid):
         return
     if is_total_maintenance() and uid not in ADMIN_IDS:
-        await update.effective_message.reply_text(f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>', parse_mode=ParseMode.HTML)
+        return await update.effective_message.reply_text(
+            f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>',
+            parse_mode=ParseMode.HTML
+        )
+    ctx.user_data["payout_link"] = {"stage": "method"}
+    kb = InlineKeyboardMarkup([
+        [btn("BANKING", "💳", callback_data="payout:method:BANKING")],
+        [btn("MOMO", "💗", callback_data="payout:method:MOMO"),
+         btn("ZALOPAY", "💙", callback_data="payout:method:ZALOPAY")],
+        [btn("Hủy", "❌", callback_data="payout:cancel")]
+    ])
+    return await update.effective_message.reply_text(
+        f'{ce("💳")} <b>LIÊN KẾT TÀI KHOẢN NHẬN TIỀN</b>\n\n'
+        'Chọn phương thức nhận tiền. Ở bước cuối, bạn cần gửi ảnh QR tương ứng để Admin quét khi xử lý lệnh rút.',
+        reply_markup=kb, parse_mode=ParseMode.HTML
+    )
+
+
+async def payout_link_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    data = q.data or ""
+    if data == "payout:cancel":
+        ctx.user_data.pop("payout_link", None)
+        await q.answer("Đã hủy.")
+        return await q.edit_message_text(f'{ce("❌")} Đã hủy liên kết tài khoản.', parse_mode=ParseMode.HTML)
+    if data == "payout:close":
+        await q.answer()
+        return await q.edit_message_reply_markup(reply_markup=None)
+    if data.startswith("payout:default:"):
+        try:
+            account_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return await q.answer("Tài khoản không hợp lệ.", show_alert=True)
+        owned = query("SELECT id FROM user_payout_accounts WHERE id=%s AND user_id=%s", (account_id, uid))
+        if not owned:
+            return await q.answer("Không tìm thấy tài khoản.", show_alert=True)
+        query("UPDATE user_payout_accounts SET is_default=FALSE WHERE user_id=%s", (uid,))
+        query("UPDATE user_payout_accounts SET is_default=TRUE WHERE id=%s AND user_id=%s", (account_id, uid))
+        await q.answer("Đã đặt tài khoản mặc định.")
+        return await q.edit_message_text(f'{ce("✅")} Đã cập nhật tài khoản mặc định. Dùng /taikhoan để xem danh sách.', parse_mode=ParseMode.HTML)
+    if not data.startswith("payout:method:"):
         return
-    res = query("SELECT bank FROM users WHERE user_id=%s", (uid,))
-    if res and res[0][0] is not None:
+    method = data.split(":")[-1]
+    if method not in ("BANKING", "MOMO", "ZALOPAY"):
+        return await q.answer("Phương thức không hợp lệ.", show_alert=True)
+    ctx.user_data["payout_link"] = {"stage": "bank" if method == "BANKING" else "number", "method": method}
+    await q.answer()
+    prompt = "Nhập tên ngân hàng (VD: MB, BIDV, VCB):" if method == "BANKING" else f"Nhập số điện thoại {method}:"
+    return await q.message.reply_text(f'{ce("📝")} {prompt}\n\nGửi /huy để hủy.', parse_mode=ParseMode.HTML)
+
+
+async def payout_link_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    state = ctx.user_data.get("payout_link")
+    msg = update.effective_message
+    if not state or not msg or not msg.text or update.effective_chat.type != "private":
+        return
+    value = msg.text.strip()
+    if value.lower() in ("/huy", "huy", "hủy", "cancel"):
+        ctx.user_data.pop("payout_link", None)
+        await msg.reply_text(f'{ce("❌")} Đã hủy liên kết.', parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+    stage = state.get("stage")
+    if stage == "bank":
+        if len(value) > 40:
+            await msg.reply_text("Tên ngân hàng quá dài, vui lòng nhập lại.")
+            raise ApplicationHandlerStop
+        state["bank_code"] = value.upper()
+        state["stage"] = "number"
+        await msg.reply_text("Nhập số tài khoản ngân hàng:")
+        raise ApplicationHandlerStop
+    if stage == "number":
+        compact = re.sub(r"\s+", "", value)
+        if not re.fullmatch(r"[0-9A-Za-z]{5,30}", compact):
+            await msg.reply_text("Số tài khoản/số điện thoại không hợp lệ. Vui lòng nhập lại.")
+            raise ApplicationHandlerStop
+        state["account_number"] = compact
+        state["stage"] = "name"
+        await msg.reply_text("Nhập chính xác tên chủ tài khoản/chủ ví:")
+        raise ApplicationHandlerStop
+    if stage == "name":
+        if len(value) < 2 or len(value) > 80:
+            await msg.reply_text("Tên không hợp lệ, vui lòng nhập lại.")
+            raise ApplicationHandlerStop
+        state["account_name"] = value.upper()
+        state["stage"] = "qr"
+        await msg.reply_text(
+            f'{ce("🖼")} <b>BƯỚC CUỐI: GỬI ẢNH QR</b>\n\n'
+            'Gửi ảnh QR nhận tiền của đúng tài khoản vừa nhập (gửi dạng ẢNH, không gửi đường link). '
+            'Bot sẽ lưu ảnh và gửi cho Admin cùng yêu cầu rút tiền.',
+            parse_mode=ParseMode.HTML
+        )
+        raise ApplicationHandlerStop
+
+
+async def payout_link_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    state = ctx.user_data.get("payout_link")
+    msg = update.effective_message
+    if not state or state.get("stage") != "qr" or not msg or not msg.photo:
+        return
+    uid = update.effective_user.id
+    photo = msg.photo[-1]
+    method = state["method"]
+    bank = state.get("bank_code")
+    number = state["account_number"]
+    name = state["account_name"]
+    query("UPDATE user_payout_accounts SET is_default=FALSE WHERE user_id=%s", (uid,))
+    query(
+        """INSERT INTO user_payout_accounts
+           (user_id, method, bank_code, account_number, account_name, qr_file_id, is_default)
+           VALUES (%s,%s,%s,%s,%s,%s,TRUE)""",
+        (uid, method, bank, number, name, photo.file_id)
+    )
+    if not saved_account:
+        await msg.reply_text("❌ Chưa lưu được tài khoản. Vui lòng thử lại hoặc liên hệ Admin.")
+        return
+    if method == "BANKING":
+        query("UPDATE users SET bank=%s, stk=%s, name=%s, bank_linked=1 WHERE user_id=%s",
+              (bank, number, name, uid))
+    ctx.user_data.pop("payout_link", None)
+    await msg.reply_text(
+        f'{ce("✅")} <b>LIÊN KẾT TÀI KHOẢN THÀNH CÔNG</b>\n\n'
+        f'{ce("💳")} Phương thức: <b>{method}</b>\n'
+        f'{ce("🔢")} Số tài khoản/số điện thoại: <code>{html.escape(number)}</code>\n'
+        f'{ce("👤")} Chủ tài khoản: <b>{html.escape(name)}</b>\n'
+        f'{ce("🖼")} Đã lưu ảnh QR. Tài khoản này được đặt làm mặc định khi rút tiền.',
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def taikhoan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    rows = query(
+        """SELECT id, method, bank_code, account_number, account_name, is_default
+           FROM user_payout_accounts WHERE user_id=%s ORDER BY id DESC""", (uid,)
+    )
+    if not rows:
         return await update.effective_message.reply_text(
-            f'{ce("❌")} Bạn đã liên kết ngân hàng rồi. Để thay đổi, vui lòng liên hệ Admin!',
-            parse_mode=ParseMode.HTML)
-    if not ctx.args or len(ctx.args) < 3:
-        return await update.effective_message.reply_text(
-            f'{ce("⚡")} <b>Cú pháp liên kết:</b>\n'
-            f'<code>/lienket [Ngân_hàng] [STK] [Chủ_TK]</code>\n\n'
-            f'VD: <code>/lienket MBBANK 0123456 NGUYEN VAN A</code>',
-            parse_mode=ParseMode.HTML)
-    bank = ctx.args[0].upper()
-    stk = ctx.args[1]
-    name = " ".join(ctx.args[2:]).upper()
-    get_user(uid)
-    query("UPDATE users SET bank=%s, stk=%s, name=%s, bank_linked=1 WHERE user_id=%s", (bank, stk, name, uid))
-    await update.effective_message.reply_text(
-        f'{ce("✅")} <b>LIÊN KẾT THÀNH CÔNG</b>\n\n'
-        f'{ce("💳")} Ngân hàng: {html.escape(bank)}\n'
-        f'{ce("💰")} STK: <code>{html.escape(stk)}</code>\n'
-        f'{ce("👥")} Chủ TK: {html.escape(name)}\n\n'
-        f'{ce("🎮")} Bạn đã có thể tham gia chơi game!',
-        parse_mode=ParseMode.HTML)
+            "Bạn chưa có tài khoản đã lưu. Dùng /lienket để thêm tài khoản kèm QR."
+        )
+    lines = [f'{ce("💳")} <b>TÀI KHOẢN NHẬN TIỀN ĐÃ LƯU</b>\n']
+    buttons = []
+    for row in rows:
+        aid, method, bank, number, name, is_default = row
+        default_text = " ⭐ MẶC ĐỊNH" if is_default else ""
+        lines.append(
+            f'• <b>{html.escape(str(method))}</b> {html.escape(str(bank or ""))}\n'
+            f'  <code>{html.escape(str(number))}</code> — {html.escape(str(name))}{default_text}'
+        )
+        if not is_default:
+            buttons.append([btn(f"Đặt mặc định #{aid}", "⭐", callback_data=f"payout:default:{aid}")])
+    if buttons:
+        buttons.append([btn("Đóng", "❌", callback_data="payout:close")])
+    return await update.effective_message.reply_text(
+        "\n\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+        parse_mode=ParseMode.HTML
+    )
+
 
 async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -3918,14 +4066,26 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'{ce("💳")} Tài khoản cần có ít nhất <b>1 lần nạp thành công từ 50.000đ</b> trở lên mới được rút.\n'
             f'{ce("🎁")} Vui lòng nạp tiền và chờ hệ thống xác nhận thành công.',
             parse_mode=ParseMode.HTML)
-    res = query("SELECT bank, stk, name, balance FROM users WHERE user_id=%s", (uid,))
-    if not res or not res[0][0] or not res[0][1]:
+    payout = query(
+        """SELECT method, bank_code, account_number, account_name, qr_file_id
+           FROM user_payout_accounts WHERE user_id=%s
+           ORDER BY is_default DESC, id DESC LIMIT 1""", (uid,)
+    )
+    legacy = query("SELECT bank, stk, name, balance FROM users WHERE user_id=%s", (uid,))
+    if payout:
+        method, bank, stk, name, payout_qr_file_id = payout[0]
+        balance_value = legacy[0][3] if legacy else get_balance(uid)
+        u = (bank or method, stk, name, balance_value)
+    elif legacy and legacy[0][0] and legacy[0][1]:
+        bank, stk, name, balance_value = legacy[0]
+        method, payout_qr_file_id = "BANKING", None
+        u = legacy[0]
+    else:
         return await msg_obj.reply_text(
-            f'{ce("❌")} Bạn chưa liên kết tài khoản ngân hàng.\n'
-            f'Hãy dùng lệnh: <code>/lienket [Ngân_hàng] [STK] [Tên]</code>\n\n'
-            f'{ce("📌")} <b>MIN RÚT:</b> <code>50,000đ</code>',
+            f'{ce("❌")} Bạn chưa liên kết tài khoản nhận tiền.\n'
+            f'Hãy dùng lệnh <code>/lienket</code> và gửi ảnh QR theo hướng dẫn.',
             parse_mode=ParseMode.HTML)
-    u = res[0]
+
     if not args:
         remaining = get_remaining_bet_required(uid)
         req_cuoc_text = ""
@@ -3936,9 +4096,9 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         text = (
             f'{ce("🧾")} <b>THÔNG TIN RÚT TIỀN</b>\n\n'
-            f'STK đã cài đặt của bạn:\n'
+            f'Tài khoản nhận tiền mặc định ({html.escape(str(method))}):\n'
             f'<code>{html.escape(str(u[1]))} - {html.escape(str(u[0]))} - {html.escape(str(u[2]))}</code>\n\n'
-            f'Để đổi STK vui lòng liên hệ Admin.\n\n'
+            f'Dùng /lienket để thêm tài khoản và /taikhoan để xem tài khoản đã lưu.\n\n'
             f'{ce("🎰")} <b>Rút tiền về tài khoản trên:</b>\n'
             f'• /rut [số tiền] - VD: /rut 50000\n'
             f'• /rut all - Rút tối đa phần khả dụng (đã trừ phí 0%)\n\n'
@@ -4009,8 +4169,9 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f'{ce("🧾")} <b>Mã yêu cầu:</b> <code>{withdraw_id or "-"}</code>\n'
                     f'{ce("👥")} <b>ID:</b> <code>{uid}</code>\n'
                     f'{ce("💰")} <b>Số tiền:</b> <code>{fmt_money(amount)}đ</code>\n'
-                    f'{ce("💳")} <b>Ngân hàng:</b> <code>{html.escape(str(bank))}</code>\n'
-                    f'{ce("🏦")} <b>STK:</b> <code>{html.escape(str(stk))}</code>\n'
+                    f'{ce("💳")} <b>Phương thức:</b> <code>{html.escape(str(method))}</code>\n'
+                    f'{ce("🏦")} <b>Ngân hàng:</b> <code>{html.escape(str(bank))}</code>\n'
+                    f'{ce("🔢")} <b>STK/SĐT:</b> <code>{html.escape(str(stk))}</code>\n'
                     f'{ce("👤")} <b>Chủ TK:</b> <code>{html.escape(str(name))}</code>\n'
                     f'{ce("📝")} <b>Nội dung chuyển khoản:</b> <code>{html.escape(transfer_memo)}</code>\n'
                     f'{ce("⏰")} <b>Thời gian:</b> <code>{now_str}</code>\n'
@@ -4018,9 +4179,17 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
                     f'<i>QR là thông tin chuyển khoản để admin xử lý thủ công; vui lòng kiểm tra đúng người nhận trước khi chuyển.</i>'
                 )
-                # Tải ảnh QR về rồi upload (Telegram không tự tải được URL VietQR); lỗi thì tự vẽ QR / gửi dạng chữ.
-                await send_deposit_qr(ctx.bot, admin_id, qr_url, admin_text, keyboard, amount, transfer_memo,
-                                      bank_id=qr_bank, account_no=stk)
+                # Ưu tiên gửi đúng ảnh QR người dùng đã tải lên khi liên kết.
+                if payout_qr_file_id:
+                    await ctx.bot.send_photo(
+                        chat_id=admin_id, photo=payout_qr_file_id,
+                        caption=admin_text, reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    # Tài khoản cũ chưa có ảnh QR: dùng QR VietQR tạo tự động như trước.
+                    await send_deposit_qr(ctx.bot, admin_id, qr_url, admin_text, keyboard, amount, transfer_memo,
+                                          bank_id=qr_bank, account_no=stk)
             except Exception as e:
                 print(f"Không thể gửi QR/tin nhắn đến admin {admin_id}: {e}")
                 try:
@@ -4390,6 +4559,8 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if key == "RÚT TIỀN":
         return await rut(update, ctx)
+    if key == "LIÊN KẾT TÀI KHOẢN":
+        return await lien_ket(update, ctx)
 
     if key == "GIỚI THIỆU":
         ref_link = f"https://t.me/{BOT_USERNAME}?start={uid}"
@@ -9930,6 +10101,7 @@ async def _on_error(update, context):
 
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("lienket", lien_ket))
+application.add_handler(CommandHandler("taikhoan", taikhoan_cmd))
 application.add_handler(CommandHandler("rut", rut))
 application.add_handler(CommandHandler("nap", nap_cmd))
 application.add_handler(CommandHandler("code", nhap_code))
@@ -10060,7 +10232,10 @@ application.add_handler(CommandHandler("help", interaction_help_cmd))
 application.add_handler(CommandHandler("topcuoc", topcuoc_cmd))
 application.add_handler(CallbackQueryHandler(admin_user_callback, pattern=r"^admuser_"))
 
+application.add_handler(CallbackQueryHandler(payout_link_callback, pattern=r"^payout:"))
 application.add_handler(CallbackQueryHandler(handle_callback))
+application.add_handler(MessageHandler(filters.PHOTO, payout_link_photo), group=-2)
+application.add_handler(MessageHandler(filters.TEXT, payout_link_text), group=-2)
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, report_date_input), group=-1)
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
 
