@@ -3874,6 +3874,19 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.effective_message.reply_text(welcome_text, reply_markup=menu, parse_mode=ParseMode.HTML)
 
+async def show_withdraw_methods(message):
+    kb = InlineKeyboardMarkup([
+        [btn("BANKING", "💳", callback_data="payout:withdraw:BANKING")],
+        [btn("MOMO", "💗", callback_data="payout:withdraw:MOMO"),
+         btn("ZALOPAY", "💙", callback_data="payout:withdraw:ZALOPAY")]
+    ])
+    return await message.reply_text(
+        f'{ce("💸")} <b>CHỌN PHƯƠNG THỨC RÚT TIỀN</b>\\n\\n'
+        'Chọn nơi bạn muốn nhận tiền. Bạn có thể chọn phương thức khác với tài khoản đã liên kết trước đó.',
+        reply_markup=kb, parse_mode=ParseMode.HTML
+    )
+
+
 async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if is_banned(uid):
@@ -3897,9 +3910,55 @@ async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def lien_ket_from_callback(q, ctx):
+    kb = InlineKeyboardMarkup([
+        [btn("BANKING", "💳", callback_data="payout:method:BANKING")],
+        [btn("MOMO", "💗", callback_data="payout:method:MOMO"),
+         btn("ZALOPAY", "💙", callback_data="payout:method:ZALOPAY")],
+        [btn("Hủy", "❌", callback_data="payout:cancel")]
+    ])
+    return await q.message.reply_text(
+        "Bạn chưa có tài khoản cho phương thức này. Hãy liên kết tài khoản trước:",
+        reply_markup=kb)
+
+
 async def payout_link_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = update.effective_user.id
     data = q.data or ""
+    if data.startswith("payout:withdraw:"):
+        method = data.rsplit(":", 1)[1]
+        if method not in ("BANKING", "MOMO", "ZALOPAY"):
+            return await q.answer("Phương thức không hợp lệ.", show_alert=True)
+        rows = query(
+            """SELECT id, bank_code, account_number, account_name
+               FROM user_payout_accounts WHERE user_id=%s AND method=%s
+               ORDER BY is_default DESC, id DESC""", (uid, method)
+        ) or []
+        if not rows:
+            await q.answer("Bạn chưa liên kết phương thức này.", show_alert=True)
+            ctx.user_data["payout_link"] = {"stage": "method"}
+            return await lien_ket_from_callback(q, ctx)
+        buttons = [[btn(f"{r[2]} • {r[3]}", "💳", callback_data=f"payout:use:{r[0]}")] for r in rows]
+        await q.answer()
+        return await q.message.reply_text(
+            f"Chọn tài khoản {method} để nhận tiền:",
+            reply_markup=InlineKeyboardMarkup(buttons))
+    if data.startswith("payout:use:"):
+        try:
+            account_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return await q.answer("Tài khoản không hợp lệ.", show_alert=True)
+        row = query("""SELECT id, method, bank_code, account_number, account_name
+                       FROM user_payout_accounts WHERE id=%s AND user_id=%s""", (account_id, uid))
+        if not row:
+            return await q.answer("Không tìm thấy tài khoản.", show_alert=True)
+        ctx.user_data["withdraw_payout_id"] = account_id
+        await q.answer("Đã chọn tài khoản.")
+        return await q.message.reply_text(
+            f'{ce("✅")} Đã chọn {row[0][1]}: <code>{html.escape(str(row[0][3]))}</code>\\n'
+            'Bây giờ nhập số tiền bằng lệnh <code>/rut 50000</code> hoặc <code>/rut all</code>.',
+            parse_mode=ParseMode.HTML)
     if data == "payout:cancel":
         ctx.user_data.pop("payout_link", None)
         await q.answer("Đã hủy.")
@@ -3985,10 +4044,10 @@ async def payout_link_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     number = state["account_number"]
     name = state["account_name"]
     query("UPDATE user_payout_accounts SET is_default=FALSE WHERE user_id=%s", (uid,))
-    query(
+    saved_account = query(
         """INSERT INTO user_payout_accounts
            (user_id, method, bank_code, account_number, account_name, qr_file_id, is_default)
-           VALUES (%s,%s,%s,%s,%s,%s,TRUE)""",
+           VALUES (%s,%s,%s,%s,%s,%s,TRUE) RETURNING id""",
         (uid, method, bank, number, name, photo.file_id)
     )
     if not saved_account:
@@ -4066,11 +4125,20 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'{ce("💳")} Tài khoản cần có ít nhất <b>1 lần nạp thành công từ 50.000đ</b> trở lên mới được rút.\n'
             f'{ce("🎁")} Vui lòng nạp tiền và chờ hệ thống xác nhận thành công.',
             parse_mode=ParseMode.HTML)
-    payout = query(
-        """SELECT method, bank_code, account_number, account_name, qr_file_id
-           FROM user_payout_accounts WHERE user_id=%s
-           ORDER BY is_default DESC, id DESC LIMIT 1""", (uid,)
-    )
+    if not args:
+        return await show_withdraw_methods(msg_obj)
+    selected_id = ctx.user_data.get("withdraw_payout_id")
+    if selected_id:
+        payout = query(
+            """SELECT method, bank_code, account_number, account_name, qr_file_id
+               FROM user_payout_accounts WHERE user_id=%s AND id=%s""", (uid, selected_id)
+        )
+    else:
+        payout = query(
+            """SELECT method, bank_code, account_number, account_name, qr_file_id
+               FROM user_payout_accounts WHERE user_id=%s
+               ORDER BY is_default DESC, id DESC LIMIT 1""", (uid,)
+        )
     legacy = query("SELECT bank, stk, name, balance FROM users WHERE user_id=%s", (uid,))
     if payout:
         method, bank, stk, name, payout_qr_file_id = payout[0]
@@ -4086,30 +4154,6 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'Hãy dùng lệnh <code>/lienket</code> và gửi ảnh QR theo hướng dẫn.',
             parse_mode=ParseMode.HTML)
 
-    if not args:
-        remaining = get_remaining_bet_required(uid)
-        req_cuoc_text = ""
-        if remaining > 0:
-            req_cuoc_text = (
-                f'{ce("⚠️")} Cần cược thêm <b>{fmt_money(remaining)}đ</b> nữa để được rút.\n\n'
-            )
-            
-        text = (
-            f'{ce("🧾")} <b>THÔNG TIN RÚT TIỀN</b>\n\n'
-            f'Tài khoản nhận tiền mặc định ({html.escape(str(method))}):\n'
-            f'<code>{html.escape(str(u[1]))} - {html.escape(str(u[0]))} - {html.escape(str(u[2]))}</code>\n\n'
-            f'Dùng /lienket để thêm tài khoản và /taikhoan để xem tài khoản đã lưu.\n\n'
-            f'{ce("🎰")} <b>Rút tiền về tài khoản trên:</b>\n'
-            f'• /rut [số tiền] - VD: /rut 50000\n'
-            f'• /rut all - Rút tối đa phần khả dụng (đã trừ phí 0%)\n\n'
-            f'{ce("📝")} <b>Điều kiện rút tiền:</b>\n'
-            f'• Cược đủ Room TX: {fmt_money(u[3])}\n'
-            f'• Hiện đã cược: {fmt_money(get_balance(uid) * 0)}\n\n'
-            f'<blockquote>{req_cuoc_text}'
-            f'{ce("⚠️")} Phí rút 0%. Rút tối thiểu theo cài đặt bot (thường 50k).</blockquote>'
-        )
-        return await msg_obj.reply_text(text, parse_mode=ParseMode.HTML)
-    
     arg = args[0].lower()
     if arg in ["all", "max"]:
         amount = get_balance(uid)
@@ -4132,6 +4176,7 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
     if sub_money(uid, amount, "Rút tiền"):
         bank, stk, name = u[0], u[1], u[2]
+        ctx.user_data.pop("withdraw_payout_id", None)
         now_str = get_vietnam_datetime_db()
         ins = query("INSERT INTO withdraw_history (user_id, amount, status, time) VALUES (%s, %s, %s, %s) RETURNING id",
                     (uid, amount, 'pending', now_str))
