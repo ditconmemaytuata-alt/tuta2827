@@ -495,9 +495,12 @@ CREATE TABLE IF NOT EXISTS withdraw_history (
     status TEXT DEFAULT 'pending',
     time TEXT,
     admin_id BIGINT,
-    admin_note TEXT
+    admin_note TEXT,
+    request_code INTEGER
 )
 """)
+query("ALTER TABLE withdraw_history ADD COLUMN IF NOT EXISTS request_code INTEGER")
+query("DROP INDEX IF EXISTS idx_withdraw_pending_request_code")
 query("""
 CREATE TABLE IF NOT EXISTS user_payout_accounts (
     id BIGSERIAL PRIMARY KEY,
@@ -4178,8 +4181,18 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         bank, stk, name = u[0], u[1], u[2]
         ctx.user_data.pop("withdraw_payout_id", None)
         now_str = get_vietnam_datetime_db()
-        ins = query("INSERT INTO withdraw_history (user_id, amount, status, time) VALUES (%s, %s, %s, %s) RETURNING id",
-                    (uid, amount, 'pending', now_str))
+        # Mã yêu cầu hiển thị là số ngẫu nhiên 1-50, không chạy tuần tự.
+        # Mỗi mã chỉ dùng một lần trong nhóm yêu cầu đang chờ duyệt.
+        used_codes = {
+            int(row[0]) for row in
+            (query("SELECT request_code FROM withdraw_history WHERE status='pending' AND request_code IS NOT NULL") or [])
+        }
+        available_codes = [n for n in range(1, 51) if n not in used_codes]
+        request_code = random.choice(available_codes) if available_codes else random.randint(1, 50)
+        ins = query(
+            "INSERT INTO withdraw_history (user_id, amount, status, time, request_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (uid, amount, 'pending', now_str, request_code)
+        )
         withdraw_id = int(ins[0][0]) if ins else 0
         # Tạo mã nội dung chuyển khoản gồm 3 từ ngẫu nhiên, gắn với QR của người nhận tiền.
         memo_words = random.sample(["MAY", "LOC", "PHAT", "AN", "TAM", "KIM", "SONG", "VUI", "SEN", "LONG", "MINH", "THINH"], 3)
@@ -4211,7 +4224,7 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 admin_text = (
                     f'{ce("🎁")} <b>YÊU CẦU RÚT TIỀN MỚI</b> {ce("🎁")}\n'
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
-                    f'{ce("🧾")} <b>Mã yêu cầu:</b> <code>{withdraw_id or "-"}</code>\n'
+                    f'{ce("🧾")} <b>Mã yêu cầu:</b> <code>{request_code}</code>\n'
                     f'{ce("👥")} <b>ID:</b> <code>{uid}</code>\n'
                     f'{ce("💰")} <b>Số tiền:</b> <code>{fmt_money(amount)}đ</code>\n'
                     f'{ce("💳")} <b>Phương thức:</b> <code>{html.escape(str(method))}</code>\n'
@@ -9997,6 +10010,33 @@ _ADM_CATS = [
         ("use", "rep", "Nhắn riêng cho 1 user", "x", "/rep [ID] [nội dung]", "/rep 123456789 Đã duyệt rút của bạn"),
     ]),
 ]
+# Các lệnh quản trị bổ sung trước đây chỉ có thể gọi bằng cách gõ lệnh.
+_ADM_CATS.append((
+    "more", "🧩", "CÔNG CỤ QUẢN TRỊ KHÁC",
+    "Các công cụ tra cứu, thống kê, lịch sử và thiết lập bổ sung.",
+    [
+        ("use", "stats", "Thống kê nhanh", "x", "/stats", "/stats"),
+        ("use", "info", "Thông tin nhanh user", "x", "/info [ID]", "/info 123456789"),
+        ("use", "check", "Kiểm tra lịch sử user", "x", "/check [ID]", "/check 123456789"),
+        ("use", "resetsdall", "Reset số dư toàn bộ user", "x", "/resetsdall", "/resetsdall"),
+        ("use", "resetall", "Lệnh reset toàn bộ số dư (bí danh)", "x", "/resetall", "/resetall"),
+        ("use", "xoalsall", "Xoá toàn bộ lịch sử", "x", "/xoalsall", "/xoalsall"),
+        ("use", "xoals", "Xoá lịch sử một user", "x", "/xoals [ID]", "/xoals 123456789"),
+        ("use", "setname", "Đổi tên bot", "x", "/setname [tên mới]", "/setname JAV88"),
+        ("use", "kmnapvc", "Tặng khuyến mãi theo vòng cược", "x", "/kmnapvc [ID] [số tiền]", "/kmnapvc 123456789 20000"),
+        ("use", "lsnap", "Lịch sử nạp của user", "x", "/lsnap [ID]", "/lsnap 123456789"),
+        ("use", "lsrut", "Lịch sử rút của user", "x", "/lsrut [ID]", "/lsrut 123456789"),
+        ("use", "lscuoc", "Lịch sử cược và thắng của user", "x", "/lscuoc [ID]", "/lscuoc 123456789"),
+        ("use", "lscode", "Lịch sử nhập code của user", "x", "/lscode [ID]", "/lscode 123456789"),
+        ("use", "lsgift", "Lịch sử dùng giftcode", "x", "/lsgift [ID]", "/lsgift 123456789"),
+        ("use", "lsmua", "Lịch sử mua giftcode", "x", "/lsmua [ID]", "/lsmua 123456789"),
+        ("use", "top", "Top tương tác hôm nay", "x", "/top", "/top"),
+        ("use", "checktt", "Kiểm tra tương tác user", "x", "/checktt [ID]", "/checktt 123456789"),
+        ("use", "topnap", "Top 10 người nạp thành công", "x", "/topnap", "/topnap"),
+        ("use", "resetsystem", "Yêu cầu xác nhận reset dữ liệu hệ thống", "x", "/resetsystem", "/resetsystem"),
+        ("use", "codenap", "Tạo giftcode nạp (bí danh taogift)", "x", "/codenap", "/codenap"),
+    ],
+))
 _ADM_CAT_MAP = {c[0]: c for c in _ADM_CATS}
 
 def _adm_ok(uid):
