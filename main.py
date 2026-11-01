@@ -34,6 +34,7 @@ ADMIN_IDS = [5633649201, 7884394252]
 BOT_USERNAME = "Jav88gamebot"
 ROOM_LINK = "https://t.me/jav88sanhu"
 MIN_WITHDRAW = 50000
+MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
 LOG_GROUP_ID = -1004375247819
 
 # THÔNG TIN NGÂN HÀNG MỚI
@@ -682,6 +683,7 @@ CREATE TABLE IF NOT EXISTS giftcodes (
 """)
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS milestone INTEGER")
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS claim_date DATE")
+query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS require_total_dep BIGINT DEFAULT 0")
 query("CREATE UNIQUE INDEX IF NOT EXISTS uq_tichluy_user_milestone_day ON giftcodes(bound_user, milestone, claim_date) WHERE ctype='TICHLUY' AND bound_user IS NOT NULL AND milestone IS NOT NULL AND claim_date IS NOT NULL")
 
 query("CREATE TABLE IF NOT EXISTS history (user_id BIGINT, amount BIGINT, note TEXT, time TEXT)")
@@ -692,6 +694,8 @@ query("CREATE TABLE IF NOT EXISTS banned (user_id BIGINT PRIMARY KEY)")
 query("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
 query("CREATE TABLE IF NOT EXISTS welcome_bonus_log (user_id BIGINT PRIMARY KEY, amount BIGINT DEFAULT 0, created_at TEXT)")
 query("CREATE TABLE IF NOT EXISTS stats_bet_base (user_id BIGINT, day DATE, bet BIGINT DEFAULT 0, win BIGINT DEFAULT 0, PRIMARY KEY (user_id, day))")
+# Mốc reset hoàn trả theo từng người (scope: ngay | tuan). Doanh số hoàn trả = bet_daily - mốc này.
+query("CREATE TABLE IF NOT EXISTS reward_base (user_id BIGINT, day DATE, scope TEXT, bet BIGINT DEFAULT 0, win BIGINT DEFAULT 0, PRIMARY KEY (user_id, day, scope))")
 
 # Thêm cột ref_code nếu chưa có
 query("ALTER TABLE deposit_history ADD COLUMN IF NOT EXISTS ref_code TEXT")
@@ -1377,6 +1381,18 @@ def period_stats(uid, d1, d2):
         return 0, 0
     return int(res[0][0] or 0), int(res[0][1] or 0)
 
+def reward_stats(uid, d1, d2, scope):
+    """Doanh số / tiền thắng dùng để tính hoàn trả = bet_daily trừ mốc admin đã reset (reward_base)."""
+    res = query(
+        "SELECT COALESCE(SUM(GREATEST(b.bet - COALESCE(r.bet,0),0)),0), "
+        "COALESCE(SUM(GREATEST(b.win - COALESCE(r.win,0),0)),0) "
+        "FROM bet_daily b LEFT JOIN reward_base r "
+        "ON r.user_id=b.user_id AND r.day=b.day AND r.scope=%s "
+        "WHERE b.user_id=%s AND b.day BETWEEN %s AND %s", (scope, uid, d1, d2))
+    if not res:
+        return 0, 0
+    return int(res[0][0] or 0), int(res[0][1] or 0)
+
 def get_bet_stats(uid):
     today = get_vietnam_time().date()
     ws = week_start(today)
@@ -1695,8 +1711,8 @@ async def vip_exchange_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
 # ===== TRUNG TÂM NHẬN THƯỞNG ==========================
 # ============================================================
 MIN_REWARD_BASE = 100000
-LOSS_TIERS_DAY = [(1_000_000_000, 12), (100_000_000, 8), (10_000_000, 6), (1_000_000, 4), (100_000, 2)]
-LOSS_TIERS_WEEK = [(1_000_000_000, 5), (100_000_000, 3), (10_000_000, 2.5), (1_000_000, 2), (100_000, 1)]
+LOSS_TIERS_DAY = [(1_000_000_000, 11.8), (100_000_000, 7.8), (10_000_000, 5.8), (1_000_000, 3.8), (100_000, 1.8)]
+LOSS_TIERS_WEEK = [(1_000_000_000, 4.8), (100_000_000, 2.8), (10_000_000, 2.3), (1_000_000, 1.8), (100_000, 0.8)]
 
 RTYPE_LABEL = {
     "cuoc_ngay": ("HOÀN CƯỢC NGÀY", "🔥"),
@@ -1707,9 +1723,24 @@ RTYPE_LABEL = {
 
 def get_rebate_pct(kind):
     try:
-        return float(get_setting(f"rebate_{kind}_pct", "2"))
+        return float(get_setting(f"rebate_{kind}_pct", "1.8"))
     except (TypeError, ValueError):
-        return 2.0
+        return 1.8
+
+def _migrate_rebate_minus_02():
+    # Chạy 1 lần: nếu admin từng đặt % bằng /sethoancuoc thì trừ thêm 0,2%.
+    if get_setting("rebate_minus_02_done") == "1":
+        return
+    for _k in ("ngay", "tuan"):
+        _v = get_setting(f"rebate_{_k}_pct")
+        if _v is not None:
+            try:
+                set_setting(f"rebate_{_k}_pct", round(max(0.0, float(_v) - 0.2), 2))
+            except ValueError:
+                pass
+    set_setting("rebate_minus_02_done", "1")
+
+_migrate_rebate_minus_02()
 
 def fmt_pct(p):
     return f"{p:g}"
@@ -1767,8 +1798,8 @@ def reward_center(uid):
     today = now.date()
     ws = week_start(today)
     we = ws + timedelta(days=6)
-    d_bet, d_win = period_stats(uid, today, today)
-    w_bet, w_win = period_stats(uid, ws, we)
+    d_bet, d_win = reward_stats(uid, today, today, "ngay")
+    w_bet, w_win = reward_stats(uid, ws, we, "tuan")
     day_left = fmt_remaining(_end_of_day(today) - now)
     week_left = fmt_remaining(_end_of_day(we) - now)
 
@@ -1852,7 +1883,7 @@ def event_screen(uid, kind):
     today = get_vietnam_time().date()
     ws = week_start(today)
     is_day = kind.endswith("ngay")
-    bet, win = period_stats(uid, today, today) if is_day else period_stats(uid, ws, ws + timedelta(days=6))
+    bet, win = reward_stats(uid, today, today, "ngay") if is_day else reward_stats(uid, ws, ws + timedelta(days=6), "tuan")
     rtype = {"hc_ngay": "cuoc_ngay", "hc_tuan": "cuoc_tuan", "ht_ngay": "thua_ngay", "ht_tuan": "thua_tuan"}[kind]
     value, amount = reward_calc(rtype, bet, win)
     when = "ngày" if is_day else "tuần"
@@ -1898,7 +1929,9 @@ def settle_day_sync(day):
         if _insert_reward(uid_, rtype, period, base, amount):
             created.setdefault(uid_, []).append((rtype, period, amount))
 
-    rows = query("SELECT user_id, bet, win FROM bet_daily WHERE day=%s", (day,)) or []
+    rows = query("SELECT b.user_id, GREATEST(b.bet - COALESCE(r.bet,0),0), GREATEST(b.win - COALESCE(r.win,0),0) "
+                 "FROM bet_daily b LEFT JOIN reward_base r ON r.user_id=b.user_id AND r.day=b.day AND r.scope='ngay' "
+                 "WHERE b.day=%s", (day,)) or []
     for uid_, bet, win in rows:
         for rtype in ("cuoc_ngay", "thua_ngay"):
             base, amount = reward_calc(rtype, int(bet or 0), int(win or 0))
@@ -1906,7 +1939,9 @@ def settle_day_sync(day):
 
     if day.weekday() == 6:
         ws = week_start(day)
-        wrows = query("SELECT user_id, SUM(bet), SUM(win) FROM bet_daily WHERE day BETWEEN %s AND %s GROUP BY user_id",
+        wrows = query("SELECT b.user_id, SUM(GREATEST(b.bet - COALESCE(r.bet,0),0)), SUM(GREATEST(b.win - COALESCE(r.win,0),0)) "
+                      "FROM bet_daily b LEFT JOIN reward_base r ON r.user_id=b.user_id AND r.day=b.day AND r.scope='tuan' "
+                      "WHERE b.day BETWEEN %s AND %s GROUP BY b.user_id",
                       (ws, day)) or []
         for uid_, bet, win in wrows:
             for rtype in ("cuoc_tuan", "thua_tuan"):
@@ -2019,11 +2054,11 @@ def add_wager_requirement(uid, bonus_amount, required_bet, prev_balance=None):
 
 async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
     msg = update.effective_message
-    row = query("SELECT ctype, reward, wager, expiry, require_deposit, required_amount, bound_user, used "
-                "FROM giftcodes WHERE code=%s", (code_str,))
+    row = query("SELECT ctype, reward, wager, expiry, require_deposit, required_amount, bound_user, used, "
+                "COALESCE(require_total_dep,0) FROM giftcodes WHERE code=%s", (code_str,))
     if not row:
         return False
-    ctype, reward, wager, expiry, require_deposit, required_amount, bound_user, used = row[0]
+    ctype, reward, wager, expiry, require_deposit, required_amount, bound_user, used, req_total_dep = row[0]
     gname = GIFT_TYPES.get(ctype, {}).get("name", "Giftcode")
 
     if bound_user and int(bound_user) != uid:
@@ -2034,6 +2069,28 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
         return True
     if expiry and get_vietnam_time() > expiry:
         await msg.reply_text(f'{ce("❌")} Mã này đã hết hạn sử dụng!', parse_mode=ParseMode.HTML)
+        return True
+
+    if ctype == "TANTHU":
+        _hist = query(
+            "SELECT (SELECT COUNT(*) FROM deposit_history WHERE user_id=%s) + "
+            "(SELECT COUNT(*) FROM withdraw_history WHERE user_id=%s)", (uid, uid))
+        if _hist and int(_hist[0][0] or 0) > 0:
+            await msg.reply_text(
+                f'{ce("🚫")} <b>Code Tân Thủ</b> chỉ dành cho tài khoản <b>chưa có lịch sử nạp / rút</b>.',
+                parse_mode=ParseMode.HTML)
+            return True
+
+    if req_total_dep and total_deposited(uid) < int(req_total_dep):
+        _td = total_deposited(uid)
+        await msg.reply_text(
+            f'{ce("⚠️")} <b>CHƯA ĐỦ ĐIỀU KIỆN NHẬP CODE!</b>\n'
+            f'━━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("🔑")} Mã: <code>{code_str}</code>\n'
+            f'{ce("📈")} Cần tổng nạp từ: <code>{fmt_money(int(req_total_dep))}đ</code>\n'
+            f'{ce("📥")} Tổng nạp của bạn: <code>{fmt_money(_td)}đ</code>\n'
+            f'{ce("📌")} Còn thiếu: <code>{fmt_money(int(req_total_dep) - _td)}đ</code>',
+            parse_mode=ParseMode.HTML)
         return True
 
     if require_deposit:
@@ -2123,7 +2180,7 @@ async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'{ce("🛒")} <b>Mua giftcode theo cú pháp:</b>\n'
         f'<code>/muagift [số lượng] [giá trị mỗi code]</code>\n'
         f'VD: <code>/muagift 5 20000</code> hoặc <code>/muagift 3 5000</code>\n\n'
-        f'{ce("⚠️")} Phí 5%. Mệnh giá mỗi code tối thiểu 1.000đ. Cần tổng nạp >50k.\n'
+        f'{ce("⚠️")} Phí 5%. Mệnh giá mỗi code tối thiểu 1.000đ. Cần tổng nạp >200k.\n'
         f'{ce("🎯")} Code mua chỉ cần cược <b>x1</b> vòng. Code được gửi ngay sau khi mua.'
     )
     if len(args) < 2:
@@ -2137,8 +2194,11 @@ async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await msg_obj.reply_text(f'{ce("❌")} Mỗi lần chỉ mua từ 1 đến 20 code!', parse_mode=ParseMode.HTML)
     if value < 1000 or value > 10_000_000:
         return await msg_obj.reply_text(f'{ce("❌")} Mệnh giá mỗi code từ 1.000đ đến 10.000.000đ!', parse_mode=ParseMode.HTML)
-    if total_deposited(uid) <= 50000:
-        return await msg_obj.reply_text(f'{ce("⚠️")} Bạn cần có tổng nạp trên <b>50.000đ</b> mới được mua giftcode!', parse_mode=ParseMode.HTML)
+    if total_deposited(uid) <= MIN_DEPOSIT_FEATURES:
+        return await msg_obj.reply_text(
+            f'{ce("⚠️")} Bạn cần có tổng nạp trên <b>{fmt_money(MIN_DEPOSIT_FEATURES)}đ</b> mới được mua giftcode!\n'
+            f'{ce("💳")} Tổng nạp hiện tại: <code>{fmt_money(total_deposited(uid))}đ</code>',
+            parse_mode=ParseMode.HTML)
 
     cost = qty * value
     fee = int(cost * 0.05)
@@ -2839,7 +2899,9 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 pass
 
             d1 = await bot.send_dice(chat_id, emoji="🎲")
+            await asyncio.sleep(1)
             d2 = await bot.send_dice(chat_id, emoji="🎲")
+            await asyncio.sleep(1)
             d3 = await bot.send_dice(chat_id, emoji="🎲")
             await asyncio.sleep(4)
 
@@ -3746,6 +3808,11 @@ async def xd6_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def chuyen_tien_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg_obj = update.effective_message
     uid = update.effective_user.id
+    if total_deposited(uid) <= MIN_DEPOSIT_FEATURES:
+        return await msg_obj.reply_text(
+            f'{ce("⚠️")} Bạn cần có tổng nạp trên <b>{fmt_money(MIN_DEPOSIT_FEATURES)}đ</b> mới được chuyển tiền!\n'
+            f'{ce("💳")} Tổng nạp hiện tại: <code>{fmt_money(total_deposited(uid))}đ</code>',
+            parse_mode=ParseMode.HTML)
     args = ctx.args or []
     if len(args) < 2:
         return await msg_obj.reply_text(
@@ -3916,11 +3983,11 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def show_withdraw_methods(message):
     kb = InlineKeyboardMarkup([
         [btn("BANKING", "💳", callback_data="payout:withdraw:BANKING")],
-        [btn("MOMO", "💗", callback_data="payout:withdraw:MOMO"),
-         btn("ZALOPAY", "💙", callback_data="payout:withdraw:ZALOPAY")]
+        [btn("MOMO", "❤️", callback_data="payout:withdraw:MOMO"),
+         btn("ZALOPAY", "💠", callback_data="payout:withdraw:ZALOPAY")]
     ])
     return await message.reply_text(
-        f'{ce("💸")} <b>CHỌN PHƯƠNG THỨC RÚT TIỀN</b>\\n\\n'
+        f'{ce("💸")} <b>CHỌN PHƯƠNG THỨC RÚT TIỀN</b>\n\n'
         'Chọn nơi bạn muốn nhận tiền. Bạn có thể chọn phương thức khác với tài khoản đã liên kết trước đó.',
         reply_markup=kb, parse_mode=ParseMode.HTML
     )
@@ -3938,8 +4005,8 @@ async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["payout_link"] = {"stage": "method"}
     kb = InlineKeyboardMarkup([
         [btn("BANKING", "💳", callback_data="payout:method:BANKING")],
-        [btn("MOMO", "💗", callback_data="payout:method:MOMO"),
-         btn("ZALOPAY", "💙", callback_data="payout:method:ZALOPAY")],
+        [btn("MOMO", "❤️", callback_data="payout:method:MOMO"),
+         btn("ZALOPAY", "💠", callback_data="payout:method:ZALOPAY")],
         [btn("Hủy", "❌", callback_data="payout:cancel")]
     ])
     return await update.effective_message.reply_text(
@@ -3952,8 +4019,8 @@ async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def lien_ket_from_callback(q, ctx):
     kb = InlineKeyboardMarkup([
         [btn("BANKING", "💳", callback_data="payout:method:BANKING")],
-        [btn("MOMO", "💗", callback_data="payout:method:MOMO"),
-         btn("ZALOPAY", "💙", callback_data="payout:method:ZALOPAY")],
+        [btn("MOMO", "❤️", callback_data="payout:method:MOMO"),
+         btn("ZALOPAY", "💠", callback_data="payout:method:ZALOPAY")],
         [btn("Hủy", "❌", callback_data="payout:cancel")]
     ])
     return await q.message.reply_text(
@@ -7382,6 +7449,8 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<code>/naptien ID số_tiền</code> — nạp tay; <code>/dsnap</code> / <code>/dsrut</code> — danh sách chờ\n\n"
         "<b>📊 Thống kê / code</b>\n<code>/stats</code>, <code>/all</code>, <code>/thongke</code>, <code>/tong</code>, <code>/check ID</code>, <code>/hisall</code>\n"
         "<code>/top</code> — Top tương tác hôm nay; <code>/topsodu [n]</code> — Top số dư; <code>/topcuoc [n]</code>, <code>/taocode</code>, <code>/taocodeall</code>, <code>/xoacode</code>, <code>/taogift</code>, <code>/dsgift</code>, <code>/xoagift</code>\n"
+        "<code>/dsnaphomnay</code> — người đã nạp thành công hôm nay; <code>/tangcodenap giá_trị vòng hạn [homnay|all|id,id] [nạp_tối_thiểu]</code> — tặng code thủ công cho người đã nạp; <code>/yccode mã nap|tongnap số_tiền|off</code> — thêm/gỡ yêu cầu nhập code\n"
+        "<code>/resethoanall</code> — reset TOÀN BỘ hoàn trả của <b>1 người</b>: bot hỏi ID rồi hỏi loại (ngày/tuần/cả hai), có xác nhận; gõ nhanh: <code>/resethoanall ID ngay|tuan|all</code> (<code>/resethoan</code> là lệnh cũ, cùng chức năng)\n"
         "<b>🎁 Khuyến mãi & báo cáo</b>\n"
         "<code>/kmgio</code> — xem/điều khiển giờ vàng nạp 15% (<code>on</code> / <code>off</code> / <code>auto</code>)\n"
         "<code>/homnay</code> — báo cáo nhanh hôm nay (nạp, rút, cược, khuyến mãi); tự gửi lúc 23:55 mỗi ngày\n"
@@ -9084,6 +9153,8 @@ async def legacy_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 async def huy_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ctx.user_data.pop("rp_wait", None):
         await update.effective_message.reply_text("✅ Đã hủy chọn ngày.")
+    if ctx.user_data.pop("adm_flow", None):
+        await update.effective_message.reply_text("✅ Đã huỷ thao tác admin đang nhập dở.")
 
 async def report_date_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     wait = ctx.user_data.get("rp_wait")
@@ -10010,7 +10081,7 @@ _ADM_CATS = [
         ("use", "kmnap", "Tặng khuyến mãi có vòng cược", "x", "/kmnap [ID] [số tiền]", "/kmnap 123456789 20000"),
         ("use", "checkprogressadmin", "Xem tiến độ cược của user", "x", "/checkprogressadmin [ID]", "/checkprogressadmin 123456789"),
         ("use", "resetprogress", "Reset tiến độ cược", "x", "/resetprogress [ID]", "/resetprogress 123456789"),
-        ("use", "resethoan", "Xoá thưởng hoàn trả đang chờ nhận", "x", "/resethoan [ID] ngay|tuan|all", "/resethoan 123456789 all"),
+        ("use", "resethoanall", "RESET TOÀN BỘ tiền hoàn trả của 1 người (đã chốt + đang tích luỹ, có xác nhận)", "x", "/resethoanall [ID] [ngay|tuan|all]", "/resethoanall 123456789 all"),
         ("use", "sethoancuoc", "Đặt % hoàn cược", "x", "/sethoancuoc ngay|tuan [%]", "/sethoancuoc ngay 2"),
         ("use", "sethu", "Đặt hũ Jackpot", "x", "/sethu [số tiền]", "/sethu 50m"),
         ("use", "hu", "Đặt hũ Tài Xỉu 3D (miniapp)", "x", "/hu [số tiền]", "/hu 50m"),
@@ -10023,6 +10094,9 @@ _ADM_CATS = [
         ("use", "taocodeall", "Tạo nhiều code 1 lượt", "x", "/taocodeall [số tiền] [số lượng]", "/taocodeall 5000 20"),
         ("use", "xoacode", "Xoá code thường", "x", "/xoacode [mã]", "/xoacode ABC12345"),
         ("use", "xoagift", "Xoá giftcode", "x", "/xoagift [mã]", "/xoagift JAV88-TANTHU-XXXXXXX"),
+        ("run", "dsnaphomnay", "Danh sách người đã nạp thành công hôm nay", "dsnaphomnay", None, None),
+        ("use", "tangcodenap", "Tặng code thủ công cho người đã nạp", "x", "/tangcodenap [giá trị] [vòng cược] [hạn] [homnay|all|id1,id2] [nạp tối thiểu]", "/tangcodenap 20k 1 1n homnay"),
+        ("use", "yccode", "Thêm / gỡ yêu cầu nhập code (nạp trong ngày, tổng nạp)", "x", "/yccode [mã] nap|tongnap [số tiền] | off", "/yccode JAV88-TRIAN-ABC1234 nap 100k"),
     ]),
     ("tk", "📊", "THỐNG KÊ & XUẤT FILE", "Thống kê hệ thống và xuất file Excel đẹp nhiều sheet.", [
         ("run", "thongke", "Bảng thống kê hôm nay / tháng / tổng", "thongke", None, None),
@@ -10072,6 +10146,432 @@ _ADM_CATS.append((
     ],
 ))
 _ADM_CAT_MAP = {c[0]: c for c in _ADM_CATS}
+_ADM_USAGE = {it[1]: (it[4] or "") for c in _ADM_CATS for it in c[4]}
+
+# ============================================================
+# ADMIN_FLOW — BẤM LỆNH TRONG MENU -> BOT HỎI TỪNG THÔNG TIN -> ADMIN NHẬP / BẤM NÚT -> TỰ CHẠY LỆNH
+#  • Không cần gõ lệnh thủ công: bấm lệnh trong menu, bot hỏi ID / số tiền / lựa chọn...
+#  • Mỗi bước có nút bấm nhanh (ID gần nhất, mức tiền hay dùng, on/off, ngày/tuần...), Quay lại, Bỏ qua, Huỷ.
+#  • Trong chat riêng: gõ thẳng câu trả lời. Trong nhóm: reply vào tin nhắn của bot.
+#  • Lệnh gõ tay (/add 123 50k ...) vẫn hoạt động như cũ.
+# ============================================================
+_FLOW_TTL = 600     # giây; quá hạn thì tự bỏ phiên nhập
+
+def _S(kind, name, prompt, choices=None, optional=False, free=False, when=None, norm=None,
+       quick=None, neg=False, lo=None, hi=None):
+    return {"kind": kind, "name": name, "prompt": prompt, "choices": choices or [], "optional": optional,
+            "free": free, "when": when, "norm": norm, "quick": quick or [], "neg": neg, "lo": lo, "hi": hi}
+
+_Q_MONEY = ["10k", "50k", "100k", "500k", "1m"]
+_CH_MT = [("🔴 BẬT bảo trì", "on"), ("🟢 TẮT bảo trì", "off")]
+_CH_PERIOD = [("📅 Hoàn ngày", "ngay"), ("🗓 Hoàn tuần", "tuan"), ("♻️ Cả hai", "all")]
+_CH_RANGE = [("7 ngày", "7"), ("30 ngày", "30"), ("Tất cả", "all")]
+_CH_GAMES = [(v[2], k) for k, v in ADMIN_GAMES.items()]
+
+def _ID(prompt="Nhập <b>ID người dùng</b> (dãy số):"):
+    return _S("id", "ID", prompt)
+
+def _MONEY(prompt="Nhập <b>số tiền</b> (vd: <code>50000</code>, <code>50k</code>, <code>1m</code>):", name="Số tiền", **kw):
+    return _S("money", name, prompt, quick=_Q_MONEY, **kw)
+
+def _TEXT(name, prompt, **kw):
+    return _S("text", name, prompt, **kw)
+
+def _RANGE():
+    return _S("choice", "Kỳ", "Chọn <b>kỳ</b> (hoặc gõ ngày: <code>29/10/2026</code>, "
+              "<code>01/10/2026 - 29/10/2026</code>, hay số ngày gần nhất):", choices=_CH_RANGE, free=True)
+
+def _CONFIRM(prompt):
+    return [_S("confirm", "Xác nhận", prompt)]
+
+def _upper(v):
+    return v.strip().upper()
+
+_ADM_FLOW = {
+    # ---- Bảo trì & room ----
+    "baotrigame": [
+        _S("choice", "Game", "Chọn <b>game / tính năng</b> cần đổi trạng thái bảo trì "
+           "(hoặc gõ nhiều mục cách nhau bằng dấu cách, vd: <code>xx lh nap</code>):",
+           choices=_CH_GAMES + [("Nạp tiền", "nap"), ("Rút tiền", "rut"), ("TẤT CẢ", "all")], free=True),
+        _S("choice", "Trạng thái", "Chọn trạng thái:", choices=_CH_MT)],
+    "baotriall": [_S("choice", "Trạng thái", "Bảo trì <b>toàn hệ thống</b>:", choices=_CH_MT)],
+    "baotritc": [_S("choice", "Trạng thái", "Bảo trì <b>toàn bộ</b> (kể cả menu):", choices=_CH_MT)],
+    "tatcuoc": [_S("choice", "Cược", "Khoá / mở cược trong nhóm (lệnh này chỉ dùng được trong <b>NHÓM</b>):",
+                   choices=[("🔒 TẮT cược", "off"), ("🔓 BẬT cược", "on")])],
+    # ---- Người dùng ----
+    "fulluser": [_ID()], "user": [_ID()],
+    "timuser": [_TEXT("Từ khoá", "Nhập <b>từ khoá</b> cần tìm (ID, STK hoặc tên):")],
+    "ban": [_ID("Nhập <b>ID</b> cần <b>KHOÁ</b> tài khoản:")],
+    "unban": [_ID("Nhập <b>ID</b> cần <b>MỞ KHOÁ</b> tài khoản:")],
+    "camgame": [_ID(), _S("choice", "Game", "Chọn <b>game</b> cấm user này chơi:", choices=_CH_GAMES)],
+    "mogame": [_ID(), _S("choice", "Game", "Chọn <b>game</b> gỡ cấm:", choices=_CH_GAMES + [("Tất cả game", "all")])],
+    "camtn": [_ID(), _S("choice", "Loại", "Khoá <b>nạp</b> hay <b>rút</b>?", choices=[("📥 Nạp", "nap"), ("📤 Rút", "rut")])],
+    "motn": [_ID(), _S("choice", "Loại", "Mở khoá <b>nạp</b> hay <b>rút</b>?",
+                       choices=[("📥 Nạp", "nap"), ("📤 Rút", "rut"), ("♻️ Cả hai", "all")])],
+    "camhoan": [_ID(), _S("choice", "Loại", "<b>Khoá nhận</b> hoàn trả loại nào?", choices=_CH_PERIOD)],
+    "mohoan": [_ID(), _S("choice", "Loại", "<b>Mở nhận</b> hoàn trả loại nào?", choices=_CH_PERIOD)],
+    "resetbank": [_ID("Nhập <b>ID</b> cần gỡ liên kết ngân hàng:")],
+    # ---- Tiền & giao dịch ----
+    "naptien": [_ID(), _MONEY("Nhập <b>số tiền nạp tay</b>:")],
+    "add": [_ID("Nhập <b>ID</b> cần <b>CỘNG</b> tiền:"), _MONEY("Nhập <b>số tiền cộng</b>:")],
+    "sub": [_ID("Nhập <b>ID</b> cần <b>TRỪ</b> tiền:"), _MONEY("Nhập <b>số tiền trừ</b>:")],
+    "setsd": [_ID(), _MONEY("Nhập <b>số dư mới</b> muốn đặt:")],
+    "resetuser": [_ID("Nhập <b>ID</b> cần reset số dư về 0 (sau đó còn bước xác nhận):")],
+    "xoanap": [_TEXT("Mã GD", "Nhập <b>mã giao dịch NẠP</b> cần xoá (nhiều mã cách nhau bằng dấu cách, vd: <code>15 16</code>):")],
+    "xoarut": [_TEXT("Mã GD", "Nhập <b>mã giao dịch RÚT</b> cần xoá (nhiều mã cách nhau bằng dấu cách, vd: <code>8</code>):")],
+    # ---- Cược & khuyến mãi ----
+    "xoacuoc": [_ID("Nhập <b>ID</b> cần xoá toàn bộ vòng cược:")],
+    "themcuoc": [_ID(), _MONEY("Nhập <b>số tiền cược cộng thêm</b> (số âm để trừ, vd: <code>-100k</code>):", neg=True)],
+    "themvongcuoc": [_ID(), _MONEY("Nhập <b>số tiền yêu cầu cược thêm</b> (user phải cược đủ mới được rút):")],
+    "ktvc": [_ID()],
+    "vcall": [_S("choice", "Số vòng", "Chọn <b>số vòng cược</b> thêm cho TẤT CẢ user có số dư (số dư × vòng; sau đó còn bước xác nhận):",
+                 choices=[("x3", "x3"), ("x5", "x5"), ("x7", "x7"), ("x10", "x10")], free=True)],
+    "kmnap": [_ID(), _MONEY("Nhập <b>số tiền khuyến mãi</b> tặng:")],
+    "checkprogressadmin": [_ID()],
+    "resetprogress": [_ID("Nhập <b>ID</b> cần reset tiến độ cược:")],
+    "resethoanall": [
+        _ID("Nhập <b>ID</b> người cần <b>reset tiền hoàn trả</b> (chỉ reset riêng người này):"),
+        _S("choice", "Loại", "Reset loại hoàn trả nào? (sau đó còn bước xác nhận)", choices=_CH_PERIOD)],
+    "sethoancuoc": [
+        _S("choice", "Loại", "Đặt % hoàn cược cho loại nào?", choices=[("📅 Hoàn ngày", "ngay"), ("🗓 Hoàn tuần", "tuan")]),
+        _S("num", "Tỉ lệ %", "Nhập <b>tỉ lệ %</b> hoàn cược (vd: <code>1.8</code>):",
+           quick=["1", "1.5", "1.8", "2", "3"], lo=0, hi=100)],
+    "sethu": [_MONEY("Nhập <b>số tiền hũ Jackpot</b>:")],
+    "hu": [_MONEY("Nhập <b>số tiền hũ Tài Xỉu 3D</b>:")],
+    "ep": [_S("choice", "Kết quả", "Chọn kết quả <b>ép</b> cho phiên kế tiếp (hoặc gõ 3 số xúc xắc, vd: <code>1 3 4</code>). "
+              "Lệnh này chỉ dùng được trong <b>chat riêng</b>:",
+              choices=[("🔵 Tài", "t"), ("🔴 Xỉu", "x"), ("🚫 Huỷ ép", "off")], free=True)],
+    # ---- Giftcode ----
+    "taocode": [_MONEY("Nhập <b>giá trị code</b>:"),
+                _S("num", "Lượt dùng", "Nhập <b>số lượt dùng</b>:", quick=["1", "10", "50", "100"], lo=1)],
+    "taocodeall": [_MONEY("Nhập <b>giá trị mỗi code</b>:"),
+                   _S("num", "Số lượng", "Nhập <b>số lượng code</b> (mỗi code 1 lượt):", quick=["5", "10", "20", "50"], lo=1)],
+    "xoacode": [_TEXT("Mã", "Nhập <b>mã code</b> cần xoá:", norm=_upper)],
+    "xoagift": [_TEXT("Mã", "Nhập <b>mã giftcode</b> cần xoá:", norm=_upper)],
+    "tangcodenap": [
+        _MONEY("Nhập <b>giá trị mỗi code</b> tặng:", name="Giá trị"),
+        _S("num", "Vòng cược", "Nhập <b>số vòng cược</b> (0 = không cần cược):", quick=["0", "1", "2", "3"], lo=0, hi=100),
+        _S("choice", "Hạn", "Nhập <b>hạn dùng</b>: <code>30p</code> (phút) · <code>2h</code> (giờ) · <code>1n</code> (ngày):",
+           choices=[("30 phút", "30p"), ("2 giờ", "2h"), ("1 ngày", "1n"), ("3 ngày", "3n")], free=True),
+        _S("choice", "Phạm vi", "Tặng cho ai? Chọn nút hoặc gõ danh sách ID cách nhau dấu phẩy (vd: <code>123456,789012</code>):",
+           choices=[("Đã nạp hôm nay", "homnay"), ("Từng nạp", "all")], free=True,
+           norm=lambda v: re.sub(r"[\s;,]+", ",", v.strip())),
+        _MONEY("Nhập <b>tổng nạp tối thiểu</b> (không bắt buộc, bấm Bỏ qua nếu không cần):", name="Nạp tối thiểu", optional=True)],
+    "yccode": [
+        _TEXT("Mã", "Nhập <b>mã giftcode</b> cần thêm/gỡ yêu cầu:", norm=_upper),
+        _S("choice", "Yêu cầu", "Chọn kiểu yêu cầu:",
+           choices=[("💳 Nạp trong ngày", "nap"), ("📈 Tổng nạp", "tongnap"), ("🚫 Gỡ yêu cầu", "off")]),
+        _MONEY("Nhập <b>số tiền yêu cầu</b> (tối thiểu 1.000đ):", when=lambda v: v.get(1) != "off")],
+    # ---- Thống kê & xuất file ----
+    "xuatthongke": [_RANGE()],
+    "xuatls": [_ID(), _RANGE()],
+    "tongket": [_ID(), _RANGE()],
+    "lsuser": [_ID(), _RANGE()],
+    # ---- Thông báo ----
+    "send": [_TEXT("Nội dung", "Nhập <b>nội dung thông báo</b> gửi cho <b>TẤT CẢ</b> người dùng:"),
+             _S("confirm", "Xác nhận", lambda v: f'Sẽ gửi cho <b>tất cả user</b>:\n<blockquote>{html.escape(v.get(0) or "")}</blockquote>')],
+    "rep": [_ID("Nhập <b>ID</b> người cần nhắn riêng:"), _TEXT("Nội dung", "Nhập <b>nội dung</b> gửi cho người này:")],
+    # ---- Công cụ khác ----
+    "info": [_ID()], "check": [_ID()],
+    "resetsdall": _CONFIRM('Reset <b>số dư của TẤT CẢ người dùng về 0</b>. Không thể hoàn tác!'),
+    "resetall": _CONFIRM('Reset <b>số dư của TẤT CẢ người dùng về 0</b>. Không thể hoàn tác!'),
+    "xoalsall": _CONFIRM('Xoá <b>TOÀN BỘ lịch sử cược, nạp, rút</b> của hệ thống. Không thể hoàn tác!'),
+    "xoals": [_ID("Nhập <b>ID</b> cần xoá sạch lịch sử:"),
+              _S("confirm", "Xác nhận", lambda v: f'Xoá <b>toàn bộ lịch sử</b> của ID <code>{html.escape(v.get(0) or "")}</code>. Không thể hoàn tác!')],
+    "setname": [_TEXT("Tên", "Nhập <b>tên mới</b> hiển thị của bot:")],
+    "kmnapvc": [_ID(), _MONEY("Nhập <b>số tiền khuyến mãi</b> (theo vòng cược):")],
+    "lsnap": [_ID()], "lsrut": [_ID()], "lscuoc": [_ID()], "lscode": [_ID()], "lsgift": [_ID()], "lsmua": [_ID()],
+    "checktt": [_ID()],
+}
+# Lệnh dùng trong menu mà không cần nhập thông tin gì: bấm là chạy ngay.
+_ADM_NOARG = {"stats", "top", "topnap", "resetsystem", "codenap"}
+
+_ADM_LABEL = {it[1]: it[2] for c in _ADM_CATS for it in c[4]}
+
+def _adm_cmd_fn(cmd):
+    """Tìm hàm xử lý của lệnh đã đăng ký với CommandHandler (không cần liệt kê tay)."""
+    for hs in application.handlers.values():
+        for h in hs:
+            if isinstance(h, CommandHandler) and cmd in h.commands:
+                return h.callback
+    return None
+
+def _flow_next(flow, start):
+    for j in range(start, len(flow["steps"])):
+        w = flow["steps"][j]["when"]
+        if w is None or w(flow["vals"]):
+            return j
+    return None
+
+def _flow_args(flow):
+    args = []
+    for j in sorted(flow["vals"]):
+        v = flow["vals"][j]
+        st = flow["steps"][j]
+        if v is None or st["kind"] == "confirm":
+            continue
+        if st["kind"] in ("text", "choice"):
+            args += [t for t in v.split(" ") if t]       # giữ nguyên xuống dòng trong nội dung
+        else:
+            args.append(v)
+    return args
+
+def _flow_parse(step, raw):
+    """Trả về (giá trị chuẩn hoá, None) hoặc (None, thông báo lỗi)."""
+    raw = (raw or "").strip()
+    k = step["kind"]
+    if not raw:
+        return None, "Bạn chưa nhập gì."
+    if k == "id":
+        if not re.fullmatch(r"\d{4,15}", raw):
+            return None, "ID phải là dãy số (4–15 chữ số)."
+        v = raw
+    elif k == "money":
+        try:
+            n = parse_money_text(raw)
+        except (ValueError, TypeError):
+            return None, "Số tiền không hợp lệ. Ví dụ: 50000, 50k, 1m."
+        if n == 0 or (n < 0 and not step["neg"]):
+            return None, "Số tiền phải lớn hơn 0."
+        v = str(n)
+    elif k == "num":
+        if not re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
+            return None, "Hãy nhập một con số."
+        v = raw.replace(",", ".")
+        f = float(v)
+        if (step["lo"] is not None and f < step["lo"]) or (step["hi"] is not None and f > step["hi"]):
+            return None, f'Giá trị phải từ {step["lo"] if step["lo"] is not None else "…"} đến {step["hi"] if step["hi"] is not None else "…"}.'
+    elif k == "confirm":
+        low = raw.lower()
+        if low in ("yes", "y", "ok", "xacnhan", "xác nhận", "đồng ý", "dong y"):
+            return "yes", None
+        if low in ("no", "n", "huy", "hủy", "cancel"):
+            return "no", None
+        return None, "Bấm nút XÁC NHẬN hoặc Huỷ."
+    else:       # text / choice
+        v = raw
+        if k == "choice":
+            low = raw.lower()
+            hit = next((val for lab, val in step["choices"] if low == val.lower() or low == lab.lower()), None)
+            if hit is not None:
+                v = hit
+            elif not step["free"]:
+                return None, "Hãy bấm một nút hoặc gõ: " + ", ".join(val for _l, val in step["choices"]) + "."
+    if step["norm"]:
+        v = step["norm"](v)
+    return v, None
+
+def _flow_view(ctx, flow):
+    steps, i = flow["steps"], flow["i"]
+    step = steps[i]
+    has_when = any(s["when"] for s in steps)
+    head = f'{ce("✏️")} <b>/{flow["cmd"]}</b> — {html.escape(flow["label"])}\n━━━━━━━━━━━━━━━━━━━━━\n'
+    done = []
+    for j in range(i):
+        v = flow["vals"].get(j)
+        if v is None or steps[j]["kind"] == "confirm":
+            continue
+        done.append(f'{ce("✅")} {steps[j]["name"]}: <code>{html.escape(v if len(v) < 80 else v[:77] + "…")}</code>')
+    if done:
+        head += "\n".join(done) + "\n\n"
+    p = step["prompt"](flow["vals"]) if callable(step["prompt"]) else step["prompt"]
+    prog = "" if has_when else f' <i>(bước {i + 1}/{len(steps)})</i>'
+    body = f'{ce("❓")} {p}{prog}\n\n'
+    if step["kind"] == "confirm":
+        body += f'{ce("⚠️")} <b>Bấm XÁC NHẬN để thực hiện.</b>'
+    elif flow["private"]:
+        body += f'{ce("✍️")} <i>Gõ câu trả lời gửi cho bot, hoặc bấm nút bên dưới.</i>'
+    else:
+        body += f'{ce("✍️")} <i><b>Reply</b> tin nhắn này để nhập, hoặc bấm nút bên dưới.</i>'
+    if i == 0 and flow.get("usage"):
+        body += f'\n{ce("💡")} <i>Gõ tay cũng được: <code>{html.escape(flow["usage"])}</code></i>'
+    # ---- nút ----
+    opts, rows, cur = [], [], []
+
+    def add(label, value, per_row=2):
+        opts.append(value)
+        cur.append(btn(label, None, callback_data=f"adm2:fv:{len(opts) - 1}"))
+        if len(cur) >= per_row:
+            rows.append(list(cur))
+            cur.clear()
+
+    def flush():
+        if cur:
+            rows.append(list(cur))
+            cur.clear()
+
+    if step["kind"] == "confirm":
+        rows.append([btn("XÁC NHẬN", "✅", callback_data="adm2:fv:0")])
+        opts.append("yes")
+    else:
+        if step["kind"] == "id" and ctx.user_data.get("adm_last_id"):
+            add(f'ID gần nhất: {ctx.user_data["adm_last_id"]}', str(ctx.user_data["adm_last_id"]), 1)
+        for lab, val in step["choices"]:
+            add(lab, val, 3 if len(step["choices"]) > 4 else 2)
+        flush()
+        for q_ in step["quick"]:
+            add(str(q_) if step["kind"] == "num" else q_.upper(), str(q_), 5)
+        flush()
+    nav = []
+    if step["optional"]:
+        nav.append(btn("Bỏ qua", "⏭", callback_data="adm2:fs"))
+    if flow["hist"]:
+        nav.append(btn("Quay lại", "🔙", callback_data="adm2:fb"))
+    nav.append(btn("Huỷ", "❌", callback_data="adm2:fc"))
+    rows.append(nav)
+    rows.append([btn("Menu admin", "🏠", callback_data="adm2:home")])
+    flow["opts"] = opts
+    return head + body, InlineKeyboardMarkup(rows)
+
+async def _flow_put(ctx, flow, text, kb=None):
+    """Sửa tin nhắn của luồng; nếu không sửa được thì gửi tin mới và nhớ id mới."""
+    try:
+        await ctx.bot.edit_message_text(chat_id=flow["chat"], message_id=flow["mid"], text=text,
+                                        reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        if "not modified" in str(e).lower():
+            return
+        sent = await ctx.bot.send_message(chat_id=flow["chat"], text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        flow["mid"] = sent.message_id
+
+async def _flow_show(ctx, flow):
+    text, kb = _flow_view(ctx, flow)
+    await _flow_put(ctx, flow, text, kb)
+
+async def _adm_flow_start(update, ctx, cmd, via_cb=False):
+    """Bắt đầu luồng nhập thông tin cho lệnh `cmd`. Lệnh không cần thông tin thì chạy ngay."""
+    fn = _adm_cmd_fn(cmd)
+    if not fn:
+        return await update.effective_message.reply_text(f'{ce("❌")} Lệnh /{cmd} không tồn tại.', parse_mode=ParseMode.HTML)
+    steps = _ADM_FLOW.get(cmd)
+    ctx.user_data.pop("adm_flow", None)
+    if not steps:
+        ctx.args = []
+        return await fn(_ProxyUpdate(update) if via_cb else update, ctx)
+    chat = update.effective_chat
+    if via_cb:
+        mid = update.callback_query.message.message_id
+    else:
+        mid = (await update.effective_message.reply_text("⏳", parse_mode=ParseMode.HTML)).message_id
+    flow = {"cmd": cmd, "label": _ADM_LABEL.get(cmd, cmd), "steps": steps, "i": 0, "vals": {}, "hist": [],
+            "opts": [], "ts": time.time(), "chat": chat.id, "mid": mid, "private": chat.type == "private",
+            "usage": _ADM_USAGE.get(cmd, "")}
+    flow["i"] = _flow_next(flow, 0)
+    ctx.user_data["adm_flow"] = flow
+    await _flow_show(ctx, flow)
+
+async def _flow_cancel(update, ctx, flow, toast=None):
+    ctx.user_data.pop("adm_flow", None)
+    text, kb = _adm_home(flow["private"])
+    await _flow_put(ctx, flow, text, kb)
+
+async def _flow_advance(update, ctx, flow, val, via_cb):
+    """Lưu giá trị của bước hiện tại rồi sang bước kế / chạy lệnh."""
+    i = flow["i"]
+    step = flow["steps"][i]
+    flow["vals"][i] = val
+    flow["ts"] = time.time()
+    if step["kind"] == "id" and val:
+        ctx.user_data["adm_last_id"] = val
+    flow["hist"].append(i)
+    nxt = _flow_next(flow, i + 1)
+    if nxt is not None:
+        flow["i"] = nxt
+        return await _flow_show(ctx, flow)
+    # ---- đủ thông tin: chạy lệnh ----
+    ctx.user_data.pop("adm_flow", None)
+    args = _flow_args(flow)
+    shown = " ".join(args)
+    shown = shown if len(shown) < 120 else shown[:117] + "…"
+    await _flow_put(ctx, flow,
+                    f'{ce("⚙️")} Đang chạy <code>/{flow["cmd"]}{" " + html.escape(shown) if shown else ""}</code> …',
+                    InlineKeyboardMarkup([[btn("Làm lại lệnh này", "🔁", callback_data=f'adm2:q:{flow["cmd"]}'),
+                                           btn("Menu admin", "🏠", callback_data="adm2:home")]]))
+    fn = _adm_cmd_fn(flow["cmd"])
+    ctx.args = args
+    try:
+        await fn(_ProxyUpdate(update) if via_cb else update, ctx)
+    except ApplicationHandlerStop:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await ctx.bot.send_message(flow["chat"], f"❌ Lỗi khi chạy lệnh: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+async def adm_flow_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Nhận câu trả lời gõ tay của admin cho bước đang chờ."""
+    flow = ctx.user_data.get("adm_flow")
+    msg, user, chat = update.effective_message, update.effective_user, update.effective_chat
+    if not flow or not msg or not msg.text or not user or user.id not in ADMIN_IDS or not chat:
+        return
+    if time.time() - flow["ts"] > _FLOW_TTL:
+        ctx.user_data.pop("adm_flow", None)
+        return
+    if chat.id != flow["chat"]:
+        return
+    is_reply = bool(msg.reply_to_message and msg.reply_to_message.message_id == flow["mid"])
+    if not (flow["private"] or is_reply):
+        return
+    text = msg.text.strip()
+    if re.sub(r'^[^\w]+', '', text).strip().upper() == "ADMIN":      # bấm nút ADMIN: bỏ phiên nhập, mở lại menu
+        ctx.user_data.pop("adm_flow", None)
+        return
+    if text.lower() in ("huy", "hủy", "cancel"):
+        ctx.user_data.pop("adm_flow", None)
+        await msg.reply_text(f'{ce("✅")} Đã huỷ thao tác.', parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+    step = flow["steps"][flow["i"]]
+    val, err = _flow_parse(step, text)
+    if err:
+        await msg.reply_text(f'{ce("❌")} {html.escape(err)}', parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+    if step["kind"] == "confirm" and val == "no":
+        ctx.user_data.pop("adm_flow", None)
+        await msg.reply_text(f'{ce("🚫")} Đã huỷ thao tác.', parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+    await _flow_advance(update, ctx, flow, val, False)
+    raise ApplicationHandlerStop
+
+async def _adm_flow_callback(update, ctx, act, parts):
+    """Xử lý các nút của luồng: fv (chọn giá trị), fs (bỏ qua), fb (quay lại), fc (huỷ)."""
+    q = update.callback_query
+    flow = ctx.user_data.get("adm_flow")
+    if (not flow or q.message.message_id != flow["mid"] or q.message.chat_id != flow["chat"]
+            or time.time() - flow["ts"] > _FLOW_TTL):
+        ctx.user_data.pop("adm_flow", None)
+        return await q.answer("Phiên nhập đã hết hạn. Hãy mở lại lệnh từ menu admin.", show_alert=True)
+    if act == "fc":
+        await q.answer("Đã huỷ.")
+        return await _flow_cancel(update, ctx, flow)
+    if act == "fb":
+        await q.answer()
+        if flow["hist"]:
+            back = flow["hist"].pop()
+            for j in [k for k in flow["vals"] if k >= back]:
+                flow["vals"].pop(j, None)
+            flow["i"] = back
+        return await _flow_show(ctx, flow)
+    step = flow["steps"][flow["i"]]
+    if act == "fs":
+        if not step["optional"]:
+            return await q.answer()
+        await q.answer()
+        return await _flow_advance(update, ctx, flow, None, True)
+    # fv
+    try:
+        raw = flow["opts"][int(parts[2])]
+    except (IndexError, ValueError):
+        return await q.answer("Nút đã cũ, hãy bấm lại.", show_alert=True)
+    val, err = _flow_parse(step, raw)
+    if err:
+        return await q.answer(err, show_alert=True)
+    if step["kind"] == "confirm" and val == "no":
+        await q.answer("Đã huỷ.")
+        return await _flow_cancel(update, ctx, flow)
+    await q.answer("⚡ Đang chạy…" if flow["i"] == len(flow["steps"]) - 1 else None)
+    return await _flow_advance(update, ctx, flow, val, True)
 
 def _adm_ok(uid):
     return uid in ADMIN_IDS and not is_admin_banned(uid)
@@ -10086,7 +10586,7 @@ def _adm_runner(key):
         "homnay": homnay_cmd, "taogift": gift_flow_start, "dsgift": dsgift_cmd, "thongke": dashboard_cmd,
         "tong": tong_cmd, "xuatthongke": xuatthongke_cmd, "xuatnapall": xuatnapall_cmd,
         "xuatrutall": xuatrutall_cmd, "xuathethong": xuathethong_cmd, "resetthongke": resetthongke_cmd,
-        "adminhelp": admin_help_cmd,
+        "adminhelp": admin_help_cmd, "dsnaphomnay": dsnaphomnay_cmd,
     }.get(key)
 
 def _adm_ep_state():
@@ -10113,9 +10613,9 @@ def _adm_home(private=False):
         f'━━━━━━━━━━━━━━━━━━━━━\n'
         f'{ce("👋")} Bảng điều khiển dành riêng cho <b>Admin</b>. Chọn một danh mục bên dưới để xem toàn bộ lệnh.\n\n'
         f'{ce("📌")} <b>CÁCH DÙNG</b>\n'
-        f'• {ce("⚡")} <b>Nút ⚡</b>: bấm là chạy ngay lệnh, không cần nhập gì thêm.\n'
-        f'• {ce("✏️")} <b>Nút ✏️</b>: hiện cú pháp + ví dụ, chạm vào dòng lệnh để sao chép rồi gửi kèm ID/số tiền.\n'
-        f'• Các lệnh dùng được cả trong chat riêng lẫn trong nhóm.\n\n'
+        f'• {ce("⚡")} <b>Nút ⚡</b>: bấm là chạy ngay, không cần nhập gì thêm.\n'
+        f'• {ce("✏️")} <b>Nút ✏️</b>: bấm vào lệnh, bot sẽ hỏi từng thông tin (ID, số tiền, lựa chọn…). Bạn chỉ cần nhập hoặc bấm nút, bot tự chạy lệnh — <b>không cần gõ lệnh thủ công</b>.\n'
+        f'• Các lệnh dùng được cả trong chat riêng lẫn trong nhóm (trong nhóm: reply tin nhắn của bot để nhập).\n\n'
         f'{ce("📊")} <b>TÌNH TRẠNG NHANH</b>\n'
         f'• {ce("📤")} Rút chờ duyệt: <b>{pend_w}</b>   {ce("📥")} Nạp chờ: <b>{pend_d}</b>\n'
         f'• {ce("🎮")} Game đang bảo trì: <b>{mt_games}/{len(ADMIN_GAMES)}</b>\n'
@@ -10135,6 +10635,15 @@ def _adm_home(private=False):
             cur = []
     if cur:
         rows.append(cur)
+    # Thao tác nhanh: các việc admin làm nhiều nhất, bấm là bot hỏi thông tin luôn.
+    rows.append([btn("— THAO TÁC NHANH —", None, callback_data="adm2:noop")])
+    for pair in (
+        (("Hồ sơ user", "👤", "q:fulluser"), ("Cộng tiền", "➕", "q:add")),
+        (("Trừ tiền", "➖", "q:sub"), ("Khoá tài khoản", "🔒", "q:ban")),
+        (("Mở khoá", "🔓", "q:unban"), ("Reset hoàn trả", "🎁", "q:resethoanall")),
+        (("Nạp chờ duyệt", "📥", "run:dsnap"), ("Rút chờ duyệt", "📤", "run:dsrut")),
+    ):
+        rows.append([btn(t, e, callback_data=f"adm2:{cb}") for t, e, cb in pair])
     if private:
         rows += _adm_ep_rows()
     rows.append([btn("Hướng dẫn dạng chữ", "📜", callback_data="adm2:help"), btn("Làm mới", "🔄", callback_data="adm2:home")])
@@ -10146,13 +10655,18 @@ def _adm_cat(key):
     lines = [f'{ce(em)} <b>{title}</b>', '━━━━━━━━━━━━━━━━━━━━━', f'<i>{desc}</i>', '']
     run_btns, use_btns = [], []
     for idx, (kind, cmd, label, rkey, _usage, _ex) in enumerate(items):
-        if kind == "run":
+        steps = _ADM_FLOW.get(cmd) if kind == "use" else None
+        if kind == "run" or not steps:
             lines.append(f'{ce("⚡")} <code>/{cmd}</code> — {label}')
-            run_btns.append(btn(f"/{cmd}", "⚡", callback_data=f"adm2:run:{rkey}"))
+            if kind == "run":
+                run_btns.append(btn(f"/{cmd}", "⚡", callback_data=f"adm2:run:{rkey}"))
+            else:
+                run_btns.append(btn(f"/{cmd}", "⚡", callback_data=f"adm2:use:{key}:{idx}"))
         else:
-            lines.append(f'{ce("✏️")} <code>/{cmd}</code> — {label}')
-            use_btns.append(btn(f"/{cmd}", "✏️", callback_data=f"adm2:use:{key}:{idx}"))
-    lines += ['', f'{ce("💡")} <i>⚡ chạy ngay · ✏️ xem cú pháp</i>']
+            ico = "⚠️" if all(s_["kind"] == "confirm" for s_ in steps) else "✏️"
+            lines.append(f'{ce(ico)} <code>/{cmd}</code> — {label}')
+            use_btns.append(btn(f"/{cmd}", ico, callback_data=f"adm2:use:{key}:{idx}"))
+    lines += ['', f'{ce("💡")} <i>⚡ chạy ngay · ✏️ bấm để bot hỏi thông tin rồi tự chạy · ⚠️ có bước xác nhận</i>']
     rows = []
     for group in (run_btns, use_btns):
         for i in range(0, len(group), 2):
@@ -10162,6 +10676,7 @@ def _adm_cat(key):
 
 @admin_only
 async def admin_panel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.pop("adm_flow", None)
     text, kb = _adm_home(update.effective_chat.type == "private")
     await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -10195,17 +10710,21 @@ async def admin_panel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.answer()
             text, kb = _adm_cat(parts[2])
             return await safe_edit(q, text, kb)
-        if act == "use" and len(parts) > 3 and parts[2] in _ADM_CAT_MAP:
+        if act == "noop":
+            return await q.answer()
+        if act in ("fv", "fs", "fb", "fc"):
+            return await _adm_flow_callback(update, ctx, act, parts)
+        if act in ("use", "q"):
+            if act == "use" and len(parts) > 3 and parts[2] in _ADM_CAT_MAP:
+                cmd = _ADM_CAT_MAP[parts[2]][4][int(parts[3])][1]
+            elif act == "q" and len(parts) > 2:
+                cmd = parts[2]
+            else:
+                return await q.answer()
+            if cmd not in _ADM_LABEL:
+                return await q.answer("Lệnh không tồn tại.", show_alert=True)
             await q.answer()
-            item = _ADM_CAT_MAP[parts[2]][4][int(parts[3])]
-            _kind, cmd, label, _rk, usage, example = item
-            text = (f'{ce("✏️")} <b>/{cmd}</b> — {label}\n━━━━━━━━━━━━━━━━━━━━━\n'
-                    f'{ce("📌")} <b>Cú pháp:</b>\n<code>{html.escape(usage)}</code>\n\n'
-                    f'{ce("💡")} <b>Ví dụ:</b>\n<code>{html.escape(example)}</code>\n\n'
-                    f'<i>Chạm vào dòng lệnh để sao chép, sửa ID/số tiền rồi gửi.</i>')
-            kb = InlineKeyboardMarkup([[btn("Quay lại danh mục", "🔙", callback_data=f"adm2:cat:{parts[2]}"),
-                                        btn("Menu admin", "🏠", callback_data="adm2:home")]])
-            return await safe_edit(q, text, kb)
+            return await _adm_flow_start(update, ctx, cmd, via_cb=True)
         if act == "help":
             await q.answer()
             return await admin_help_cmd(_ProxyUpdate(update), ctx)
@@ -10214,7 +10733,7 @@ async def admin_panel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await q.message.delete()
         if act == "run" and len(parts) > 2:
             key, _, arg = parts[2].partition("|")
-            fn = _adm_runner(key)
+            fn = _adm_runner(key) or _adm_cmd_fn(key)
             if not fn:
                 return await q.answer("Lệnh không tồn tại.", show_alert=True)
             await q.answer("⚡ Đang chạy…")
@@ -10227,6 +10746,391 @@ async def admin_panel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(f"❌ Lỗi khi chạy lệnh: {html.escape(str(e))[:300]}", parse_mode=ParseMode.HTML)
         except Exception:
             pass
+
+
+# ============================================================
+# ADMIN: NGƯỜI NẠP HÔM NAY / TẶNG CODE THỦ CÔNG / YÊU CẦU NHẬP CODE
+#  /dsnaphomnay                         — danh sách người đã nạp thành công hôm nay
+#  /tangcodenap [giá trị] [vòng cược] [hạn] [homnay|all|id1,id2] [nạp tối thiểu]
+#  /yccode [mã] nap|tongnap [số tiền] | off   — thêm / gỡ yêu cầu nhập code
+# ============================================================
+_TGN_PENDING = {}   # token -> thông tin đợt tặng đang chờ admin xác nhận
+
+def _depositors_today_sync():
+    rows = query(
+        "SELECT d.user_id, COUNT(*), COALESCE(SUM(d.amount),0), MAX(d.time), MAX(u.name) "
+        "FROM deposit_history d LEFT JOIN users u ON u.user_id=d.user_id "
+        "WHERE d.status='success' AND right(d.\"time\",10)=%s "
+        "GROUP BY d.user_id ORDER BY SUM(d.amount) DESC", (get_vietnam_date(),)) or []
+    return [(int(r[0]), int(r[1]), int(r[2]), str(r[3] or ""), str(r[4] or "")) for r in rows]
+
+def _depositors_all_sync(min_amount):
+    rows = query(
+        "SELECT user_id, COALESCE(SUM(amount),0) FROM deposit_history WHERE status='success' "
+        "GROUP BY user_id HAVING COALESCE(SUM(amount),0) >= %s ORDER BY SUM(amount) DESC", (int(min_amount),)) or []
+    return [(int(r[0]), int(r[1])) for r in rows]
+
+@admin_only
+async def dsnaphomnay_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    rows = await asyncio.to_thread(_depositors_today_sync)
+    today = get_vietnam_date()
+    if not rows:
+        return await msg.reply_text(
+            f'{ce("📥")} Hôm nay <code>{today}</code> chưa có ai nạp tiền thành công.',
+            parse_mode=ParseMode.HTML)
+    total = sum(r[2] for r in rows)
+    orders = sum(r[1] for r in rows)
+    head = (
+        f'{ce("📥")} <b>NGƯỜI NẠP THÀNH CÔNG HÔM NAY</b> <code>{today}</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("👥")} Số người: <b>{len(rows)}</b> · {ce("🧾")} Số lệnh: <b>{orders}</b>\n'
+        f'{ce("💰")} Tổng nạp: <b>{fmt_money(total)}đ</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n')
+    cache, lines = {}, []
+    for i, (uid, n, amt, last, bank_name) in enumerate(rows, 1):
+        name = await _telegram_name(ctx.bot, uid, cache) if i <= 40 else ""
+        name = name or bank_name or "—"
+        lines.append(
+            f'{ce("🥇") if i == 1 else ce("🥈") if i == 2 else ce("🥉") if i == 3 else ce("👤")} '
+            f'<b>{i}.</b> <code>{uid}</code> · {html.escape(name)}\n'
+            f'    {ce("💵")} <b>{fmt_money(amt)}đ</b> · {n} lệnh · {ce("⏰")} <i>{html.escape(last)}</i>')
+    foot = (f'\n━━━━━━━━━━━━━━━━━━━━━\n{ce("🎁")} Tặng code cho nhóm này: '
+            f'<code>/tangcodenap 20k 1 1n homnay</code>')
+    chunks, cur = [], head
+    for ln in lines:
+        if len(cur) + len(ln) + 2 > 3800:
+            chunks.append(cur)
+            cur = ""
+        cur += ln + "\n"
+    chunks.append(cur + foot)
+    for c in chunks:
+        await msg.reply_text(c, parse_mode=ParseMode.HTML)
+
+def _tgn_usage():
+    return (
+        f'{ce("🎁")} <b>TẶNG CODE THỦ CÔNG CHO NGƯỜI ĐÃ NẠP</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("✍️")} <code>/tangcodenap [giá trị] [vòng cược] [hạn] [phạm vi] [nạp tối thiểu]</code>\n\n'
+        f'{ce("💰")} <b>giá trị</b>: <code>20000</code> hoặc <code>20k</code>\n'
+        f'{ce("🎯")} <b>vòng cược</b>: <code>1</code> = x1 (0 = không cần cược)\n'
+        f'{ce("⏰")} <b>hạn</b>: <code>1n</code> (ngày) · <code>2h</code> (giờ) · <code>30p</code> (phút)\n'
+        f'{ce("👥")} <b>phạm vi</b>: <code>homnay</code> (đã nạp hôm nay, mặc định) · <code>all</code> (từng nạp) · '
+        f'<code>id1,id2,id3</code> (chỉ định)\n'
+        f'{ce("💳")} <b>nạp tối thiểu</b> (tuỳ chọn): chỉ tặng người có tổng nạp từ mức này\n\n'
+        f'{ce("💡")} <b>VD:</b>\n'
+        f'<code>/tangcodenap 20k 1 1n homnay</code>\n'
+        f'<code>/tangcodenap 50k 2 3n homnay 500k</code>\n'
+        f'<code>/tangcodenap 10k 1 1n 123456,789012</code>\n\n'
+        f'{ce("📌")} Mỗi người nhận 1 code riêng (chỉ họ dùng được), bot gửi riêng cho từng người. '
+        f'Có bước xác nhận trước khi gửi.')
+
+@admin_only
+async def tangcodenap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    args = ctx.args or []
+    if len(args) < 3:
+        return await msg.reply_text(_tgn_usage(), parse_mode=ParseMode.HTML)
+    try:
+        reward = parse_money_text(args[0])
+        wager = int(args[1].lower().replace("x", "").strip())
+        minutes = parse_duration(args[2])
+        scope = (args[3].lower() if len(args) > 3 else "homnay")
+        min_amt = parse_money_text(args[4]) if len(args) > 4 else 0
+    except (ValueError, TypeError):
+        return await msg.reply_text(f'{ce("❌")} Tham số không hợp lệ.\n\n' + _tgn_usage(), parse_mode=ParseMode.HTML)
+    if reward < 1000 or reward > 100_000_000:
+        return await msg.reply_text(f'{ce("❌")} Giá trị code từ 1.000đ đến 100.000.000đ.', parse_mode=ParseMode.HTML)
+    if wager < 0 or wager > 100:
+        return await msg.reply_text(f'{ce("❌")} Số vòng cược từ 0 đến 100.', parse_mode=ParseMode.HTML)
+    if not minutes or minutes <= 0:
+        return await msg.reply_text(f'{ce("❌")} Hạn dùng không hợp lệ (VD: <code>1n</code>, <code>2h</code>, <code>30p</code>).', parse_mode=ParseMode.HTML)
+
+    banned = {int(r[0]) for r in (query("SELECT user_id FROM banned") or [])}
+    if scope in ("homnay", "today", "hn"):
+        scope_txt = "đã nạp thành công HÔM NAY"
+        rows = await asyncio.to_thread(_depositors_today_sync)
+        if min_amt:
+            # mức tối thiểu tính theo TỔNG nạp từ trước đến nay
+            targets = [r[0] for r in rows if total_deposited(r[0]) >= min_amt]
+        else:
+            targets = [r[0] for r in rows]
+    elif scope in ("all", "tatca"):
+        scope_txt = "từng nạp thành công"
+        rows = await asyncio.to_thread(_depositors_all_sync, max(min_amt, 1))
+        targets = [r[0] for r in rows]
+    else:
+        scope_txt = "do admin chỉ định"
+        ids = [int(x) for x in re.split(r"[,\s;]+", scope) if x.strip().isdigit()]
+        if not ids:
+            return await msg.reply_text(f'{ce("❌")} Phạm vi không hợp lệ.\n\n' + _tgn_usage(), parse_mode=ParseMode.HTML)
+        exist = {int(r[0]) for r in (query("SELECT user_id FROM users WHERE user_id = ANY(%s)", (ids,)) or [])}
+        targets = [i for i in dict.fromkeys(ids) if i in exist]
+    targets = [t for t in targets if t not in banned]
+    if not targets:
+        return await msg.reply_text(f'{ce("📭")} Không có người nhận phù hợp với phạm vi này.', parse_mode=ParseMode.HTML)
+    if len(targets) > 500:
+        return await msg.reply_text(f'{ce("❌")} Tối đa 500 người mỗi đợt (đang chọn {len(targets)}). Hãy lọc thêm bằng mức nạp tối thiểu.', parse_mode=ParseMode.HTML)
+
+    if len(_TGN_PENDING) > 50:
+        _TGN_PENDING.clear()
+    token = gen_code()
+    _TGN_PENDING[token] = {"admin": update.effective_user.id, "targets": targets, "reward": reward,
+                           "wager": wager, "minutes": minutes, "ts": time.time()}
+    kb = InlineKeyboardMarkup([[btn("XÁC NHẬN GỬI", "✅", callback_data=f"tgn:ok:{token}"),
+                                btn("HUỶ", "❌", callback_data=f"tgn:no:{token}")]])
+    await msg.reply_text(
+        f'{ce("⚠️")} <b>XÁC NHẬN TẶNG CODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("👥")} Người nhận: <b>{len(targets)}</b> ({scope_txt})\n'
+        f'{ce("💰")} Mỗi code: <b>{fmt_money(reward)}đ</b>\n'
+        f'{ce("🎯")} Vòng cược: <b>x{wager}</b>\n'
+        f'{ce("⏰")} Hạn dùng: <b>{fmt_duration(minutes)}</b>\n'
+        + (f'{ce("💳")} Tổng nạp tối thiểu: <b>{fmt_money(min_amt)}đ</b>\n' if min_amt else '')
+        + f'{ce("📊")} Tổng giá trị tặng: <b>{fmt_money(reward * len(targets))}đ</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'<i>Mỗi người nhận 1 code riêng, bot gửi tin nhắn riêng cho từng người.</i>',
+        reply_markup=kb, parse_mode=ParseMode.HTML)
+
+def _tgn_create_sync(info, admin_id):
+    expiry = get_vietnam_time() + timedelta(minutes=info["minutes"])
+    out = []
+    for uid in info["targets"]:
+        try:
+            code = gen_gift_code("NAP")
+            query("INSERT INTO giftcodes (code, ctype, reward, wager, expiry, require_deposit, required_amount, "
+                  "bound_user, used, created_by, created_at) VALUES (%s,'NAP',%s,%s,%s,0,0,%s,0,%s,%s)",
+                  (code, info["reward"], info["wager"], expiry, uid, admin_id, get_vietnam_datetime_db()))
+            out.append((uid, code))
+        except Exception as e:
+            print(f"[tangcodenap] lỗi tạo code cho {uid}: {e}")
+    return out, expiry
+
+async def tangnap_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS or is_admin_banned(q.from_user.id):
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    parts = (q.data or "").split(":")
+    if len(parts) < 3:
+        return await q.answer()
+    act, token = parts[1], parts[2]
+    info = _TGN_PENDING.pop(token, None)
+    if not info:
+        return await q.answer("Đợt tặng này đã xử lý hoặc hết hạn.", show_alert=True)
+    if act == "no":
+        await q.answer("Đã huỷ.")
+        return await q.edit_message_text(f'{ce("🚫")} Đã huỷ đợt tặng code.', parse_mode=ParseMode.HTML)
+    if time.time() - info["ts"] > 900:
+        return await q.answer("Đợt tặng đã quá 15 phút, hãy tạo lại.", show_alert=True)
+    await q.answer("Đang tạo và gửi code…")
+    await q.edit_message_text(f'{ce("⌛")} Đang tạo code và gửi cho <b>{len(info["targets"])}</b> người…', parse_mode=ParseMode.HTML)
+    created, expiry = await asyncio.to_thread(_tgn_create_sync, info, q.from_user.id)
+    sent, failed = 0, []
+    for uid, code in created:
+        try:
+            await ctx.bot.send_message(
+                uid,
+                f'{ce("🎁")} <b>QUÀ TẶNG TỪ ADMIN</b> {ce("🎉")}\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'Cảm ơn bạn đã nạp tiền và đồng hành cùng hệ thống!\n\n'
+                f'{ce("🔑")} <b>Mã code:</b> <code>{code}</code>\n'
+                f'{ce("💰")} <b>Giá trị:</b> <code>{fmt_money(info["reward"])}đ</code>\n'
+                f'{ce("🎯")} <b>Vòng cược:</b> <code>x{info["wager"]}</code>\n'
+                f'{ce("⏰")} <b>Hạn dùng:</b> <code>{expiry.strftime("%d/%m/%Y %H:%M")}</code>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n'
+                f'{ce("📌")} Nhập bằng <code>/code {code}</code> hoặc gửi thẳng mã cho bot. Code chỉ dùng được cho tài khoản của bạn.',
+                parse_mode=ParseMode.HTML)
+            sent += 1
+        except Exception:
+            failed.append(uid)
+            query("DELETE FROM giftcodes WHERE code=%s AND used=0", (code,))   # không để code mồ côi
+        await asyncio.sleep(0.06)
+    miss = len(info["targets"]) - len(created)
+    text = (f'{ce("✅")} <b>ĐÃ TẶNG CODE XONG</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("📤")} Gửi thành công: <b>{sent}</b>/{len(info["targets"])}\n'
+            f'{ce("💰")} Giá trị mỗi code: <b>{fmt_money(info["reward"])}đ</b> · x{info["wager"]} · {fmt_duration(info["minutes"])}\n')
+    if failed:
+        text += (f'{ce("⚠️")} Không nhắn được ({len(failed)}, đã thu hồi code): '
+                 f'<code>{", ".join(map(str, failed[:30]))}</code>{" …" if len(failed) > 30 else ""}\n')
+    if miss > 0:
+        text += f'{ce("❌")} Lỗi tạo code: {miss} người.\n'
+    await q.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+@admin_only
+async def yccode_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    args = ctx.args or []
+    usage = (
+        f'{ce("🔑")} <b>THÊM YÊU CẦU NHẬP CODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        f'<code>/yccode [mã] nap [số tiền]</code> — phải nạp đủ số tiền <b>trong ngày</b> mới nhập được\n'
+        f'<code>/yccode [mã] tongnap [số tiền]</code> — phải có <b>tổng nạp</b> đủ mức này\n'
+        f'<code>/yccode [mã] off</code> — gỡ toàn bộ yêu cầu\n'
+        f'<code>/yccode [mã]</code> — xem yêu cầu hiện tại\n\n'
+        f'{ce("💡")} VD: <code>/yccode JAV88-TRIAN-ABC1234 nap 100k</code>')
+    if not args:
+        return await msg.reply_text(usage, parse_mode=ParseMode.HTML)
+    code = args[0].strip().upper()
+    row = query("SELECT ctype, reward, used, require_deposit, required_amount, COALESCE(require_total_dep,0) "
+                "FROM giftcodes WHERE code=%s", (code,)) or []
+    if not row:
+        return await msg.reply_text(f'{ce("❌")} Không tìm thấy giftcode <code>{html.escape(code)}</code>.', parse_mode=ParseMode.HTML)
+    if row[0][2]:
+        return await msg.reply_text(f'{ce("❌")} Code này đã được sử dụng, không thể đổi yêu cầu.', parse_mode=ParseMode.HTML)
+    if len(args) >= 2:
+        mode = args[1].lower()
+        if mode == "off":
+            query("UPDATE giftcodes SET require_deposit=0, required_amount=0, require_total_dep=0 WHERE code=%s", (code,))
+        elif mode in ("nap", "tongnap"):
+            try:
+                amount = parse_money_text(args[2])
+                if amount < 1000:
+                    raise ValueError
+            except (IndexError, ValueError, TypeError):
+                return await msg.reply_text(f'{ce("❌")} Thiếu hoặc sai số tiền (tối thiểu 1.000đ).\n\n' + usage, parse_mode=ParseMode.HTML)
+            if mode == "nap":
+                query("UPDATE giftcodes SET require_deposit=1, required_amount=%s WHERE code=%s", (amount, code))
+            else:
+                query("UPDATE giftcodes SET require_total_dep=%s WHERE code=%s", (amount, code))
+        else:
+            return await msg.reply_text(usage, parse_mode=ParseMode.HTML)
+        row = query("SELECT ctype, reward, used, require_deposit, required_amount, COALESCE(require_total_dep,0) "
+                    "FROM giftcodes WHERE code=%s", (code,)) or row
+    ctype, reward, _used, req_dep, req_amt, req_total = row[0]
+    await msg.reply_text(
+        f'{ce("🔑")} <b>YÊU CẦU NHẬP CODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🎟")} Mã: <code>{html.escape(code)}</code> · {html.escape(GIFT_TYPES.get(ctype, {}).get("name", str(ctype)))}\n'
+        f'{ce("💰")} Giá trị: <code>{fmt_money(int(reward or 0))}đ</code>\n'
+        f'{ce("💳")} Nạp trong ngày: <b>{fmt_money(int(req_amt or 0)) + "đ" if req_dep else "Không yêu cầu"}</b>\n'
+        f'{ce("📈")} Tổng nạp tối thiểu: <b>{fmt_money(int(req_total or 0)) + "đ" if req_total else "Không yêu cầu"}</b>' +
+        (f'\n{ce("🚫")} Code Tân Thủ: chỉ tài khoản chưa có lịch sử nạp/rút' if ctype == "TANTHU" else ''),
+        parse_mode=ParseMode.HTML)
+
+
+# ============================================================
+# ADMIN: RESET TOÀN BỘ TIỀN HOÀN TRẢ CỦA 1 NGƯỜI DÙNG (KHÔNG ĐỤNG TỚI NGƯỜI KHÁC)
+#  /resethoanall            — bot hỏi ID, rồi hỏi loại (ngày / tuần / cả hai), rồi xác nhận
+#  /resethoanall [ID] [ngay|tuan|all]  — gõ thẳng cũng được (mặc định all)
+#  Xoá về 0: (1) khoản hoàn ĐÃ CHỐT đang chờ nhận; (2) phần ĐANG TÍCH LUỸ chưa chốt (hôm nay / tuần này).
+#  Số dư, lịch sử, thống kê cược và khoản đã nhận trước đó KHÔNG đổi.
+# ============================================================
+_RHALL_DONE = set()
+_RH_LABEL = {"all": "HOÀN NGÀY + HOÀN TUẦN", "ngay": "HOÀN NGÀY", "tuan": "HOÀN TUẦN"}
+
+def _rh_types(period):
+    if period == "ngay":
+        return ["cuoc_ngay", "thua_ngay"]
+    if period == "tuan":
+        return ["cuoc_tuan", "thua_tuan"]
+    return ["cuoc_ngay", "thua_ngay", "cuoc_tuan", "thua_tuan"]
+
+def _rh_preview_sync(uid, period):
+    """(số khoản đã chốt chờ nhận, tổng tiền đã chốt, tổng tiền đang tích luỹ chưa chốt)"""
+    pr = query("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM rewards "
+               "WHERE user_id=%s AND claimed=0 AND amount>0 AND rtype = ANY(%s)",
+               (uid, _rh_types(period))) or [(0, 0)]
+    today = get_vietnam_time().date()
+    ws = week_start(today)
+    we = ws + timedelta(days=6)
+    live = 0
+    if period in ("ngay", "all"):
+        b, w = reward_stats(uid, today, today, "ngay")
+        live += reward_calc("cuoc_ngay", b, w)[1] + reward_calc("thua_ngay", b, w)[1]
+    if period in ("tuan", "all"):
+        b, w = reward_stats(uid, ws, we, "tuan")
+        live += reward_calc("cuoc_tuan", b, w)[1] + reward_calc("thua_tuan", b, w)[1]
+    return int(pr[0][0] or 0), int(pr[0][1] or 0), int(live)
+
+def _rh_apply_sync(uid, period):
+    """Trả về (số khoản đã xoá, tổng tiền đã xoá) hoặc None nếu lỗi DB."""
+    rows = query(
+        "WITH old AS (SELECT id, amount FROM rewards WHERE user_id=%s AND claimed=0 AND amount>0 "
+        "AND rtype = ANY(%s) FOR UPDATE) "
+        "UPDATE rewards r SET amount=0, claimed=1, claimed_at=%s FROM old WHERE r.id=old.id "
+        "RETURNING old.amount",
+        (uid, _rh_types(period), get_vietnam_datetime_db()))
+    if rows is None:
+        return None
+    # Chốt mốc cho phần đang tích luỹ: từ giờ doanh số hoàn trả của người này tính lại từ 0.
+    since = get_vietnam_time().date() - timedelta(days=8)
+    for scope in (["ngay", "tuan"] if period == "all" else [period]):
+        ok = query(
+            "INSERT INTO reward_base(user_id, day, scope, bet, win) "
+            "SELECT user_id, day, %s, bet, win FROM bet_daily WHERE user_id=%s AND day>=%s "
+            "ON CONFLICT (user_id, day, scope) DO UPDATE SET bet=EXCLUDED.bet, win=EXCLUDED.win "
+            "RETURNING 1", (scope, uid, since))
+        if ok is None:
+            return None
+    return len(rows), sum(int(r[0] or 0) for r in rows)
+
+@admin_only
+async def resethoanall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    args = ctx.args or []
+    if not args:                         # gõ lệnh trống -> bot hỏi ID rồi hỏi loại
+        return await _adm_flow_start(update, ctx, "resethoanall")
+    try:
+        target = int(args[0])
+    except ValueError:
+        return await msg.reply_text(
+            f'{ce("❌")} ID không hợp lệ. Gõ <code>/resethoanall</code> rồi nhập ID, '
+            f'hoặc <code>/resethoanall [ID] [ngay|tuan|all]</code>.', parse_mode=ParseMode.HTML)
+    period = (args[1].lower() if len(args) > 1 else "all")
+    if period not in _RH_LABEL:
+        return await msg.reply_text(
+            f'{ce("❌")} Loại phải là <code>ngay</code>, <code>tuan</code> hoặc <code>all</code>.',
+            parse_mode=ParseMode.HTML)
+    if not (query("SELECT 1 FROM users WHERE user_id=%s", (target,)) or []):
+        return await msg.reply_text(f'{ce("❌")} Không tìm thấy ID <code>{target}</code>.', parse_mode=ParseMode.HTML)
+    items, pend_total, live = await asyncio.to_thread(_rh_preview_sync, target, period)
+    if items == 0 and live == 0:
+        return await msg.reply_text(
+            f'{ce("📭")} ID <code>{target}</code> hiện không có khoản <b>{_RH_LABEL[period]}</b> nào '
+            f'(không có khoản chờ nhận và chưa tích luỹ thêm).', parse_mode=ParseMode.HTML)
+    name = await _telegram_name(ctx.bot, target, {}) or "—"
+    kb = InlineKeyboardMarkup([[btn("XÁC NHẬN RESET", "⚠️", callback_data=f"rhall:ok:{target}:{period}"),
+                                btn("HUỶ", "❌", callback_data="rhall:no")]])
+    await msg.reply_text(
+        f'{ce("⚠️")} <b>XÁC NHẬN RESET TIỀN HOÀN TRẢ</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🆔")} ID: <code>{target}</code> · {html.escape(name)}\n'
+        f'{ce("🎁")} Loại: <b>{_RH_LABEL[period]}</b>\n'
+        f'{ce("🧾")} Đã chốt, chờ nhận: <b>{items}</b> khoản = <code>{fmt_money(pend_total)}đ</code>\n'
+        f'{ce("⏳")} Đang tích luỹ (chưa chốt): <code>{fmt_money(live)}đ</code>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("📌")} Chỉ reset <b>riêng người này</b>. Cả hai phần trên về <b>0</b>; số dư, lịch sử, '
+        f'thống kê cược và khoản đã nhận trước đó <b>không đổi</b>. Không thể hoàn tác.',
+        reply_markup=kb, parse_mode=ParseMode.HTML)
+
+async def resethoanall_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS or is_admin_banned(q.from_user.id):
+        return await q.answer("Bạn không có quyền.", show_alert=True)
+    parts = (q.data or "").split(":")
+    act = parts[1] if len(parts) > 1 else ""
+    if act == "no":
+        await q.answer("Đã huỷ.")
+        return await q.edit_message_text(f'{ce("🚫")} Đã huỷ reset tiền hoàn trả.', parse_mode=ParseMode.HTML)
+    if act != "ok" or len(parts) < 4 or not parts[2].isdigit() or parts[3] not in _RH_LABEL:
+        return await q.answer()
+    target, period = int(parts[2]), parts[3]
+    key = (q.message.chat_id, q.message.message_id)
+    if key in _RHALL_DONE:
+        return await q.answer("Đã xử lý rồi!", show_alert=True)
+    _RHALL_DONE.add(key)
+    await q.answer("Đang reset…")
+    result = await asyncio.to_thread(_rh_apply_sync, target, period)
+    if result is None:
+        _RHALL_DONE.discard(key)
+        return await q.edit_message_text(
+            f'{ce("❌")} Lỗi cơ sở dữ liệu, chưa reset được. Hãy thử lại.', parse_mode=ParseMode.HTML)
+    done, total = result
+    await q.edit_message_text(
+        f'{ce("✅")} <b>ĐÃ RESET TIỀN HOÀN TRẢ</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n'
+        f'{ce("🆔")} ID: <code>{target}</code>\n'
+        f'{ce("🎁")} Loại: <b>{_RH_LABEL[period]}</b>\n'
+        f'{ce("🧾")} Khoản chờ nhận đã xoá: <b>{done}</b> = <code>{fmt_money(total)}đ</code>\n'
+        f'{ce("⏳")} Phần đang tích luỹ: <b>đã về 0</b>, tính lại từ bây giờ.',
+        parse_mode=ParseMode.HTML)
 
 
 async def _on_error(update, context):
@@ -10304,6 +11208,10 @@ application.add_handler(CommandHandler("codenap", gift_flow_start))
 application.add_handler(CommandHandler("taogift", gift_flow_start))
 application.add_handler(CommandHandler("xoagift", xoagift_cmd))
 application.add_handler(CommandHandler("dsgift", dsgift_cmd))
+application.add_handler(CommandHandler("dsnaphomnay", dsnaphomnay_cmd))
+application.add_handler(CommandHandler("tangcodenap", tangcodenap_cmd))
+application.add_handler(CommandHandler("yccode", yccode_cmd))
+application.add_handler(CallbackQueryHandler(tangnap_callback, pattern=r"^tgn:"))
 application.add_handler(CommandHandler("sethoancuoc", sethoancuoc_cmd))
 application.add_handler(CommandHandler("baotri", baotri_cmd))
 application.add_handler(CommandHandler("baotriht", baotri_he_thong_cmd))
@@ -10339,7 +11247,9 @@ application.add_handler(CommandHandler("xuatls", xuatls_cmd))
 application.add_handler(CommandHandler("huy", huy_cmd))
 application.add_handler(CommandHandler("resetbank", resetbank_cmd))
 application.add_handler(CommandHandler("camhoan", camhoan_cmd))
-application.add_handler(CommandHandler("resethoan", resethoan_cmd))
+application.add_handler(CommandHandler("resethoan", resethoanall_cmd))
+application.add_handler(CommandHandler("resethoanall", resethoanall_cmd))
+application.add_handler(CallbackQueryHandler(resethoanall_callback, pattern=r"^rhall:"))
 application.add_handler(CommandHandler("mohoan", mohoan_cmd))
 application.add_handler(CommandHandler("resetuser", resetuser_cmd))
 application.add_handler(CommandHandler("xuatnapall", xuatnapall_cmd))
@@ -10380,6 +11290,7 @@ application.add_handler(CallbackQueryHandler(payout_link_callback, pattern=r"^pa
 application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.PHOTO, payout_link_photo), group=-2)
 application.add_handler(MessageHandler(filters.TEXT, payout_link_text), group=-2)
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, adm_flow_input), group=-1)
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, report_date_input), group=-1)
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
 
