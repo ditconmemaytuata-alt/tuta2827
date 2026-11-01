@@ -11309,14 +11309,14 @@ async def _on_error(update, context):
 
 
 # ============================================================
-# CHỐNG SPAM: 2 thao tác (tin nhắn / bấm nút) trong 2 giây => khóa vĩnh viễn
+# CHỐNG SPAM: 5 thao tác (tin nhắn / bấm nút) trong 2 giây => khóa vĩnh viễn
 # Bị khóa thì bot im lặng hoàn toàn, không trả lời gì nữa.
 # Danh sách khóa lưu PostgreSQL (không mất khi restart) và được nạp vào RAM,
 # nên kiểm tra mỗi tin không còn chạm DB -> không làm đơ bot khi bị spam.
 # ============================================================
 _SPAM_ACTIVITY = collections.defaultdict(collections.deque)
 _SPAM_WINDOW_SECONDS = 2.0
-_SPAM_MAX_EVENTS = 1          # tin thứ 2 trong 2 giây là bị khóa
+_SPAM_MAX_EVENTS = 4          # tin thứ 5 trong 2 giây là bị khóa
 _SPAM_LAST_ALBUM = {}         # uid -> media_group_id (album ảnh tính là 1 thao tác)
 
 def _load_spam_banned():
@@ -11333,7 +11333,7 @@ def _spam_ban_db(uid: int):
     query(
         "INSERT INTO spam_permanent_bans(user_id, reason) VALUES(%s,%s) "
         "ON CONFLICT(user_id) DO NOTHING",
-        (uid, "Spam: 2 thao tác trong 2 giây")
+        (uid, "Spam: 5 thao tác trong 2 giây")
     )
 
 async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
