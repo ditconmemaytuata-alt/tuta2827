@@ -31,7 +31,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằng biến môi trường; không hardcode khóa bí mật
 
 ADMIN_IDS = [5633649201, 7884394252]
-BOT_USERNAME = "Jav88gamebot"
+BOT_USERNAME = "Jav88sangamebot"
+SESSION_HISTORY_GROUP_ID = -1004491701518
+SESSION_HISTORY_URL = "https://t.me/lspjav88"
 ROOM_LINK = "https://t.me/jav88sanhu"
 MIN_WITHDRAW = 50000
 MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
@@ -692,6 +694,13 @@ query("ALTER TABLE history ADD COLUMN IF NOT EXISTS bal_before BIGINT")
 query("ALTER TABLE history ADD COLUMN IF NOT EXISTS bal_after BIGINT")
 query("CREATE TABLE IF NOT EXISTS banned (user_id BIGINT PRIMARY KEY)")
 query("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+try:
+    _session_counter_row = query("SELECT value FROM settings WHERE key='dice_session_counter'")
+    if not _session_counter_row:
+        query("INSERT INTO settings(key, value) VALUES('dice_session_counter', '0') ON CONFLICT (key) DO NOTHING")
+except Exception as _counter_init_error:
+    print(f"[session-counter] chưa khởi tạo được bộ đếm: {_counter_init_error}")
+
 query("CREATE TABLE IF NOT EXISTS welcome_bonus_log (user_id BIGINT PRIMARY KEY, amount BIGINT DEFAULT 0, created_at TEXT)")
 query("CREATE TABLE IF NOT EXISTS stats_bet_base (user_id BIGINT, day DATE, bet BIGINT DEFAULT 0, win BIGINT DEFAULT 0, PRIMARY KEY (user_id, day))")
 # Mốc reset hoàn trả theo từng người (scope: ngay | tuan). Doanh số hoàn trả = bet_daily - mốc này.
@@ -2754,8 +2763,14 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 await asyncio.sleep(10)
                 continue
 
-            SESSION_COUNTER["value"] += 1
+            # Bộ đếm phiên lưu trong PostgreSQL để không quay về #1 khi sửa/redeploy bot.
+            try:
+                saved_counter = int(get_setting("dice_session_counter", "0") or 0)
+            except (TypeError, ValueError):
+                saved_counter = 0
+            SESSION_COUNTER["value"] = max(int(SESSION_COUNTER.get("value", 0)), saved_counter) + 1
             session_id = SESSION_COUNTER["value"]
+            set_setting("dice_session_counter", session_id)
 
             game_state = {
                 "status": "betting",
@@ -2785,7 +2800,12 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             )
 
             try:
-                await bot.send_message(chat_id, start_text, parse_mode=ParseMode.HTML)
+                await bot.send_message(
+                    chat_id, start_text, parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[
+                        btn("LỊCH SỬ PHIÊN", "📊", url=SESSION_HISTORY_URL)
+                    ]])
+                )
             except Exception as e:
                 print(f"Lỗi gửi tin nhắn bắt đầu phiên: {e}")
                 await asyncio.sleep(5)
@@ -2858,8 +2878,9 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 try:
                     new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
                         [btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap')],
-                        [btn('BOT CHƠI GAME', '🎮', url='https://t.me/Jav88gamebot')],
-                        [btn('CHƠI TÀI XỈU 3D NGAY', '🎮', url=f'https://t.me/{BOT_USERNAME}?start=tx3d')]
+                        [btn('BOT CHƠI GAME', '🎮', url='https://t.me/Jav88sangamebot')],
+                        [btn('CHƠI TÀI XỈU 3D NGAY', '🎮', url=f'https://t.me/{BOT_USERNAME}?start=tx3d')],
+                        [btn('LỊCH SỬ PHIÊN', '📊', url=SESSION_HISTORY_URL)]
                     ]))
                     stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
@@ -3060,7 +3081,33 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             except Exception as e:
                 print(f"Lỗi mở khóa chat: {e}")
 
-            await bot.send_message(chat_id, final_msg, parse_mode=ParseMode.HTML)
+            await bot.send_message(
+                chat_id, final_msg, parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[
+                    btn("LỊCH SỬ PHIÊN", "📊", url=SESSION_HISTORY_URL)
+                ]])
+            )
+            # Gửi kết quả từng phiên sang nhóm lưu lịch sử.
+            try:
+                history_post = (
+                    f'{ce("📊")} <b>LỊCH SỬ PHIÊN #{session_id}</b>\n'
+                    f'━━━━━━━━━━━━━━━━━━\n'
+                    f'{ce("🎲")} Kết quả xúc xắc: <b>{dice_str}</b>\n'
+                    f'{ce("💯")} Tổng điểm: <b>{total}</b>\n'
+                    f'{ce("🏆")} Kết quả: <b>{html.escape(result_text)}</b>\n'
+                    f'{ce("💰")} Tổng tiền thắng: <b>{fmt_money(total_win)}đ</b>\n'
+                    f'{ce("📉")} Tổng tiền thua: <b>{fmt_money(total_lose)}đ</b>\n'
+                    f'━━━━━━━━━━━━━━━━━━'
+                )
+                await bot.send_message(
+                    SESSION_HISTORY_GROUP_ID, history_post,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[
+                        btn("LỊCH SỬ PHIÊN", "📊", url=SESSION_HISTORY_URL)
+                    ]])
+                )
+            except Exception as history_error:
+                print(f"[session-history] không gửi được phiên #{session_id}: {history_error}")
             group_games.pop(group_id, None)
             await asyncio.sleep(10)
 
