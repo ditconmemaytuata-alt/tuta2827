@@ -11309,17 +11309,32 @@ async def _on_error(update, context):
 
 
 # ============================================================
-# CHỐNG SPAM MENU: hơn 3 thao tác trong 2 giây => khóa bot vĩnh viễn
-# Áp dụng cho tin nhắn và lần bấm nút inline trong chat riêng.
-# Danh sách khóa lưu PostgreSQL, không mất khi restart/redeploy.
+# CHỐNG SPAM: 2 thao tác (tin nhắn / bấm nút) trong 2 giây => khóa vĩnh viễn
+# Bị khóa thì bot im lặng hoàn toàn, không trả lời gì nữa.
+# Danh sách khóa lưu PostgreSQL (không mất khi restart) và được nạp vào RAM,
+# nên kiểm tra mỗi tin không còn chạm DB -> không làm đơ bot khi bị spam.
 # ============================================================
 _SPAM_ACTIVITY = collections.defaultdict(collections.deque)
 _SPAM_WINDOW_SECONDS = 2.0
-_SPAM_MAX_EVENTS = 3
+_SPAM_MAX_EVENTS = 1          # tin thứ 2 trong 2 giây là bị khóa
+_SPAM_LAST_ALBUM = {}         # uid -> media_group_id (album ảnh tính là 1 thao tác)
+
+def _load_spam_banned():
+    rows = query("SELECT user_id FROM spam_permanent_bans") or []
+    return {int(r[0]) for r in rows}
+
+_SPAM_BANNED = _load_spam_banned()
+print(f"[spam-guard] loaded {len(_SPAM_BANNED)} banned users")
 
 def _is_spam_permanently_banned(user_id: int) -> bool:
-    rows = query("SELECT 1 FROM spam_permanent_bans WHERE user_id=%s", (user_id,))
-    return bool(rows)
+    return user_id in _SPAM_BANNED
+
+def _spam_ban_db(uid: int):
+    query(
+        "INSERT INTO spam_permanent_bans(user_id, reason) VALUES(%s,%s) "
+        "ON CONFLICT(user_id) DO NOTHING",
+        (uid, "Spam: 2 thao tác trong 2 giây")
+    )
 
 async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -11331,18 +11346,27 @@ async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if uid in ADMIN_IDS:
         return
 
-    # Chỉ kiểm soát menu bot trong chat riêng, không phạt hoạt động bình thường ở nhóm.
+    # Chỉ kiểm soát chat riêng với bot, không phạt hoạt động bình thường ở nhóm.
     chat = update.effective_chat
     if not chat or chat.type != "private":
         return
 
-    if _is_spam_permanently_banned(uid):
+    # Đã bị khóa: nuốt mọi update, không trả lời gì.
+    if uid in _SPAM_BANNED:
         if update.callback_query:
             try:
                 await update.callback_query.answer()
             except Exception:
                 pass
         raise ApplicationHandlerStop
+
+    # Album nhiều ảnh gửi cùng lúc chỉ tính 1 thao tác.
+    msg = update.effective_message
+    gid = getattr(msg, "media_group_id", None) if msg else None
+    if gid:
+        if _SPAM_LAST_ALBUM.get(uid) == gid:
+            return
+        _SPAM_LAST_ALBUM[uid] = gid
 
     now = time.monotonic()
     events = _SPAM_ACTIVITY[uid]
@@ -11351,13 +11375,14 @@ async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     events.append(now)
 
     if len(events) > _SPAM_MAX_EVENTS:
-        query(
-            "INSERT INTO spam_permanent_bans(user_id, reason) VALUES(%s,%s) "
-            "ON CONFLICT(user_id) DO NOTHING",
-            (uid, "Spam quá 3 thao tác trong 2 giây tại menu bot")
-        )
+        _SPAM_BANNED.add(uid)             # khóa ngay trong RAM
         _SPAM_ACTIVITY.pop(uid, None)
+        _SPAM_LAST_ALBUM.pop(uid, None)
         print(f"[spam-guard] permanently blocked user_id={uid}")
+        try:
+            await asyncio.to_thread(_spam_ban_db, uid)   # ghi DB, không chặn event loop
+        except Exception as e:
+            print(f"[spam-guard] db error: {e}")
         if update.callback_query:
             try:
                 await update.callback_query.answer()
@@ -11372,7 +11397,8 @@ async def unban_spam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Cú pháp: /unbanspam USER_ID")
         return
     uid = int(ctx.args[0])
-    query("DELETE FROM spam_permanent_bans WHERE user_id=%s", (uid,))
+    await asyncio.to_thread(query, "DELETE FROM spam_permanent_bans WHERE user_id=%s", (uid,))
+    _SPAM_BANNED.discard(uid)
     _SPAM_ACTIVITY.pop(uid, None)
     await update.effective_message.reply_text(f"Đã gỡ khóa chống spam cho user {uid}.")
 
