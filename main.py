@@ -3089,15 +3089,13 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             )
             # Gửi kết quả từng phiên sang nhóm lưu lịch sử.
             try:
+                # Định dạng lịch sử gọn giống mẫu kênh: một dòng số phiên,
+                # một dòng ba mặt xúc xắc + Tài/Xỉu, Chẵn/Lẻ và màu tương ứng.
                 history_post = (
-                    f'{ce("📊")} <b>LỊCH SỬ PHIÊN #{session_id}</b>\n'
-                    f'━━━━━━━━━━━━━━━━━━\n'
-                    f'{ce("🎲")} Kết quả xúc xắc: <b>{dice_str}</b>\n'
-                    f'{ce("💯")} Tổng điểm: <b>{total}</b>\n'
-                    f'{ce("🏆")} Kết quả: <b>{html.escape(result_text)}</b>\n'
-                    f'{ce("💰")} Tổng tiền thắng: <b>{fmt_money(total_win)}đ</b>\n'
-                    f'{ce("📉")} Tổng tiền thua: <b>{fmt_money(total_lose)}đ</b>\n'
-                    f'━━━━━━━━━━━━━━━━━━'
+                    f'{ce("🎲")} <b>Kết quả phiên {session_id}</b> {ce("🎲")}\n'
+                    f'<b>{dice_str}</b> 👉 <b>{html.escape(result_text)}</b> '
+                    f'{result_icons}\n'
+                    f'{ce("💯")} Tổng điểm: <b>{total}</b>'
                 )
                 await bot.send_message(
                     SESSION_HISTORY_GROUP_ID, history_post,
