@@ -548,6 +548,19 @@ CREATE TABLE IF NOT EXISTS group_interactions (
 )
 """)
 query("""
+CREATE TABLE IF NOT EXISTS user_game_streaks (
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    current_type TEXT NOT NULL DEFAULT '',
+    current_count INTEGER NOT NULL DEFAULT 0,
+    max_win INTEGER NOT NULL DEFAULT 0,
+    max_loss INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (user_id, group_id)
+)
+""")
+
+query("""
 CREATE TABLE IF NOT EXISTS daily_top_interactions (
     user_id BIGINT,
     group_id BIGINT,
@@ -2877,10 +2890,14 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
 
                 try:
                     new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
-                        [btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap')],
-                        [btn('BOT CHƠI GAME', '🎮', url='https://t.me/Jav88sangamebot')],
-                        [btn('CHƠI TÀI XỈU 3D NGAY', '🎮', url=f'https://t.me/{BOT_USERNAME}?start=tx3d')],
-                        [btn('LỊCH SỬ PHIÊN', '📊', url=SESSION_HISTORY_URL)]
+                        [
+                            btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap'),
+                            btn('BOT CHƠI GAME', '🎮', url=f'https://t.me/{BOT_USERNAME}')
+                        ],
+                        [
+                            btn('CHƠI TÀI XỈU 3D NGAY', '🎮', url=f'https://t.me/{BOT_USERNAME}?start=tx3d'),
+                            btn('LỊCH SỬ PHIÊN', '📊', url=SESSION_HISTORY_URL)
+                        ]
                     ]))
                     stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
@@ -2937,6 +2954,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
 
             total_win = 0
             total_lose = 0
+            user_round_results = {}
 
             for bet_key, bet in game_state["bets"].items():
                 uid = bet["user_id"]
@@ -2977,6 +2995,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                     if dice_values == [target_triple, target_triple, target_triple]:
                         is_win = True; multiplier = 150
 
+                user_round_results.setdefault(uid, []).append(bool(is_win))
                 if is_win:
                     win_amt = int(amt * multiplier)
                     add_money(uid, win_amt, f"Thắng Tài Xỉu Room {choice.upper()}")
@@ -3003,6 +3022,39 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                             f'Chúc ông chủ may mắn',
                             parse_mode=ParseMode.HTML)
                     except: pass
+
+            # Cập nhật chuỗi thắng/thua theo từng người chơi sau mỗi phiên.
+            for streak_uid, outcomes in user_round_results.items():
+                # Có ít nhất một cửa thắng trong phiên được tính là phiên thắng.
+                round_type = "win" if any(outcomes) else "loss"
+                try:
+                    query(
+                        """INSERT INTO user_game_streaks
+                           (user_id, group_id, current_type, current_count, max_win, max_loss, updated_at)
+                           VALUES (%s,%s,%s,1,%s,%s,%s)
+                           ON CONFLICT (user_id, group_id) DO UPDATE SET
+                             current_count = CASE
+                               WHEN user_game_streaks.current_type = EXCLUDED.current_type
+                               THEN user_game_streaks.current_count + 1 ELSE 1 END,
+                             current_type = EXCLUDED.current_type,
+                             max_win = GREATEST(user_game_streaks.max_win,
+                               CASE WHEN EXCLUDED.current_type='win' THEN
+                                 CASE WHEN user_game_streaks.current_type='win'
+                                   THEN user_game_streaks.current_count + 1 ELSE 1 END
+                               ELSE 0 END),
+                             max_loss = GREATEST(user_game_streaks.max_loss,
+                               CASE WHEN EXCLUDED.current_type='loss' THEN
+                                 CASE WHEN user_game_streaks.current_type='loss'
+                                   THEN user_game_streaks.current_count + 1 ELSE 1 END
+                               ELSE 0 END),
+                             updated_at = EXCLUDED.updated_at""",
+                        (streak_uid, group_id, round_type,
+                         1 if round_type == "win" else 0,
+                         1 if round_type == "loss" else 0,
+                         get_vietnam_datetime_db())
+                    )
+                except Exception as streak_error:
+                    print(f"[streak] lỗi cập nhật user {streak_uid}: {streak_error}")
 
             jackpot_amount = get_jackpot()
             jackpot_contribution = 0
@@ -7936,6 +7988,67 @@ async def settle_interaction_top_loop(bot):
 
 
 
+async def _streak_top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, streak_type: str):
+    group = update.effective_chat
+    gid = group.id if group and group.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
+    if not gid:
+        return await update.effective_message.reply_text("Chưa xác định được nhóm thống kê.")
+    column = "max_win" if streak_type == "win" else "max_loss"
+    title = "DÂY THẮNG LIÊN TIẾP" if streak_type == "win" else "DÂY THUA LIÊN TIẾP"
+    icon = "🔥" if streak_type == "win" else "🥶"
+    rows = query(
+        f"SELECT user_id, {column}, current_type, current_count FROM user_game_streaks "
+        f"WHERE group_id=%s AND {column}>0 ORDER BY {column} DESC, user_id ASC LIMIT 10",
+        (gid,)
+    ) or []
+    lines = [f"{icon} <b>TOP 10 {title}</b>", "━━━━━━━━━━━━━━━━━━"]
+    medals = ["🥇", "🥈", "🥉"]
+    for rank, row in enumerate(rows, 1):
+        uid, best, current_type, current_count = row
+        name = await _telegram_name(ctx.bot, uid, {}) or f"Thành viên {uid}"
+        medal = medals[rank-1] if rank <= 3 else "🏅"
+        lines.append(f"{medal} <b>{rank}.</b> {html.escape(name)} — <b>{int(best)}</b> phiên")
+    if not rows:
+        lines.append("Chưa có dữ liệu chuỗi thắng/thua.")
+    own = query(
+        "SELECT current_type,current_count,max_win,max_loss FROM user_game_streaks WHERE user_id=%s AND group_id=%s",
+        (update.effective_user.id, gid)
+    ) or []
+    lines += ["━━━━━━━━━━━━━━━━━━"]
+    if own:
+        current_type, current_count, max_win, max_loss = own[0]
+        if current_type == streak_type:
+            lines.append(f"👤 <b>Bạn đang có:</b> {int(current_count)} phiên {'thắng' if streak_type == 'win' else 'thua'} liên tiếp.")
+        else:
+            lines.append(f"👤 <b>Bạn hiện không có dây {'thắng' if streak_type == 'win' else 'thua'}.</b>")
+        lines.append(f"🏆 Kỷ lục cá nhân: thắng {int(max_win)} · thua {int(max_loss)} phiên.")
+        my_best = int(max_win if streak_type == "win" else max_loss)
+        positions = [int(r[1]) for r in rows]
+        rank = next((i for i, r in enumerate(rows, 1) if int(r[0]) == update.effective_user.id), None)
+        if rank:
+            lines.append(f"✅ Bạn đang đứng Top {rank} trong bảng này.")
+        elif my_best:
+            lines.append("ℹ️ Kỷ lục của bạn hiện chưa lọt Top 10.")
+        else:
+            lines.append("ℹ️ Bạn chưa có chuỗi nào được ghi nhận.")
+    else:
+        lines.append("👤 Bạn chưa có dữ liệu thắng/thua trong nhóm này.")
+    await update.effective_message.reply_text("\\n".join(lines), parse_mode=ParseMode.HTML)
+
+async def daythang_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        await _streak_top_cmd(update, ctx, "win")
+    except Exception as e:
+        print(f"Lỗi /daythang: {e}")
+        await update.effective_message.reply_text("Không tải được bảng dây thắng. Vui lòng thử lại.")
+
+async def daythua_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        await _streak_top_cmd(update, ctx, "loss")
+    except Exception as e:
+        print(f"Lỗi /daythua: {e}")
+        await update.effective_message.reply_text("Không tải được bảng dây thua. Vui lòng thử lại.")
+
 async def topnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Top 10 người nạp thành công."""
     rows = query(
@@ -11318,6 +11431,26 @@ application.add_handler(CommandHandler("dsban", dsban_cmd))
 application.add_handler(CommandHandler("dsrut", dsrut_cmd))
 application.add_handler(CommandHandler("dsnap", dsnap_cmd))
 application.add_handler(CommandHandler("setsd", setsd_cmd))
+async def _early_top_cmd(update, ctx):
+    try:
+        await top_cmd(update, ctx)
+    except Exception as e:
+        print(f"Lỗi /top: {e}")
+        await update.effective_message.reply_text("Không tải được bảng Top. Vui lòng thử lại.")
+    raise ApplicationHandlerStop
+
+async def _early_checktt_cmd(update, ctx):
+    try:
+        await checktt_cmd(update, ctx)
+    except Exception as e:
+        print(f"Lỗi /checktt: {e}")
+        await update.effective_message.reply_text("Không tải được thống kê tương tác. Vui lòng thử lại.")
+    raise ApplicationHandlerStop
+
+application.add_handler(CommandHandler("daythang", daythang_cmd), group=-3)
+application.add_handler(CommandHandler("daythua", daythua_cmd), group=-3)
+application.add_handler(CommandHandler("top", _early_top_cmd), group=-3)
+application.add_handler(CommandHandler("checktt", _early_checktt_cmd), group=-3)
 application.add_handler(CommandHandler("top", top_cmd))
 application.add_handler(CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
@@ -11362,6 +11495,8 @@ async def main():
         BotCommand("topsodu", "Top số dư"),
         BotCommand("topcuoc", "Top cược"),
         BotCommand("checktt", "Kiểm tra tương tác hôm nay"),
+        BotCommand("daythang", "Top 10 dây thắng liên tiếp"),
+        BotCommand("daythua", "Top 10 dây thua liên tiếp"),
         BotCommand("help", "Hướng dẫn sử dụng"),
         BotCommand("sd", "Xem số dư"),
         BotCommand("his", "Lịch sử giao dịch"),
