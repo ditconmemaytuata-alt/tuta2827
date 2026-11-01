@@ -3,6 +3,7 @@ import os
 import re
 import random
 import asyncio
+import collections
 import hashlib
 import csv
 import traceback
@@ -469,6 +470,7 @@ CREATE TABLE IF NOT EXISTS users (
 """)
 query("CREATE TABLE IF NOT EXISTS banned_games (user_id BIGINT, game_id INTEGER, PRIMARY KEY (user_id, game_id))")
 query("CREATE TABLE IF NOT EXISTS banned_features (user_id BIGINT, feature TEXT, PRIMARY KEY (user_id, feature))")
+query("""CREATE TABLE IF NOT EXISTS spam_permanent_bans (user_id BIGINT PRIMARY KEY, reason TEXT NOT NULL, banned_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
 query("CREATE TABLE IF NOT EXISTS banned_admins (admin_id BIGINT PRIMARY KEY, banned_by BIGINT, reason TEXT, banned_at TEXT)")
 query("""
 CREATE TABLE IF NOT EXISTS user_bonus (
@@ -11305,6 +11307,78 @@ async def _on_error(update, context):
         pass
 
 
+
+# ============================================================
+# CHỐNG SPAM MENU: hơn 3 thao tác trong 2 giây => khóa bot vĩnh viễn
+# Áp dụng cho tin nhắn và lần bấm nút inline trong chat riêng.
+# Danh sách khóa lưu PostgreSQL, không mất khi restart/redeploy.
+# ============================================================
+_SPAM_ACTIVITY = collections.defaultdict(collections.deque)
+_SPAM_WINDOW_SECONDS = 2.0
+_SPAM_MAX_EVENTS = 3
+
+def _is_spam_permanently_banned(user_id: int) -> bool:
+    rows = query("SELECT 1 FROM spam_permanent_bans WHERE user_id=%s", (user_id,))
+    return bool(rows)
+
+async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user:
+        return
+    uid = user.id
+
+    # Không áp dụng cho quản trị viên để tránh khóa nhầm người vận hành.
+    if uid in ADMIN_IDS:
+        return
+
+    # Chỉ kiểm soát menu bot trong chat riêng, không phạt hoạt động bình thường ở nhóm.
+    chat = update.effective_chat
+    if not chat or chat.type != "private":
+        return
+
+    if _is_spam_permanently_banned(uid):
+        if update.callback_query:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+        raise ApplicationHandlerStop
+
+    now = time.monotonic()
+    events = _SPAM_ACTIVITY[uid]
+    while events and now - events[0] > _SPAM_WINDOW_SECONDS:
+        events.popleft()
+    events.append(now)
+
+    if len(events) > _SPAM_MAX_EVENTS:
+        query(
+            "INSERT INTO spam_permanent_bans(user_id, reason) VALUES(%s,%s) "
+            "ON CONFLICT(user_id) DO NOTHING",
+            (uid, "Spam quá 3 thao tác trong 2 giây tại menu bot")
+        )
+        _SPAM_ACTIVITY.pop(uid, None)
+        print(f"[spam-guard] permanently blocked user_id={uid}")
+        if update.callback_query:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+        raise ApplicationHandlerStop
+
+async def unban_spam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or update.effective_user.id not in ADMIN_IDS:
+        return
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.effective_message.reply_text("Cú pháp: /unbanspam USER_ID")
+        return
+    uid = int(ctx.args[0])
+    query("DELETE FROM spam_permanent_bans WHERE user_id=%s", (uid,))
+    _SPAM_ACTIVITY.pop(uid, None)
+    await update.effective_message.reply_text(f"Đã gỡ khóa chống spam cho user {uid}.")
+
+application.add_handler(MessageHandler(filters.ALL, spam_guard), group=-100)
+application.add_handler(CallbackQueryHandler(spam_guard), group=-100)
+application.add_handler(CommandHandler("unbanspam", unban_spam_cmd), group=-99)
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("lienket", lien_ket))
 application.add_handler(CommandHandler("taikhoan", taikhoan_cmd))
