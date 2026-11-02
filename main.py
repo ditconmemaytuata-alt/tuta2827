@@ -976,17 +976,17 @@ def add_bonus_with_requirement(user_id, bonus_amount, required_multiplier=None):
 
 # ============================================================
 # KHUYẾN MÃI NẠP
-#  • 15% mỗi lần nạp, MỖI NGÀY CHỈ NHẬN 1 LẦN (đang có vòng cược khác vẫn nhận, cược được cộng dồn)
+#  • 10% mỗi lần nạp, MỖI NGÀY CHỈ NHẬN 1 LẦN (đang có vòng cược khác vẫn nhận, cược được cộng dồn)
 #  • +3% thưởng thêm cho MỖI lệnh nạp (không giới hạn số lần)
 #  • GIỜ VÀNG tự động bật/tắt hằng ngày: 10:00-11:00 và 20:00-21:00 (giờ Việt Nam)
 #  • Admin có thể ép bật/tắt bằng /kmgio on|off|auto
 # ============================================================
-PROMO_PCT = 15                              # % khuyến mãi nạp (1 lần/ngày)
+PROMO_PCT = 10                              # % khuyến mãi nạp (1 lần/ngày)
 PROMO_ORDER_PCT = 3                         # % thưởng thêm cho mỗi lệnh nạp
-PROMO_WAGER_MULT = 2.8                      # khuyến mãi (15%, admin tặng...) phải cược x2.8 vòng
+PROMO_WAGER_MULT = 2.8                      # khuyến mãi (10%, admin tặng...) phải cược x2.8 vòng
 PROMO_ORDER_WAGER_MULT = 1                  # thưởng 3% mỗi lệnh nạp chỉ cần cược x1 vòng
 PROMO_GOLDEN_WINDOWS = ((10, 11), (20, 21)) # [giờ bắt đầu, giờ kết thúc) -> 10:00-11:00 và 20:00-21:00
-PROMO_ALWAYS_ON = False                     # True = khuyến mãi 15% luôn mở cả ngày (không phụ thuộc giờ vàng)
+PROMO_ALWAYS_ON = False                     # True = khuyến mãi 10% luôn mở cả ngày (không phụ thuộc giờ vàng)
 
 query("CREATE TABLE IF NOT EXISTS promo_daily_claims (user_id BIGINT, claim_date TEXT, amount BIGINT DEFAULT 0, PRIMARY KEY (user_id, claim_date))")
 query("CREATE TABLE IF NOT EXISTS promo_offer_done (chat_id BIGINT, message_id BIGINT, PRIMARY KEY (chat_id, message_id))")
@@ -1017,13 +1017,39 @@ def promo_claimed_today(uid):
     return bool(query("SELECT 1 FROM promo_daily_claims WHERE user_id=%s AND claim_date=%s", (uid, promo_today_key())))
 
 def promo_claim_daily(uid, amount):
-    """Đánh dấu đã nhận 15% hôm nay. Trả về True nếu lần đầu trong ngày."""
+    """Đánh dấu đã nhận 10% hôm nay. Trả về True nếu lần đầu trong ngày."""
     r = query("INSERT INTO promo_daily_claims (user_id, claim_date, amount) VALUES (%s,%s,%s) "
               "ON CONFLICT DO NOTHING RETURNING user_id", (uid, promo_today_key(), amount))
     return bool(r)
 
+# --- Khuyến mãi sau nạp: chưa nhận mà đã phát sinh cược => coi như TỪ BỎ, không nhận lại được ---
+query("""CREATE TABLE IF NOT EXISTS promo_offers (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    amount BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)""")
+query("CREATE INDEX IF NOT EXISTS idx_promo_offers_user ON promo_offers(user_id, status)")
+
+def promo_offer_create(uid, amount):
+    """Ghi lời mời khuyến mãi (trạng thái pending). Trả về id, hoặc None nếu lỗi."""
+    try:
+        r = query("INSERT INTO promo_offers(user_id, amount) VALUES(%s,%s) RETURNING id", (uid, int(amount)))
+        return int(r[0][0]) if r else None
+    except Exception as e:
+        print(f"[promo] không tạo được offer: {e}")
+        return None
+
+def promo_forfeit_pending(uid):
+    """Gọi mỗi khi user phát sinh cược: mọi khuyến mãi nạp chưa nhận bị hủy vĩnh viễn."""
+    try:
+        query("UPDATE promo_offers SET status='forfeited' WHERE user_id=%s AND status='pending'", (uid,))
+    except Exception as e:
+        print(f"[promo] không hủy được offer của {uid}: {e}")
+
 def promo_required(base_balance, bonus_main, bonus_order=0):
-    """Yêu cầu cược = (TOÀN BỘ số dư + khuyến mãi) × số vòng. Hai loại thưởng (15% x2.8 / 3% x1) gộp theo tỉ lệ."""
+    """Yêu cầu cược = (TOÀN BỘ số dư + khuyến mãi) × số vòng. Hai loại thưởng (10% x2.8 / 3% x1) gộp theo tỉ lệ."""
     total = int(bonus_main) + int(bonus_order)
     if total <= 0:
         return 0
@@ -1067,15 +1093,19 @@ def promo_build_offer(uid, amount):
     lines.append(f'{ce("📊")} <b>Tổng yêu cầu cược:</b> <code>{fmt_money(required)}đ</code>')
     lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> Cược đủ yêu cầu mới được rút. '
                  f'Nếu đang có vòng cược khuyến mãi khác, yêu cầu cược sẽ được cộng dồn.')
+    lines.append(f'{ce("❗️")} <b>Phải bấm nhận TRƯỚC khi chơi:</b> nếu bạn đã cược (chơi game) mà chưa nhận, '
+                 f'khuyến mãi này coi như từ bỏ và <b>không được nhận lại</b>.')
     if not eligible15:
         if promo_claimed_today(uid):
             lines.append(f'{ce("📌")} <i>Hôm nay bạn đã nhận khuyến mãi {PROMO_PCT}% rồi (mỗi ngày 1 lần).</i>')
         else:
             lines.append(f'{ce("📌")} <i>Khuyến mãi {PROMO_PCT}% mở trong giờ vàng {promo_windows_text()} mỗi ngày.</i>')
     lines.append('━━━━━━━━━━━━━━━━━━━━━\n\nVui lòng chọn bên dưới:')
+    _offer_id = promo_offer_create(uid, amount)
+    _oid_suffix = f"_{_offer_id}" if _offer_id else ""
     kb = InlineKeyboardMarkup([[
-        btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_promo_{uid}_{amount}_{1 if eligible15 else 0}"),
-        btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{uid}")
+        btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_promo_{uid}_{amount}_{1 if eligible15 else 0}{_oid_suffix}"),
+        btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{uid}{_oid_suffix}")
     ]])
     return "\n".join(lines), kb
 
@@ -1470,6 +1500,8 @@ def set_setting(key, value):
 WIN_NOTE_PREFIXES = ("Thắng", "Nổ hũ", "Hoàn tiền Long Hổ", "Hoàn tiền Baccarat")
 
 def record_daily(uid, bet=0, win=0):
+    if bet and bet > 0:
+        promo_forfeit_pending(uid)   # phát sinh cược => khuyến mãi nạp chưa nhận bị hủy
     day = get_vietnam_time().date()
     query(
         "INSERT INTO bet_daily(user_id, day, bet, win) VALUES(%s,%s,%s,%s) "
@@ -2893,6 +2925,8 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await _send_interaction_code(ctx.bot, uid, gid, milestone, reward, today)
 
 
+JACKPOT_RATE = 0.018   # 1,8% tiền thua của phiên được trích cộng vào hũ jackpot
+
 def get_jackpot():
     res = query("SELECT value FROM settings WHERE key='jackpot_amount'")
     if res:
@@ -3237,7 +3271,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             jackpot_contribution = 0
 
             if total_lose > total_win:
-                jackpot_contribution = int(total_lose * 0.03)
+                jackpot_contribution = int(total_lose * JACKPOT_RATE)   # trích 1,8% tiền thua vào hũ
                 jackpot_amount += jackpot_contribution
                 update_jackpot(jackpot_amount)
 
@@ -3286,8 +3320,9 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                 f'┃ {ce("💰")} Tổng thắng: {fmt_money(total_win)}\n'
                 f'┃ {ce("❌")} Tổng thua: {fmt_money(total_lose)}\n'
                 f'┃\n'
-                f'┃ {ce("🎁")} Hũ hiện tại: {fmt_money(jackpot_amount)}đ\n'
-                f'┗━━━━━━━━━━━━━\n'
+                f'┃ {ce("🎁")} Hũ hiện tại: {fmt_money(jackpot_amount)}đ'
+                + (f' <b>(+{fmt_money(jackpot_contribution)}đ vào hũ)</b>' if jackpot_contribution > 0 and not jackpot_winners else '') +
+                f'\n┗━━━━━━━━━━━━━\n'
                 f'<b>Cầu gần đây:</b>\n'
                 f'{cau_tx if cau_tx else "Chưa có"}\n'
                 f'      🔵  Tài             🔴  XỈU\n'
@@ -6217,7 +6252,7 @@ TX3D_PAYOUT = 1.97               # thắng Tài/Xỉu nhận x1.97 (giống Tài
 TX3D_JP_MULT_MIN = 10            # nổ hũ: mỗi người nhận x10 đến x12 tiền cược (không ăn cả hũ)
 TX3D_JP_MULT_MAX = 12
 TX3D_POT_DEFAULT = 100000        # tiền hũ khi mới tạo / sau khi nổ
-TX3D_POT_RATE = 0.03             # % tiền thua cộng vào hũ (khi nhà thắng phiên đó)
+TX3D_POT_RATE = 0.018            # 1,8% tiền thua cộng vào hũ (khi nhà thắng phiên đó)
 TX3D_BAO_REFUND = False          # True = Bão (3 mặt giống nhau, trừ 111 và 666) hoàn tiền cược; False = nhà ăn
 TX3D_HIST_MAX = 180              # số phiên hiển thị trên cầu
 TX3D_USER_TTL = 3.0              # giây cache số dư mỗi người chơi (giảm tải DB khi app gọi liên tục)
@@ -6507,7 +6542,7 @@ def _tx3d_compute(dice, bets, rid, pot):
             pot_after = max(pot_total - paid, TX3D_POT_DEFAULT)   # chỉ trừ phần đã trả, hũ không bị nổ sạch
     nets = {uid: pay.get(uid, 0) + refund.get(uid, 0) + share.get(uid, 0) - b["amt"] for uid, b in bets.items()}
     return {"win": win, "dice": list(dice), "pay": pay, "refund": refund, "share": share, "jp": jp,
-            "nets": nets, "pot_after": pot_after}
+            "nets": nets, "pot_after": pot_after, "pot_add": contrib}
 
 
 def _tx3d_jp_view(jp, uid):
@@ -6644,6 +6679,7 @@ def _tx3d_state(uid, bal, mt):
         st["win"] = G.result["win"]
         st["net"] = G.result["nets"].get(uid, 0)
         st["jp"] = _tx3d_jp_view(G.result["jp"], uid)
+        st["pot_add"] = int(G.result.get("pot_add", 0))   # tiền vừa cộng vào hũ phiên này (hiện "+X")
     L = G.last
     if L and now - L["t"] < 60:
         st["last"] = {"id": L["id"], "dice": L["dice"], "win": L["win"], "my": L["bets"].get(uid, {}),
@@ -7411,6 +7447,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                      (q.message.chat_id, q.message.message_id))
         if not done:
             return await q.answer("❌ Khuyến mãi này đã được xử lý rồi!", show_alert=True)
+        # Đã phát sinh cược sau khi nạp mà chưa nhận => coi như từ bỏ khuyến mãi, không nhận lại.
+        offer_id = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else None
+        if offer_id is not None:
+            claimed = query("UPDATE promo_offers SET status='claimed' WHERE id=%s AND user_id=%s AND status='pending' RETURNING id",
+                            (offer_id, target_id))
+            if not claimed:
+                await q.answer("❌ Khuyến mãi đã hết hiệu lực vì bạn đã cược trước khi nhận!", show_alert=True)
+                try:
+                    await q.message.edit_text(
+                        f'{ce("❌")} <b>KHUYẾN MÃI ĐÃ HẾT HIỆU LỰC</b>\n'
+                        f'Bạn đã phát sinh cược trước khi nhận nên khuyến mãi lần nạp này coi như từ bỏ và không được nhận lại.',
+                        parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+                return
         p15 = 0
         if offered15 and promo_claim_daily(target_id, amount):
             p15 = int(amount * PROMO_PCT / 100)
@@ -7457,8 +7508,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if d.startswith("reject_bonus_"):
-        target_id = int(d.split("_")[2])
+        _rp = d.split("_")
+        target_id = int(_rp[2])
         if q.from_user.id != target_id: return await q.answer("❌ Không phải yêu cầu của bạn!", show_alert=True)
+        if len(_rp) > 3 and _rp[3].isdigit():
+            query("UPDATE promo_offers SET status='rejected' WHERE id=%s AND user_id=%s AND status='pending'", (int(_rp[3]), target_id))
         await q.message.edit_text(
             f'{ce("❌")} <b>Đã từ chối khuyến mãi!</b>\n{ce("💰")} Số dư: <code>{fmt_money(get_balance(target_id))}đ</code>',
             parse_mode=ParseMode.HTML)
@@ -7502,7 +7556,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.delete()
         return
 
-    if d.startswith("ok_") or d.startswith("no_"):
+    if d.startswith("ok_") or d.startswith("no_") or d.startswith("wdrf_") or d.startswith("wdnr_"):
         if uid not in ADMIN_IDS: return await q.answer()
         act, u_id, amt = d.split("_")
         u_id, amt = int(u_id), int(amt)
@@ -7659,7 +7713,7 @@ async def sepay_webhook(request):
             except Exception as e:
                 print(f"Không gửi được thông báo nạp cho admin {admin_id}: {e}")
 
-        # Khuyến mãi nạp: 15% (1 lần/ngày, giờ vàng) + 3% mỗi lệnh nạp
+        # Khuyến mãi nạp: 10% (1 lần/ngày, giờ vàng) + 3% mỗi lệnh nạp
         offer = promo_build_offer(user_id, amount)
         if offer:
             offer_text, keyboard = offer
@@ -7749,7 +7803,7 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<code>/dsnaphomnay</code> — người đã nạp thành công hôm nay; <code>/tangcodenap giá_trị vòng hạn [homnay|all|id,id] [nạp_tối_thiểu]</code> — tặng code thủ công cho người đã nạp; <code>/yccode mã nap|tongnap số_tiền|off</code> — thêm/gỡ yêu cầu nhập code\n"
         "<code>/resethoanall</code> — reset TOÀN BỘ hoàn trả của <b>1 người</b>: bot hỏi ID rồi hỏi loại (ngày/tuần/cả hai), có xác nhận; gõ nhanh: <code>/resethoanall ID ngay|tuan|all</code> (<code>/resethoan</code> là lệnh cũ, cùng chức năng)\n"
         "<b>🎁 Khuyến mãi & báo cáo</b>\n"
-        "<code>/kmgio</code> — xem/điều khiển giờ vàng nạp 15% (<code>on</code> / <code>off</code> / <code>auto</code>)\n"
+        "<code>/kmgio</code> — xem/điều khiển giờ vàng nạp 10% (<code>on</code> / <code>off</code> / <code>auto</code>)\n"
         "<code>/homnay</code> — báo cáo nhanh hôm nay (nạp, rút, cược, khuyến mãi); tự gửi lúc 23:55 mỗi ngày\n"
         "<code>/dskm</code> — người đang có vòng cược khuyến mãi; <code>/kmnap ID số_tiền</code> — tặng khuyến mãi tay\n\n"
         "<b>🔎 Kiểm tra user (dùng được trong nhóm / chat riêng, có thể reply tin nhắn của user thay ID)</b>\n"
@@ -10431,7 +10485,7 @@ _ADM_CATS = [
     ]),
     ("bet", "🎯", "CƯỢC & KHUYẾN MÃI", "Quản lý vòng cược, khuyến mãi nạp, hoàn trả, hũ jackpot.", [
         ("run", "dskm", "Danh sách đang có vòng cược khuyến mãi", "dskm", None, None),
-        ("run", "kmgio", "Xem/điều khiển giờ vàng nạp 15%", "kmgio", None, None),
+        ("run", "kmgio", "Xem/điều khiển giờ vàng nạp 10%", "kmgio", None, None),
         ("run", "homnay", "Báo cáo nhanh hôm nay", "homnay", None, None),
         ("use", "xoacuoc", "XOÁ toàn bộ vòng cược của user", "x", "/xoacuoc [ID]", "/xoacuoc 123456789"),
         ("use", "themcuoc", "THÊM tiền cược đã hoàn thành (âm để trừ)", "x", "/themcuoc [ID] [số tiền]", "/themcuoc 123456789 500k"),
