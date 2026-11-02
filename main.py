@@ -2812,8 +2812,28 @@ def _parse_db_date(value):
             pass
     return None
 
-async def _send_interaction_code(bot, uid, group_id, milestone, reward, date_text):
-    # Mỗi người/mốc/ngày chỉ được phát một code; code ràng buộc với user và cược x7.
+# Cột delivered: NULL = code cũ (coi như đã gửi), 0 = chưa gửi được, 1 = đã gửi riêng thành công.
+query("ALTER TABLE interaction_reward_claims ADD COLUMN IF NOT EXISTS delivered INTEGER")
+
+async def _deliver_interaction_code(bot, uid, milestone, reward, code):
+    """Gửi code vào tin nhắn riêng. Trả về True nếu gửi được."""
+    try:
+        await bot.send_message(
+            uid,
+            f"🎁 <b>QUÀ TƯƠNG TÁC NHÓM</b>\n"
+            f"Bạn đã đạt mốc <b>{milestone:,}</b> tin nhắn hợp lệ.\n"
+            f"Mã giftcode: <code>{code}</code>\n"
+            f"Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược: <b>x7</b>\n"
+            f"Nhập bằng lệnh <code>/code {code}</code> hoặc gửi thẳng mã cho bot.",
+            parse_mode=ParseMode.HTML
+        )
+        return True
+    except Exception as e:
+        print(f"Không gửi được giftcode tương tác cho {uid}: {e}")
+        return False
+
+async def _send_interaction_code(bot, uid, group_id, milestone, reward, date_text, notify_group=True):
+    """Tạo + gửi code cho 1 mốc. Trả về True nếu đã gửi riêng thành công."""
     code = gen_gift_code("TT")
     expiry = get_vietnam_time() + timedelta(hours=24)
     inserted = query(
@@ -2823,36 +2843,64 @@ async def _send_interaction_code(bot, uid, group_id, milestone, reward, date_tex
         (code, reward, expiry, uid, get_vietnam_datetime_db())
     )
     if not inserted:
-        return
+        return False
     claim = query(
-        "INSERT INTO interaction_reward_claims (user_id,group_id,date,milestone,code,reward_amount,created_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING milestone",
+        "INSERT INTO interaction_reward_claims (user_id,group_id,date,milestone,code,reward_amount,created_at,delivered) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,0) ON CONFLICT DO NOTHING RETURNING milestone",
         (uid, group_id, date_text, milestone, code, reward, get_vietnam_datetime_db())
     )
     if not claim:
         query("DELETE FROM giftcodes WHERE code=%s AND used=0", (code,))
-        return
-    try:
-        await bot.send_message(
-            uid,
-            f"🎁 <b>QUÀ TƯƠNG TÁC NHÓM</b>\n"
-            f"Bạn đã đạt mốc <b>{milestone:,}</b> tin nhắn hợp lệ.\n"
-            f"Mã giftcode: <code>{code}</code>\n"
-            f"Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược: <b>x7</b>\n"
-            f"Hạn dùng: 24 giờ kể từ lúc phát. Dùng <code>/code {code}</code> để nhận.",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        # Không đăng code công khai; thông báo mở bot để nhận riêng.
+        return False
+    ok = await _deliver_interaction_code(bot, uid, milestone, reward, code)
+    if ok:
+        query("UPDATE interaction_reward_claims SET delivered=1 WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
+              (uid, group_id, date_text, milestone))
+    elif notify_group:
         try:
             await bot.send_message(
                 group_id,
                 f"🎁 Thành viên ID {mask_user_id(uid)} đã đạt mốc tương tác {milestone:,} tin. "
-                f"Hãy mở bot riêng và nhắn /start để nhận giftcode (code không đăng trong nhóm)."
+                f"Hãy mở bot riêng, nhắn /start rồi gõ /checktt để nhận giftcode (code không đăng trong nhóm)."
             )
         except Exception:
             pass
-        print(f"Không gửi được giftcode tương tác cho {uid}: {e}")
+    return ok
+
+async def _issue_interaction_rewards(bot, uid, group_id, count, date_text, notify_group=True):
+    """Phát tất cả mốc đã đạt mà chưa nhận. Trả về list (mốc, tiền, đã_gửi_được)."""
+    out = []
+    for milestone, reward in INTERACTION_MILESTONES:
+        if count < milestone:
+            continue
+        already = query(
+            "SELECT 1 FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
+            (uid, group_id, date_text, milestone)
+        )
+        if already:
+            continue
+        ok = await _send_interaction_code(bot, uid, group_id, milestone, reward, date_text, notify_group)
+        out.append((milestone, reward, ok))
+    return out
+
+async def _resend_undelivered(bot, uid, group_id, date_text):
+    """Gửi lại các code đã tạo nhưng lần trước chưa nhắn riêng được. Trả về (gửi_được, vẫn_lỗi)."""
+    rows = query(
+        "SELECT c.milestone, c.code, c.reward_amount FROM interaction_reward_claims c "
+        "JOIN giftcodes g ON g.code=c.code "
+        "WHERE c.user_id=%s AND c.group_id=%s AND c.date=%s AND c.delivered=0 "
+        "AND g.used=0 AND (g.expiry IS NULL OR g.expiry > NOW()) ORDER BY c.milestone",
+        (uid, group_id, date_text)
+    ) or []
+    ok_n = fail_n = 0
+    for milestone, code, reward in rows:
+        if await _deliver_interaction_code(bot, uid, int(milestone), int(reward or 0), code):
+            query("UPDATE interaction_reward_claims SET delivered=1 WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
+                  (uid, group_id, date_text, milestone))
+            ok_n += 1
+        else:
+            fail_n += 1
+    return ok_n, fail_n
 
 async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
@@ -2914,15 +2962,7 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         (uid, gid, today)
     )
     count = int(total[0][0] or 0) if total else 0
-    for milestone, reward in INTERACTION_MILESTONES:
-        if count < milestone:
-            continue
-        already = query(
-            "SELECT 1 FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
-            (uid, gid, today, milestone)
-        )
-        if not already:
-            await _send_interaction_code(ctx.bot, uid, gid, milestone, reward, today)
+    await _issue_interaction_rewards(ctx.bot, uid, gid, count, today)
 
 
 JACKPOT_RATE = 0.018   # 1,8% tiền thua của phiên được trích cộng vào hũ jackpot
@@ -8096,7 +8136,7 @@ def _interaction_reward_table(count, claimed):
     rows = []
     for m, reward in INTERACTION_MILESTONES:
         if count >= m:
-            tag = "đã nhận code" if m in claimed else "đạt mốc, đang phát code"
+            tag = "đã nhận code" if m in claimed else "đạt mốc, gõ /checktt để nhận"
             rows.append(f"✅ <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>{tag}</i>")
         else:
             rows.append(f"🔒 <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>còn {fmt_money(m-count)} tin</i>")
@@ -8115,22 +8155,37 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if not user:
         return
-    # Trong nhóm: thống kê nhóm đang chat; trong tin nhắn riêng: nhóm tương tác đã cấu hình.
+    if is_banned(user.id):
+        return
     group_id = chat.id if chat and chat.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
     if not group_id:
         return await update.effective_message.reply_text("Chưa cấu hình nhóm tương tác.")
     today = get_vietnam_date()
-    # /checktt dùng bộ đếm chu kỳ riêng: không tự về 0 lúc qua ngày,
-    # chỉ reset khi thành viên đạt đủ 6.000 tin hợp lệ.
-    row = query("SELECT interaction_count FROM group_interactions WHERE user_id=%s AND group_id=%s",
-                (user.id, group_id))
-    count = int(row[0][0] or 0) if row else 0
+
+    # Số tin HÔM NAY: đây là số dùng để xét mốc thưởng (khớp với lúc phát code).
     daily_row = query("SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
                       (user.id, group_id, today))
-    daily_count = int(daily_row[0][0] or 0) if daily_row else 0
+    count = int(daily_row[0][0] or 0) if daily_row else 0
+    cycle_row = query("SELECT interaction_count FROM group_interactions WHERE user_id=%s AND group_id=%s",
+                      (user.id, group_id))
+    cycle_count = int(cycle_row[0][0] or 0) if cycle_row else 0
+
+    # Phát code trực tiếp qua bot: gửi lại code lỗi cũ trước, rồi phát các mốc mới đủ điều kiện.
+    resent_ok = resent_fail = 0
+    new_items = []
+    try:
+        resent_ok, resent_fail = await _resend_undelivered(ctx.bot, user.id, group_id, today)
+        if count > 0:
+            new_items = await _issue_interaction_rewards(ctx.bot, user.id, group_id, count, today, notify_group=False)
+    except Exception as e:
+        print(f"Lỗi phát code /checktt cho {user.id}: {e}")
+        traceback.print_exc()
+    sent_ok = sum(1 for _m, _r, ok in new_items if ok) + resent_ok
+    sent_fail = sum(1 for _m, _r, ok in new_items if not ok) + resent_fail
+
     rank_rows = query(
         "SELECT COUNT(*) + 1 FROM daily_top_interactions WHERE group_id=%s AND date=%s AND interaction_count > %s",
-        (group_id, today, daily_count)
+        (group_id, today, count)
     ) or []
     rank = int(rank_rows[0][0] or 1) if rank_rows else 1
     claimed_rows = query("SELECT milestone FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s ORDER BY milestone",
@@ -8144,13 +8199,25 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         progress = "👑 Bạn đã đạt toàn bộ mốc tương tác trong ngày!"
     total_reward = sum(r for _, r in INTERACTION_MILESTONES)
     earned_total = sum(r for m, r in INTERACTION_MILESTONES if count >= m)
+
+    notice = ""
+    if sent_ok:
+        notice += f"✅ <b>Bot vừa gửi {sent_ok} giftcode vào tin nhắn riêng của bạn.</b> Hãy kiểm tra chat với bot!\n"
+    if sent_fail:
+        notice += (f"⚠️ Có {sent_fail} giftcode chưa gửi được vì bot không nhắn riêng cho bạn được. "
+                   f"Hãy mở @{BOT_USERNAME}, bấm <b>/start</b> rồi gõ lại <b>/checktt</b> để nhận.\n")
+    if notice:
+        notice += "\n"
+
     await update.effective_message.reply_text(
         f"📊 <b>THỐNG KÊ TƯƠNG TÁC HÔM NAY</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 {html.escape(user.full_name or 'Thành viên')} · ID {mask_user_id(user.id)}\n"
-        f"💬 Tin hợp lệ: <b>{fmt_money(count)}</b>\n"
+        f"💬 Tin hợp lệ hôm nay: <b>{fmt_money(count)}</b>\n"
+        f"🔁 Tích lũy chu kỳ: <b>{fmt_money(cycle_count)}</b>/6.000\n"
         f"🏆 Thứ hạng hiện tại: <b>{('#' + str(rank)) if count else 'Chưa có hạng'}</b>\n"
         f"💰 Đã đạt: <b>{fmt_money(earned_total)}đ</b> / {fmt_money(total_reward)}đ\n\n"
+        f"{notice}"
         f"{progress}\n\n"
         f"🎁 <b>BẢNG MỐC THƯỞNG TIN NHẮN</b>\n"
         f"{_interaction_reward_table(count, claimed)}\n\n"
