@@ -702,6 +702,7 @@ query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS milestone INTEGER")
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS claim_date DATE")
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS require_total_dep BIGINT DEFAULT 0")
 query("CREATE UNIQUE INDEX IF NOT EXISTS uq_tichluy_user_milestone_day ON giftcodes(bound_user, milestone, claim_date) WHERE ctype='TICHLUY' AND bound_user IS NOT NULL AND milestone IS NOT NULL AND claim_date IS NOT NULL")
+query("""CREATE TABLE IF NOT EXISTS tanthu_claims (user_id BIGINT PRIMARY KEY, code TEXT, claimed_at TEXT)""")
 
 query("CREATE TABLE IF NOT EXISTS history (user_id BIGINT, amount BIGINT, note TEXT, time TEXT)")
 query("ALTER TABLE history ADD COLUMN IF NOT EXISTS id SERIAL")
@@ -2137,9 +2138,15 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
         return True
 
     if ctype == "TANTHU":
+        _claimed_before = query("SELECT 1 FROM tanthu_claims WHERE user_id=%s", (uid,))
         _hist = query(
             "SELECT (SELECT COUNT(*) FROM deposit_history WHERE user_id=%s) + "
             "(SELECT COUNT(*) FROM withdraw_history WHERE user_id=%s)", (uid, uid))
+        if _claimed_before:
+            await msg.reply_text(
+                f'{ce("🚫")} <b>Mỗi tài khoản chỉ được nhập Code Tân Thủ đúng 1 lần duy nhất.</b>',
+                parse_mode=ParseMode.HTML)
+            return True
         if _hist and int(_hist[0][0] or 0) > 0:
             await msg.reply_text(
                 f'{ce("🚫")} <b>Code Tân Thủ</b> chỉ dành cho tài khoản <b>chưa có lịch sử nạp / rút</b>.',
@@ -2174,9 +2181,23 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
                 parse_mode=ParseMode.HTML)
             return True
 
+    if ctype == "TANTHU":
+        _tanthu_lock = query(
+            "INSERT INTO tanthu_claims (user_id, code, claimed_at) VALUES (%s,%s,%s) "
+            "ON CONFLICT (user_id) DO NOTHING RETURNING user_id",
+            (uid, code_str, get_vietnam_datetime_db())
+        )
+        if not _tanthu_lock:
+            await msg.reply_text(
+                f'{ce("🚫")} <b>Mỗi tài khoản chỉ được nhập Code Tân Thủ đúng 1 lần duy nhất.</b>',
+                parse_mode=ParseMode.HTML)
+            return True
+
     claimed = query("UPDATE giftcodes SET used=1, used_by=%s, used_at=%s WHERE code=%s AND used=0 RETURNING code",
                     (uid, get_vietnam_datetime_db(), code_str))
     if not claimed:
+        if ctype == "TANTHU":
+            query("DELETE FROM tanthu_claims WHERE user_id=%s AND code=%s", (uid, code_str))
         await msg.reply_text(f'{ce("❌")} Mã này đã được sử dụng!', parse_mode=ParseMode.HTML)
         return True
 
@@ -4359,17 +4380,17 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg_obj.reply_text(f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>', parse_mode=ParseMode.HTML)
         return
     get_user(uid)
-    # Điều kiện chống rút của tài khoản chưa nạp: cần ít nhất một lần nạp thành công từ 50.000đ.
-    dep_ok = query(
-        "SELECT 1 FROM deposit_history WHERE user_id=%s AND amount >= 50000 "
-        "AND LOWER(COALESCE(status,'')) IN ('success','successful','completed','approved','done') LIMIT 1",
-        (uid,)
-    )
-    if not dep_ok and uid not in ADMIN_IDS:
+    # Điều kiện rút theo NGÀY: tổng nạp thành công trong ngày Việt Nam phải đạt ít nhất 50.000đ.
+    # deposited_today() tự đổi ngày tại 00:00, vì vậy điều kiện được reset mỗi ngày.
+    daily_deposit = deposited_today(uid)
+    if daily_deposit < 50000:
+        remaining_deposit = 50000 - daily_deposit
         return await msg_obj.reply_text(
-            f'{ce("🔐")} <b>CHƯA ĐỦ ĐIỀU KIỆN RÚT TIỀN</b>\n\n'
-            f'{ce("💳")} Tài khoản cần có ít nhất <b>1 lần nạp thành công từ 50.000đ</b> trở lên mới được rút.\n'
-            f'{ce("🎁")} Vui lòng nạp tiền và chờ hệ thống xác nhận thành công.',
+            f'{ce("🔐")} <b>CHƯA ĐỦ ĐIỀU KIỆN RÚT TIỀN HÔM NAY</b>\\n\\n'
+            f'{ce("💳")} Bạn cần nạp thành công tổng cộng ít nhất <b>50.000đ trong ngày hôm nay</b>.\\n'
+            f'{ce("📥")} Đã nạp hôm nay: <code>{fmt_money(daily_deposit)}đ</code>\\n'
+            f'{ce("📌")} Cần nạp thêm: <code>{fmt_money(remaining_deposit)}đ</code>\\n'
+            f'{ce("🕛")} Điều kiện tự đặt lại lúc <b>00:00</b> mỗi ngày.',
             parse_mode=ParseMode.HTML)
     if not args:
         return await show_withdraw_methods(msg_obj)
@@ -11628,6 +11649,13 @@ async def auto_settle_tich_luy_loop(bot):
 async def main():
     global _bot_instance
     await application.initialize()
+    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @Jav88sangamebot.
+    _identity = await application.bot.get_me()
+    if (_identity.username or "").lower() != BOT_USERNAME.lower():
+        raise RuntimeError(
+            f"BOT_TOKEN không thuộc @{BOT_USERNAME}; token hiện tại thuộc @{_identity.username}. "
+            "Đã dừng để không ghi đè danh sách lệnh của bot khác."
+        )
     # Gợi ý lệnh khi người dùng gõ "/" trong nhóm; chỉ đưa các lệnh dùng cho thành viên.
     group_commands = [
         BotCommand("nap", "Nạp tiền"),
