@@ -1859,6 +1859,24 @@ def _reward_card(rtype, label, value, amount, remain):
             f'{status}\n'
             f'{ce("⌛")} Còn {remain}</blockquote>')
 
+# Cache trạng thái khóa nhận hoàn trả trong thời gian ngắn để hạn chế truy vấn DB
+# khi người dùng liên tục bấm nút nhận thưởng đã bị khóa.
+_REWARD_BAN_CACHE = {}
+_REWARD_BAN_CACHE_TTL = 2.0
+
+def reward_ban_status(uid):
+    now_mono = time.monotonic()
+    cached = _REWARD_BAN_CACHE.get(uid)
+    if cached and now_mono - cached[0] < _REWARD_BAN_CACHE_TTL:
+        return cached[1]
+    rows = query(
+        "SELECT feature FROM banned_features WHERE user_id=%s AND feature IN ('hoan_ngay','hoan_tuan')",
+        (uid,)
+    ) or []
+    status = {str(row[0]) for row in rows}
+    _REWARD_BAN_CACHE[uid] = (now_mono, status)
+    return status
+
 def reward_center(uid):
     now = get_vietnam_time()
     today = now.date()
@@ -1881,9 +1899,10 @@ def reward_center(uid):
 
     pending = query("SELECT rtype, period, amount FROM rewards WHERE user_id=%s AND claimed=0 AND amount>0 "
                     "ORDER BY id", (uid,)) or []
-    if is_feature_banned(uid, "hoan_ngay"):
+    reward_bans = reward_ban_status(uid)
+    if "hoan_ngay" in reward_bans:
         pending = [p for p in pending if not str(p[0]).endswith("_ngay")]
-    if is_feature_banned(uid, "hoan_tuan"):
+    if "hoan_tuan" in reward_bans:
         pending = [p for p in pending if not str(p[0]).endswith("_tuan")]
     text = (
         f'{ce("🎁")} <b>TRUNG TÂM NHẬN THƯỞNG</b>\n'
@@ -1910,12 +1929,25 @@ def reward_center(uid):
 async def claim_rewards(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     uid = q.from_user.id
-    # Admin có thể khóa riêng hoàn ngày hoặc hoàn tuần cho từng tài khoản.
+
+    # Kiểm tra khóa trước mọi thao tác nhận thưởng.
+    bans = reward_ban_status(uid)
+    fully_banned = {"hoan_ngay", "hoan_tuan"}.issubset(bans)
+    if fully_banned:
+        await safe_answer(q, f'{ce("🚫")} Bạn đã bị khóa nhận hoàn trả!', True)
+        # Gỡ nút ở tin nhắn cũ để tránh tiếp tục bấm spam.
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
     blocked_types = []
-    if is_feature_banned(uid, "hoan_ngay"):
+    if "hoan_ngay" in bans:
         blocked_types.extend(["cuoc_ngay", "thua_ngay"])
-    if is_feature_banned(uid, "hoan_tuan"):
+    if "hoan_tuan" in bans:
         blocked_types.extend(["cuoc_tuan", "thua_tuan"])
+
     if blocked_types:
         rows = query(
             "UPDATE rewards SET claimed=1, claimed_at=%s WHERE user_id=%s AND claimed=0 AND amount>0 "
@@ -1925,8 +1957,15 @@ async def claim_rewards(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows = query(
             "UPDATE rewards SET claimed=1, claimed_at=%s WHERE user_id=%s AND claimed=0 AND amount>0 "
             "RETURNING rtype, period, amount", (get_vietnam_datetime_db(), uid))
+
     if not rows:
-        return await safe_answer(q, "Hiện chưa có khoản thưởng nào được phép nhận hoặc đang chờ nhận!", True)
+        await safe_answer(q, "Hiện chưa có khoản thưởng nào được phép nhận hoặc đang chờ nhận!", True)
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
     total = sum(int(r[2]) for r in rows)
     add_money(uid, total, "Nhận thưởng hoàn trả")
     await safe_answer(q)
@@ -9440,6 +9479,7 @@ async def camhoan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for feature in features:
         query("INSERT INTO banned_features(user_id,feature) VALUES(%s,%s) ON CONFLICT DO NOTHING",
               (target, feature))
+    _REWARD_BAN_CACHE.pop(target, None)
     await update.effective_message.reply_text(
         f'🚫 Đã khóa nhận hoàn trả <b>{html.escape(period.upper())}</b> cho ID <code>{target}</code>.\n'
         'Các khoản bị khóa sẽ không được nhận qua nút nhận thưởng.',
@@ -9460,6 +9500,7 @@ async def mohoan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query("DELETE FROM banned_features WHERE user_id=%s AND feature IN ('hoan_ngay','hoan_tuan')", (target,))
     else:
         query("DELETE FROM banned_features WHERE user_id=%s AND feature=%s", (target, f"hoan_{period}"))
+    _REWARD_BAN_CACHE.pop(target, None)
     await update.effective_message.reply_text(
         f'✅ Đã mở quyền nhận hoàn trả <b>{html.escape(period.upper())}</b> cho ID <code>{target}</code>.',
         parse_mode=ParseMode.HTML)
