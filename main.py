@@ -98,6 +98,8 @@ CUSTOM_EMOJI = {
     "📤": "5445355530111437729", "🐻": "5411089297476441876", "🖼": "5262517101578443800",
     "👥": "5453957997418004470", "📊": "5231200819986047254", "💬": "5386691718571646404",
     "🦌": "5422516277010774456", "🦀": "5319247469165433798", "💿": "5429118663946945233",
+    "💵": "5409048419211682843", "🥰": "6318677150534734288", "🐺": "6309898817202295364", "💳": "5445353829304387411", "💰": "5278467510604160626", "🏦": "5332455502917949981", "🏆": "5188344996356448758",
+    "⭐": "6114085614590629784", "🛍": "6201912473113596548", "📱": "6212898076038797235", "😍": "6221893124831057477", "🇻🇳": "6190651897792174993", "🆘": "6273945156341209192", "👍": "6282565984632970119", "🔔": "5440910346334255336", "🤭": "5440833702642857683", "🎁": "5253821918812862724", "🚗": "5442939099906325301", "🫐": "5420353563408741206", "🍭": "5442872991769707734", "🧤": "5255858639549251782", "🧦": "5422369251690298040", "🥛": "5255850496291259327", "🔴": "5255748374853863125", "💡": "5456145097844340698",
     "🃏": "5298499667569425533", "🎯": "5256131095094652290", "💍": "5262922516426420894",
     "🍬": "5404573776253825754", "🏅": "5204271353565300127", "➖": "5382261056078881010",
     "📈": "5244837092042750681", "📉": "5246762912428603768", "✨": "5325547803936572038",
@@ -4308,7 +4310,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [kbtn("DANH SÁCH GAME", "👑"), kbtn("TÀI KHOẢN", "📜")],
         [kbtn("NẠP TIỀN", "💵"), kbtn("RÚT TIỀN", "💸")],
         [kbtn("GIỚI THIỆU", "🌸"), kbtn("ĐUA TOP", "🍕")],
-        [kbtn("EVENT", "🎁"), kbtn("LỆNH", "🔍")]
+        [kbtn("EVENT", "🎁")]
     ]
     if uid in ADMIN_IDS:
         _menu_rows.append([kbtn("ADMIN", "🛠")])   # nút chỉ hiện với admin
@@ -5047,8 +5049,8 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "🛒", callback_data="acc_mua_gift")],
             [btn("Nhận thưởng", "🎉", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
-            [btn("Tích lũy nạp", "💎", callback_data="acc_tich_luy"), btn("Kết Sát", "🔐", callback_data="acc_ket_sat")],
-            [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
+            [btn("Tích lũy nạp", "💎", callback_data="acc_tich_luy")],
+            [btn("Hỗ trợ", "🆘", url="https://t.me/cskhluan")]
         ])
 
         msg = (
@@ -7418,7 +7420,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d.startswith("dep_"):
         if d == "dep_support":
             await q.answer()
-            return await q.message.reply_text(f'{ce("🔔")} <b>HỖ TRỢ NẠP TIỀN</b>\n\nVui lòng liên hệ Admin: @dgfrutil\nHoặc dùng lệnh <code>/nap [số_tiền]</code> để tạo QR.', parse_mode=ParseMode.HTML)
+            return await q.message.reply_text(f'{ce("🔔")} <b>HỖ TRỢ NẠP TIỀN</b>\n\nVui lòng liên hệ CSKH Luân: @cskhluan\nHoặc dùng lệnh <code>/nap [số_tiền]</code> để tạo QR.', parse_mode=ParseMode.HTML)
         try:
             await q.answer()
             amount = int(d.split("_")[1])
@@ -8377,14 +8379,15 @@ async def topnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "WHERE LOWER(COALESCE(status,'')) IN ('success','successful','completed','approved','done') "
         "GROUP BY user_id ORDER BY total DESC LIMIT 10"
     ) or []
-    lines = ["💎 <b>TOP 10 NẠP TIỀN</b>", "━━━━━━━━━━━━━━━━━━"]
+    lines = ["💎 <b>TOP NẠP TIỀN</b>", "<i>10 thành viên nạp nhiều nhất</i>", "━━━━━━━━━━━━━━━━━━"]
     for i, row in enumerate(rows, 1):
         uid, total = row[0], int(row[1] or 0)
         display = await _telegram_name(ctx.bot, uid, {})
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
-        lines.append(f"{medal} {i}. {html.escape(display or 'Thành viên')} · {fmt_money(total)}đ")
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
+        lines.append(f"{medal} <b>{i:02d}</b> · {html.escape(display or 'Thành viên')}\n     └ <code>{fmt_money(total)}đ</code>")
     if not rows:
         lines.append("Chưa có dữ liệu nạp thành công.")
+    lines.append("━━━━━━━━━━━━━━━━━━")
     await update.effective_message.reply_text("\\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def topcuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
