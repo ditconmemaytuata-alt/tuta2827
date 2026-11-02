@@ -1053,15 +1053,56 @@ def auto_clear_old_wager(uid, prev_balance):
 
 DEPOSIT_DIRTY_WAGER_MULT = 5   # còn cược khuyến mãi cũ + số dư >= 5.000đ mà nạp mới => cược x5 tiền nạp mới được rút
 
+DEPOSIT_BASE_WAGER_MULT = 1    # MỌI lệnh nạp thành công đều phải cược x1 tiền nạp mới được rút (kể cả không nhận khuyến mãi)
+
+query("CREATE TABLE IF NOT EXISTS deposit_base_wager (user_id BIGINT PRIMARY KEY, amount BIGINT DEFAULT 0, base BIGINT DEFAULT 0)")
+
+def _deposit_base_set(uid, amount, base):
+    """Ghi nhớ phần cược x1 của lệnh nạp gần nhất (để khi nhận khuyến mãi không bị tính trùng tiền nạp)."""
+    try:
+        query("INSERT INTO deposit_base_wager (user_id, amount, base) VALUES (%s,%s,%s) "
+              "ON CONFLICT (user_id) DO UPDATE SET amount=EXCLUDED.amount, base=EXCLUDED.base",
+              (uid, int(amount), int(base)))
+    except Exception as e:
+        print(f"_deposit_base_set lỗi: {e}")
+
+def deposit_base_release(uid, amount):
+    """Gọi khi user nhận khuyến mãi của lệnh nạp `amount`: khuyến mãi đã tính cược trên TOÀN BỘ số dư
+    (đã gồm tiền nạp) nên bỏ phần cược x1 tiền nạp đã cộng trước đó để không bị tính trùng."""
+    try:
+        r = query("DELETE FROM deposit_base_wager WHERE user_id=%s AND amount=%s RETURNING base", (uid, int(amount)))
+        if r and int(r[0][0] or 0) > 0:
+            query("UPDATE user_bonus SET required_bet=GREATEST(required_bet-%s,0) WHERE user_id=%s",
+                  (int(r[0][0]), uid))
+    except Exception as e:
+        print(f"deposit_base_release lỗi: {e}")
+
+def deposit_wager_line(uid):
+    """Dòng thông báo yêu cầu cược còn lại để rút (rỗng nếu không còn yêu cầu)."""
+    rem = get_remaining_bet_required(uid)
+    if rem <= 0:
+        return ""
+    return (f'\n{ce("🎯")} Yêu cầu cược để rút: <code>{fmt_money(int(rem))}đ</code> '
+            f'(x{DEPOSIT_BASE_WAGER_MULT} tiền nạp)')
+
 def apply_deposit_wager_rule(uid, prev_balance, amount):
     # Gọi TRƯỚC khi cộng tiền nạp. Trả về (số_cược_cũ_đã_xoá, số_cược_x5_được_thêm).
+    # Mọi lệnh nạp đều bị yêu cầu cược x1 tiền nạp (kể cả không nhận khuyến mãi).
     try:
+        amount = int(amount)
+        base = amount * DEPOSIT_BASE_WAGER_MULT
         remaining = get_remaining_bet_required(uid)
         if remaining <= 0:
+            query("DELETE FROM user_bonus WHERE user_id=%s", (uid,))
+            add_wager_requirement(uid, 0, base)
+            _deposit_base_set(uid, amount, base)
             return 0, 0
         if int(prev_balance or 0) < WAGER_CLEAR_BALANCE:
-            return auto_clear_old_wager(uid, prev_balance), 0
-        extra = int(amount) * DEPOSIT_DIRTY_WAGER_MULT
+            cleared = auto_clear_old_wager(uid, prev_balance)
+            add_wager_requirement(uid, 0, base)
+            _deposit_base_set(uid, amount, base)
+            return cleared, 0
+        extra = amount * DEPOSIT_DIRTY_WAGER_MULT
         add_wager_requirement(uid, 0, extra)
         return 0, extra
     except Exception as e:
@@ -3258,8 +3299,7 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
         f'{ce("✅")} Đặt thành công — Phiên #{session_id}\n\n'
         f'{ce("🥷")} Công khai\n'
         f'{ce("🎯")} {choice_display_map} · {fmt_money(game["bets"][bet_key]["amount"])}\n'
-        f'{ce("💵")} Tỷ lệ x{multiplier}\n'
-        f'{bal_block(user_id)}'
+        f'{ce("💵")} Tỷ lệ x{multiplier}'
     )
     return True, msg
 
@@ -3370,11 +3410,12 @@ async def bet_group_handler(update: Update, ctx, choice: str, amount=None):
                 return
 
     success, message = await place_bet_in_group(ctx.bot, user_id, group_id, choice, amount, username)
+    _dm_bal = bal_block(user_id) if success else ""   # số dư chỉ gửi riêng, KHÔNG hiện công khai trong nhóm
     await reply_bet_notice(update.effective_message, message, success, private=(update.effective_chat.type == "private"))
     # Báo riêng về bot để người chơi nhận xác nhận kể cả khi nhóm bị trôi tin.
     if success:
         try:
-            await send_bet_notice(ctx.bot, user_id, message)
+            await send_bet_notice(ctx.bot, user_id, message + "\n" + _dm_bal)
         except Exception as e:
             print(f"Không gửi được xác nhận cược riêng uid={user_id}: {e}")
 
@@ -5155,7 +5196,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await ctx.bot.send_message(target_id,
                     f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n'
                     f'{ce("💰")} Số tiền nạp: <code>+{fmt_money(amount)}đ</code>\n'
-                    f'{bal_block(target_id)}\n\n'
+                    f'{bal_block(target_id)}{deposit_wager_line(target_id)}\n\n'
                     + offer_text,
                     reply_markup=keyboard, parse_mode=ParseMode.HTML)
             except Exception as e: pass
@@ -5167,7 +5208,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f'{ce("📥")} <b>Số tiền:</b> <code>+{fmt_money(amount)}đ</code>\n'
                     f'{ce("⏰")} <b>Thời gian:</b> {now_str}\n'
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
-                    f'{bal_block(target_id)}'
+                    f'{bal_block(target_id)}{deposit_wager_line(target_id)}'
                 )
                 await ctx.bot.send_message(chat_id=target_id, text=bill, parse_mode=ParseMode.HTML)
             except Exception as e: pass
@@ -7225,6 +7266,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total = p15 + p3
         if total <= 0:
             return await q.answer("❌ Không có khuyến mãi để nhận!", show_alert=True)
+        deposit_base_release(target_id, amount)   # đã tính cược trên toàn bộ số dư (gồm tiền nạp) nên bỏ phần x1 cộng trước đó
         add_promo_bonus(target_id, p15, p3)
         st = get_bet_progress_status(target_id)
         lines = [f'{ce("🎁")} <b>ĐÃ NHẬN KHUYẾN MÃI!</b>']
@@ -7417,7 +7459,7 @@ async def sepay_webhook(request):
                 f'{ce("📌")} Nội dung: <code>{content}</code>\n'
                 f'{ce("⏰")} Thời gian: {now_str}\n'
                 f'━━━━━━━━━━━━━━━━━━━━━\n'
-                f'{bal_block(user_id)}',
+                f'{bal_block(user_id)}{deposit_wager_line(user_id)}',
                 parse_mode=ParseMode.HTML
             )
         except Exception as e:
