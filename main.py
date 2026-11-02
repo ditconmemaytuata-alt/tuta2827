@@ -1458,7 +1458,7 @@ async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content="
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
     kb = InlineKeyboardMarkup([
-        [btn("10.000đ", "💵", "dep_10000"), btn("20.000đ", "💵", "dep_20000"), btn("50.000đ", "💵", "dep_50000")],
+        [btn("30.000đ", "💵", "dep_30000"), btn("50.000đ", "💵", "dep_50000")],
         [btn("100.000đ", "💵", "dep_100000"), btn("200.000đ", "💵", "dep_200000"), btn("500.000đ", "💵", "dep_500000")],
         [btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000"), btn("5.000.000đ", "💰", "dep_5000000")],
         [btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000"), btn("50.000.000đ", "💎", "dep_50000000")],
@@ -1467,7 +1467,7 @@ def deposit_menu_content(uid):
     
     caption = (
         f'{ce("💵")} <b>CHỌN MỆNH GIÁ NẠP TIỀN</b>\n\n'
-        f'{ce("💎")} Nạp tối thiểu: <b>10.000 đ</b>\n'
+        f'{ce("💎")} Nạp tối thiểu: <b>30.000 đ</b>\n'
         f'{ce("💎")} Nạp tối đa: <b>100.000.000 đ</b>\n\n'
         f'Bấm vào mệnh giá bên dưới để nạp tiền qua <b>Chuyển khoản Ngân hàng</b>.\n\n'
         f'{ce("📌")} <b>CÁCH LẤY THÔNG TIN NẠP:</b>\n\n'
@@ -1478,7 +1478,7 @@ def deposit_menu_content(uid):
         f'{ce("✔️")} Chuyển đúng <b>SỐ TIỀN</b> và <b>NỘI DUNG</b> được cung cấp.\n'
         f'{ce("✔️")} Mỗi lần nạp cần lấy thông tin <b>MỚI</b>.\n'
         f'{ce("❌")} Không dùng thông tin cũ cho giao dịch sau.\n'
-        f'{ce("💰")} Nạp tối thiểu: <b>10.000 đ</b>'
+        f'{ce("💰")} Nạp tối thiểu: <b>30.000 đ</b>'
     )
     qr_url, _, _ = get_deposit_info(uid, 0)
     return qr_url, caption, kb
@@ -4320,7 +4320,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'Hệ thống trò chơi minh bạch — uy tín hàng đầu.\n'
         f'━━━━━━━━━━━━━━━━━━━━━\n'
         f'{ce("💰")} <b>MIN RÚT TIỀN:</b> <code>50,000đ</code>\n'
-        f'{ce("💵")} <b>MIN NẠP TIỀN:</b> <code>10,000đ</code>\n\n'
+        f'{ce("💵")} <b>MIN NẠP TIỀN:</b> <code>30,000đ</code>\n\n'
         f'{ce("⚖️")} <b>CAM KẾT MINH BẠCH:</b>\n'
         f'• <b>100%</b> Kết quả hoàn toàn ngẫu nhiên.\n'
         f'• {ce("🔥")} <b>KHÔNG</b> can thiệp kết quả dưới mọi hình thức.\n'
@@ -4777,8 +4777,8 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             amount = int(arg)
 
-        if amount < 10000:
-            return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là 10,000đ!', parse_mode=ParseMode.HTML)
+        if amount < 30000:
+            return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là 30,000đ!', parse_mode=ParseMode.HTML)
         if amount > 100000000:
             return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối đa là 100.000.000đ!', parse_mode=ParseMode.HTML)
 
@@ -5386,8 +5386,8 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(ctx.args[0])
         amount = int(ctx.args[1])
-        if amount < 10000:
-            await update.effective_message.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là <code>10,000đ</code>!', parse_mode=ParseMode.HTML)
+        if amount < 30000:
+            await update.effective_message.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là <code>30,000đ</code>!', parse_mode=ParseMode.HTML)
             return
         now_str = get_vietnam_datetime_db()
         get_user(target_id)
@@ -5438,7 +5438,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
     except (IndexError, ValueError):
         await update.effective_message.reply_text(
-            f'{ce("❌")} Cú pháp: <code>/naptien [ID] [Số tiền]</code>\n{ce("📌")} Min nạp: <code>10,000đ</code>',
+            f'{ce("❌")} Cú pháp: <code>/naptien [ID] [Số tiền]</code>\n{ce("📌")} Min nạp: <code>30,000đ</code>',
             parse_mode=ParseMode.HTML)
 
 @admin_only
@@ -7422,8 +7422,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await q.answer()
             amount = int(d.split("_")[1])
-            if amount < 10000 or amount > 100000000:
-                return await q.message.reply_text("Số tiền nạp phải từ 10.000đ đến 100.000.000đ.")
+            if amount < 30000 or amount > 100000000:
+                return await q.message.reply_text("Số tiền nạp phải từ 30.000đ đến 100.000.000đ.")
             # Chống spam lệnh nạp: đang có lệnh còn hiệu lực thì phải chờ; quá 5 mã chưa nạp => khóa ẩn.
             _gate, _info = nap_order_gate(uid)
             if _gate == "banned":
