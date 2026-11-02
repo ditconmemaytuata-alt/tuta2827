@@ -246,6 +246,10 @@ def btn(text, emoji=None, callback_data=None, url=None):
         text = f"{emoji} {text}"
     return InlineKeyboardButton(text, callback_data=callback_data, url=url)
 
+def kbtn_id(text, custom_emoji_id):
+    """Nút bàn phím trả lời với icon emoji premium theo ID cụ thể."""
+    return KeyboardButton(text, api_kwargs={"icon_custom_emoji_id": str(custom_emoji_id)})
+
 def kbtn(text, emoji=None):
     """Nút bàn phím trả lời (ReplyKeyboard) có icon emoji premium."""
     cid = _icon_id(emoji)
@@ -4307,10 +4311,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     _menu_rows = [
-        [kbtn("DANH SÁCH GAME", "👑"), kbtn("TÀI KHOẢN", "📜")],
-        [kbtn("NẠP TIỀN", "💵"), kbtn("RÚT TIỀN", "💸")],
-        [kbtn("GIỚI THIỆU", "🌸"), kbtn("ĐUA TOP", "🍕")],
-        [kbtn("EVENT", "🎁")]
+        [kbtn_id("DANH SÁCH GAME", "5409048419211682843"), kbtn_id("TÀI KHOẢN", "6318677150534734288")],
+        [kbtn_id("NẠP TIỀN", "6309898817202295364"), kbtn_id("RÚT TIỀN", "5445353829304387411")],
+        [kbtn_id("GIỚI THIỆU", "5278467510604160626"), kbtn_id("ĐUA TOP", "5332455502917949981")],
+        [kbtn_id("EVENT", "5188344996356448758")]
     ]
     if uid in ADMIN_IDS:
         _menu_rows.append([kbtn("ADMIN", "🛠")])   # nút chỉ hiện với admin
@@ -4558,6 +4562,13 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     msg_obj = update.effective_message
     args = ctx.args or []
+    # /rut chỉ dùng trong chat riêng với bot, không dùng trong nhóm.
+    _chat = update.effective_chat
+    if _chat is not None and _chat.type != "private":
+        return await msg_obj.reply_text(
+            f'{ce("🚫")} Lệnh <b>/rut</b> chỉ dùng trong chat riêng với bot, không dùng trong nhóm.\n'
+            f'{ce("👉")} Nhắn riêng cho bot: https://t.me/{BOT_USERNAME}',
+            parse_mode=ParseMode.HTML)
     if is_banned(uid):
         return
     if is_feature_banned(uid, 'rut'):
@@ -4576,10 +4587,10 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if daily_deposit < 50000:
         remaining_deposit = 50000 - daily_deposit
         return await msg_obj.reply_text(
-            f'{ce("🔐")} <b>CHƯA ĐỦ ĐIỀU KIỆN RÚT TIỀN HÔM NAY</b>\\n\\n'
-            f'{ce("💳")} Bạn cần nạp thành công tổng cộng ít nhất <b>50.000đ trong ngày hôm nay</b>.\\n'
-            f'{ce("📥")} Đã nạp hôm nay: <code>{fmt_money(daily_deposit)}đ</code>\\n'
-            f'{ce("📌")} Cần nạp thêm: <code>{fmt_money(remaining_deposit)}đ</code>\\n'
+            f'{ce("🔐")} <b>CHƯA ĐỦ ĐIỀU KIỆN RÚT TIỀN HÔM NAY</b>\n\n'
+            f'{ce("💳")} Bạn cần nạp thành công tổng cộng ít nhất <b>50.000đ trong ngày hôm nay</b>.\n'
+            f'{ce("📥")} Đã nạp hôm nay: <code>{fmt_money(daily_deposit)}đ</code>\n'
+            f'{ce("📌")} Cần nạp thêm: <code>{fmt_money(remaining_deposit)}đ</code>\n'
             f'{ce("🕛")} Điều kiện tự đặt lại lúc <b>00:00</b> mỗi ngày.',
             parse_mode=ParseMode.HTML)
     if not args:
@@ -8311,6 +8322,32 @@ async def settle_interaction_top_loop(bot):
 
 
 
+def _tbl_name(name, width=14):
+    """Làm sạch tên để vào bảng: bỏ ký tự điều khiển, cắt gọn theo độ rộng."""
+    name = str(name or "Thành viên")
+    # Bỏ emoji/ký hiệu: trong khối <pre> không chèn được emoji premium, và chúng làm lệch cột.
+    name = re.sub(r"[\U0001F000-\U0001FFFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]", "", name)
+    name = re.sub(r"[\r\n\t]+", " ", name).strip() or "Thành viên"
+    return name if len(name) <= width else name[:width - 1] + "…"
+
+def _tbl_render(headers, rows, aligns):
+    """Dựng bảng monospace có hàng/cột thẳng hàng, bọc trong <pre> để Telegram giữ nguyên khoảng trắng.
+    aligns: chuỗi 'l'/'r' cho từng cột (trái/phải)."""
+    cols = len(headers)
+    widths = [len(str(h)) for h in headers]
+    for r in rows:
+        for c in range(cols):
+            widths[c] = max(widths[c], len(str(r[c])))
+    def line(cells):
+        out = []
+        for c in range(cols):
+            t = str(cells[c])
+            out.append(t.rjust(widths[c]) if aligns[c] == "r" else t.ljust(widths[c]))
+        return " │ ".join(out)
+    sep = "─┼─".join("─" * w for w in widths)
+    body = [line(headers), sep] + [line(r) for r in rows]
+    return "<pre>" + html.escape("\n".join(body)) + "</pre>"
+
 async def _streak_top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, streak_type: str):
     group = update.effective_chat
     gid = group.id if group and group.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
@@ -8319,34 +8356,36 @@ async def _streak_top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, streak
     column = "max_win" if streak_type == "win" else "max_loss"
     title = "DÂY THẮNG LIÊN TIẾP" if streak_type == "win" else "DÂY THUA LIÊN TIẾP"
     icon = "🔥" if streak_type == "win" else "🥶"
+    word = "thắng" if streak_type == "win" else "thua"
     rows = query(
         f"SELECT user_id, {column}, current_type, current_count FROM user_game_streaks "
         f"WHERE group_id=%s AND {column}>0 ORDER BY {column} DESC, user_id ASC LIMIT 10",
         (gid,)
     ) or []
-    lines = [f"{icon} <b>TOP 10 {title}</b>", "━━━━━━━━━━━━━━━━━━"]
-    medals = ["🥇", "🥈", "🥉"]
-    for rank, row in enumerate(rows, 1):
-        uid, best, current_type, current_count = row
-        name = await _telegram_name(ctx.bot, uid, {}) or f"Thành viên {uid}"
-        medal = medals[rank-1] if rank <= 3 else "🏅"
-        lines.append(f"{medal} <b>{rank}.</b> {html.escape(name)} — <b>{int(best)}</b> phiên")
-    if not rows:
+    lines = [f"{icon} <b>TOP 10 {title}</b>"]
+    if rows:
+        table_rows = []
+        for rank, row in enumerate(rows, 1):
+            uid, best, current_type, current_count = row
+            name = await _telegram_name(ctx.bot, uid, {}) or f"Thành viên {uid}"
+            now_cnt = int(current_count or 0) if current_type == streak_type else 0
+            table_rows.append((f"{rank:02d}", _tbl_name(name), f"{int(best)}", f"{now_cnt}"))
+        lines.append(_tbl_render(("Hạng", "Người chơi", "Kỷ lục", "Đang có"), table_rows, "llrr"))
+        lines.append("<i>Đơn vị: phiên · Đang có = dây hiện tại chưa bị ngắt</i>")
+    else:
         lines.append("Chưa có dữ liệu chuỗi thắng/thua.")
     own = query(
         "SELECT current_type,current_count,max_win,max_loss FROM user_game_streaks WHERE user_id=%s AND group_id=%s",
         (update.effective_user.id, gid)
     ) or []
-    lines += ["━━━━━━━━━━━━━━━━━━"]
     if own:
         current_type, current_count, max_win, max_loss = own[0]
         if current_type == streak_type:
-            lines.append(f"👤 <b>Bạn đang có:</b> {int(current_count)} phiên {'thắng' if streak_type == 'win' else 'thua'} liên tiếp.")
+            lines.append(f"👤 <b>Bạn đang có:</b> {int(current_count)} phiên {word} liên tiếp.")
         else:
-            lines.append(f"👤 <b>Bạn hiện không có dây {'thắng' if streak_type == 'win' else 'thua'}.</b>")
+            lines.append(f"👤 <b>Bạn hiện không có dây {word}.</b>")
         lines.append(f"🏆 Kỷ lục cá nhân: thắng {int(max_win)} · thua {int(max_loss)} phiên.")
         my_best = int(max_win if streak_type == "win" else max_loss)
-        positions = [int(r[1]) for r in rows]
         rank = next((i for i, r in enumerate(rows, 1) if int(r[0]) == update.effective_user.id), None)
         if rank:
             lines.append(f"✅ Bạn đang đứng Top {rank} trong bảng này.")
@@ -8356,7 +8395,7 @@ async def _streak_top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, streak
             lines.append("ℹ️ Bạn chưa có chuỗi nào được ghi nhận.")
     else:
         lines.append("👤 Bạn chưa có dữ liệu thắng/thua trong nhóm này.")
-    await update.effective_message.reply_text("\\n".join(lines), parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def daythang_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -8379,16 +8418,17 @@ async def topnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "WHERE LOWER(COALESCE(status,'')) IN ('success','successful','completed','approved','done') "
         "GROUP BY user_id ORDER BY total DESC LIMIT 10"
     ) or []
-    lines = ["💎 <b>TOP NẠP TIỀN</b>", "<i>10 thành viên nạp nhiều nhất</i>", "━━━━━━━━━━━━━━━━━━"]
-    for i, row in enumerate(rows, 1):
-        uid, total = row[0], int(row[1] or 0)
-        display = await _telegram_name(ctx.bot, uid, {})
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "▫️"
-        lines.append(f"{medal} <b>{i:02d}</b> · {html.escape(display or 'Thành viên')}\n     └ <code>{fmt_money(total)}đ</code>")
-    if not rows:
+    lines = ["💎 <b>TOP NẠP TIỀN</b>", "<i>10 thành viên nạp nhiều nhất</i>"]
+    if rows:
+        table_rows = []
+        for i, row in enumerate(rows, 1):
+            uid, total = row[0], int(row[1] or 0)
+            display = await _telegram_name(ctx.bot, uid, {})
+            table_rows.append((f"{i:02d}", _tbl_name(display), f"{fmt_money(total)}đ"))
+        lines.append(_tbl_render(("Hạng", "Người chơi", "Tổng nạp"), table_rows, "llr"))
+    else:
         lines.append("Chưa có dữ liệu nạp thành công.")
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    await update.effective_message.reply_text("\\n".join(lines), parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def topcuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try: n = max(1, min(10, int(ctx.args[0]))) if ctx.args else 10
