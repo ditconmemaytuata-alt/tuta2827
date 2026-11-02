@@ -3711,6 +3711,10 @@ async def play_xucxac_don(update, ctx, choice_code, amount):
         parse_mode=ParseMode.HTML)
 
 async def play_longho(update, ctx, choice, amount):
+    # Chuẩn hóa lựa chọn để tương thích callback/menu cũ và lệnh /lh.
+    choice = str(choice or "").strip().lower()
+    choice = {"dragon": "long", "rong": "long", "rồng": "long",
+              "tiger": "ho", "ho": "ho", "hổ": "ho"}.get(choice, choice)
     uid = update.effective_user.id
     if is_game_banned(uid, 3):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
@@ -3773,7 +3777,9 @@ async def lh_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.effective_message.reply_text(
             f'{ce("❌")} Cú pháp: <code>/lh [long/ho] [số_tiền]</code>',
             parse_mode=ParseMode.HTML)
-    choice = ctx.args[0].lower()
+    choice = ctx.args[0].lower().strip()
+    choice = {"dragon": "long", "rong": "long", "rồng": "long",
+              "tiger": "ho", "hổ": "ho"}.get(choice, choice)
     if choice not in ["long", "ho"]:
         return await update.effective_message.reply_text(
             f'{ce("❌")} Chỉ chọn <code>long</code> hoặc <code>ho</code>!',
@@ -5061,7 +5067,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("Nhận thưởng", "🎉", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
             [btn("Tích lũy nạp", "💎", callback_data="acc_tich_luy")],
-            [btn("Hỗ trợ", "🆘", url="https://t.me/cskhluan")]
+            [btn("Hỗ trợ", "🆘", url="https://t.me/cskhjav88")]
         ])
 
         msg = (
@@ -6930,39 +6936,40 @@ AMOUNT_BUTTONS = [("1k", 1000), ("5k", 5000), ("10k", 10000), ("20k", 20000), ("
 
 GAMES = {
     "room": {"name": "TÀI XỈU ROOM", "icon": "🎲", "rows": None},
-    "xx": {"name": "XÚC XẮC ĐƠN", "icon": "🎰", "rows": [
+    "xx": {"name": "🎲 XÚC XẮC ĐƠN", "icon": "🎲", "rows": [
         [("CHẴN (x1.95)", "XXC", "🆗"), ("LẺ (x1.95)", "XXL", "❓")],
         [("TÀI (x1.95)", "XXT", "⬆️"), ("XỈU (x1.95)", "XXX", "⬇️")],
         [("Mặt 1 (x5)", "D1", "1️⃣"), ("Mặt 2 (x5)", "D2", "2️⃣"), ("Mặt 3 (x5)", "D3", "3️⃣")],
         [("Mặt 4 (x5)", "D4", "4️⃣"), ("Mặt 5 (x5)", "D5", "5️⃣"), ("Mặt 6 (x5)", "D6", "6️⃣")],
     ]},
-    "lh": {"name": "LONG HỔ", "icon": "🐯", "rows": [
+    "lh": {"name": "🐉 LONG HỔ", "icon": "🐉", "rows": [
         [("LONG", "long", "🐯"), ("HỔ", "ho", "🐉")],
     ]},
-    "mp": {"name": "MINI POKER", "icon": "🃏", "rows": None},
-    "bcr": {"name": "BACCARAT", "icon": "🏦", "rows": [
+    "mp": {"name": "🃏 MINI POKER", "icon": "🃏", "rows": None},
+    "bcr": {"name": "♠️ BACCARAT", "icon": "♠️", "rows": [
         [("PLAYER (x2)", "player", "👤")],
         [("BANKER (x2)", "banker", "🏦")],
         [("TIE (x9)", "tie", "⚖️")],
     ]},
-    "xd4": {"name": "XÓC ĐĨA 4 VỊ", "icon": "💿", "rows": [
+    "xd4": {"name": "🥏 XÓC ĐĨA 4 VỊ", "icon": "🥏", "rows": [
         [("CHẴN", "chan", "🆗"), ("LẺ", "le", "❓")],
     ]},
-    "md5": {"name": "TÀI XỈU MD5", "icon": "👌", "rows": [
+    "md5": {"name": "🔐 TÀI XỈU MD5", "icon": "🔐", "rows": [
         [("TÀI", "tai", "⬆️"), ("XỈU", "xiu", "⬇️")],
         [("CHẴN", "chan", "🆗"), ("LẺ", "le", "❓")],
     ]},
-    "bc": {"name": "BẦU CUA", "icon": "🦌", "rows": [
+    "bc": {"name": "🦀 BẦU CUA", "icon": "🦀", "rows": [
         [("BẦU", "bau", "🍀"), ("CUA", "cua", "🦀"), ("TÔM", "tom", "☄️")],
         [("CÁ", "ca", "💧"), ("GÀ", "ga", "🐣"), ("NAI", "nai", "🦌")],
     ]},
-    "xd6": {"name": "XÓC ĐĨA 6 VỊ", "icon": "💿", "rows": [
+    "xd6": {"name": "🎯 XÓC ĐĨA 6 VỊ", "icon": "🎯", "rows": [
         [("CHẴN", "chan", "🆗"), ("LẺ", "le", "❓")],
     ]},
     "tx3d": {"name": "TÀI XỈU 3D", "icon": "🎲", "rows": None},
 }
 
-GAME_ROWS = [["room", "xx"], ["lh", "mp"], ["bcr", "xd4"], ["md5", "bc"], ["xd6", "tx3d"]]
+# Bố cục 2 cột; giữ nguyên Tài Xỉu Room và Tài Xỉu 3D.
+GAME_ROWS = [["room", "tx3d"], ["xx", "lh"], ["mp", "bcr"], ["xd4", "xd6"], ["md5", "bc"]]
 
 GAME_RULES = {
     "room": (
@@ -7103,9 +7110,11 @@ def tx3d_entry_view(uid, private=True, back=True):
     return text, InlineKeyboardMarkup(rows)
 
 GAME_LIST_TEXT = (
-    f'{ce("🛍")} <b>DANH SÁCH GAME</b>\n'
-    f'{ce("😃")} Chúc bạn chơi vui vẻ! {ce("✍️")}\n\n'
-    f'{ce("🫵")} Vui lòng chọn game bên dưới: {ce("😮‍💨")}'
+    f'{ce("🎮")} <b>TRUNG TÂM TRÒ CHƠI</b> {ce("✨")}\n'
+    f'━━━━━━━━━━━━━━━━━━━━\n'
+    f'{ce("🎯")} Chọn trò chơi bạn muốn trải nghiệm bên dưới.\n'
+    f'{ce("💡")} Mỗi game có hướng dẫn và mức cược riêng.\n\n'
+    f'{ce("🍀")} Chúc bạn có những phút giây giải trí vui vẻ!'
 )
 
 OLD_MENU_ALIAS = {
@@ -7431,7 +7440,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d.startswith("dep_"):
         if d == "dep_support":
             await q.answer()
-            return await q.message.reply_text(f'{ce("🔔")} <b>HỖ TRỢ NẠP TIỀN</b>\n\nVui lòng liên hệ CSKH Luân: @cskhluan\nHoặc dùng lệnh <code>/nap [số_tiền]</code> để tạo QR.', parse_mode=ParseMode.HTML)
+            return await q.message.reply_text(f'{ce("🔔")} <b>HỖ TRỢ NẠP TIỀN</b>\n\nVui lòng liên hệ CSKH JAV: @cskhjav88\nHoặc dùng lệnh <code>/nap [số_tiền]</code> để tạo QR.', parse_mode=ParseMode.HTML)
         try:
             await q.answer()
             amount = int(d.split("_")[1])
