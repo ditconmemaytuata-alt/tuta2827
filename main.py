@@ -433,21 +433,94 @@ def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     return conn
 
-def query(q, args=()):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    res = None
+# ---- Connection pool: tái sử dụng kết nối, không bắt tay SSL mỗi truy vấn ----
+from psycopg2 import pool as _pgpool
+import threading as _threading
+_DB_POOL = None
+_DB_POOL_LOCK = _threading.Lock()
+_DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
+
+def _get_pool():
+    global _DB_POOL
+    if _DB_POOL is None:
+        with _DB_POOL_LOCK:
+            if _DB_POOL is None:
+                _DB_POOL = _pgpool.ThreadedConnectionPool(
+                    2, _DB_POOL_MAX, DATABASE_URL, sslmode='require',
+                    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
+    return _DB_POOL
+
+def _pool_conn():
+    """Lấy kết nối từ pool; nếu kết nối cũ đã chết thì bỏ và lấy cái khác."""
+    pl = _get_pool()
+    for _ in range(3):
+        conn = pl.getconn()
+        try:
+            if conn.closed:
+                raise psycopg2.OperationalError("closed")
+            return conn
+        except Exception:
+            try:
+                pl.putconn(conn, close=True)
+            except Exception:
+                pass
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
+
+def _pool_release(conn):
     try:
-        cur.execute(q, args if args else None)
-        if cur.description:
-            res = cur.fetchall()
-        conn.commit()
-    except Exception as e:
-        print(f"Database Error: {e}")
-        conn.rollback()
-    finally:
-        cur.close()
-        conn.close()
+        pl = _get_pool()
+        if conn.closed:
+            pl.putconn(conn, close=True)
+        else:
+            pl.putconn(conn)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def query(q, args=()):
+    res = None
+    for attempt in (1, 2):
+        conn = _pool_conn()
+        cur = None
+        try:
+            cur = conn.cursor()
+            cur.execute(q, args if args else None)
+            if cur.description:
+                res = cur.fetchall()
+            conn.commit()
+            break
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            # kết nối chết giữa chừng -> bỏ kết nối, thử lại 1 lần với kết nối mới
+            print(f"Database Error (conn): {e}")
+            try:
+                if cur: cur.close()
+            except Exception:
+                pass
+            try:
+                _get_pool().putconn(conn, close=True)
+            except Exception:
+                pass
+            conn = None
+            res = None
+            if attempt == 2:
+                break
+            continue
+        except Exception as e:
+            print(f"Database Error: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            break
+        finally:
+            if conn is not None:
+                try:
+                    if cur: cur.close()
+                except Exception:
+                    pass
+                _pool_release(conn)
     return res
 
 # TẠO CÁC BẢNG
