@@ -11614,10 +11614,10 @@ application.add_handler(CommandHandler("daythang", daythang_cmd), group=-3)
 application.add_handler(CommandHandler("daythua", daythua_cmd), group=-3)
 application.add_handler(CommandHandler("top", _early_top_cmd), group=-3)
 application.add_handler(CommandHandler("checktt", _early_checktt_cmd), group=-3)
-application.add_handler(CommandHandler("top", top_cmd))
+# /top và /checktt đã được đăng ký ở group=-3 qua wrapper bên dưới
+# để chỉ xử lý một lần trên bot @Jav88sangamebot.
 application.add_handler(CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
-application.add_handler(CommandHandler("checktt", checktt_cmd))
 application.add_handler(CommandHandler("resetsystem", reset_system_cmd))
 application.add_handler(CallbackQueryHandler(reset_system_callback, pattern=r"^sysreset_(yes|no)$"))
 application.add_handler(CommandHandler("tatroom", tatroom_cmd))
@@ -11660,11 +11660,11 @@ async def main():
     group_commands = [
         BotCommand("nap", "Nạp tiền"),
         BotCommand("rut", "Rút tiền"),
-        BotCommand("top", "Top người chơi"),
+        BotCommand("top", "Top tương tác nhóm hôm nay"),
         BotCommand("topnap", "Top nạp tiền"),
         BotCommand("topsodu", "Top số dư"),
         BotCommand("topcuoc", "Top cược"),
-        BotCommand("checktt", "Kiểm tra tương tác hôm nay"),
+        BotCommand("checktt", "Kiểm tra tương tác nhóm hôm nay"),
         BotCommand("daythang", "Top 10 dây thắng liên tiếp"),
         BotCommand("daythua", "Top 10 dây thua liên tiếp"),
         BotCommand("help", "Hướng dẫn sử dụng"),
