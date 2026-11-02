@@ -1301,7 +1301,8 @@ def get_deposit_info(user_id, amount=0):
         f'{ce("👤")} CTK: <b>{ACCOUNT_NAME}</b>\n'
         f'{ce("💰")} STK: <code>{ACCOUNT_NO}</code>\n'
         f'{ce("✍️")} Nội dung: <code>{content}</code>\n'
-        f'{ce("💰")} Số tiền: <code>{fmt_money(amount)}đ</code>\n\n'
+        f'{ce("💰")} Số tiền: <code>{fmt_money(amount)}đ</code>\n'
+        f'{ce("⏰")} Hiệu lực lệnh nạp: <b>{NAP_ORDER_TTL_MINUTES} phút</b>\n\n'
         f'{ce("⚡")} <i>Lưu ý: Quét mã QR để tự điền số tiền và nội dung chuyển khoản. Chỉ cộng tiền tự động khi hệ thống xác nhận được giao dịch.</i>'
     )
     return qr_url, caption, content
@@ -4706,11 +4707,20 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if amount > 100000000:
             return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối đa là 100.000.000đ!', parse_mode=ParseMode.HTML)
 
+        # Chống spam lệnh nạp: mỗi lệnh sống 10 phút, đang có lệnh thì phải chờ; quá 5 mã chưa nạp => khóa ẩn.
+        _gate, _info = nap_order_gate(uid)
+        if _gate == "banned":
+            return                                   # khóa ẩn: im lặng hoàn toàn, không báo gì
+        if _gate == "wait":
+            return await msg_obj.reply_text(nap_wait_text(_info), parse_mode=ParseMode.HTML)
+
         qr_url, caption, content = get_deposit_info(uid, amount)
+        _order_id = nap_order_record(uid, amount, content)   # không có await giữa gate và record => không bị tạo trùng
         kb = InlineKeyboardMarkup([
             [btn("Hỗ Trợ", "🔔", callback_data="dep_support")]
         ])
-        await send_deposit_qr(ctx.bot, msg_obj.chat_id, qr_url, caption, kb, amount, content)
+        _sent = await send_deposit_qr(ctx.bot, msg_obj.chat_id, qr_url, caption, kb, amount, content)
+        nap_order_schedule_expiry(ctx.bot, _sent, _order_id)
     except ValueError:
         await msg_obj.reply_text(f'{ce("❌")} Số tiền không hợp lệ! VD: <code>/nap 50000</code>', parse_mode=ParseMode.HTML)
     except Exception as e:
@@ -7338,10 +7348,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             amount = int(d.split("_")[1])
             if amount < 10000 or amount > 100000000:
                 return await q.message.reply_text("Số tiền nạp phải từ 10.000đ đến 100.000.000đ.")
+            # Chống spam lệnh nạp: đang có lệnh còn hiệu lực thì phải chờ; quá 5 mã chưa nạp => khóa ẩn.
+            _gate, _info = nap_order_gate(uid)
+            if _gate == "banned":
+                return                               # khóa ẩn: im lặng hoàn toàn, không báo gì
+            if _gate == "wait":
+                return await q.message.reply_text(nap_wait_text(_info), parse_mode=ParseMode.HTML)
+
             qr_url, caption, content = get_deposit_info(uid, amount)
+            _order_id = nap_order_record(uid, amount, content)
             kb = InlineKeyboardMarkup([[btn("Hỗ Trợ", "🔔", callback_data="dep_support")]])
             # Gửi QR mới trước; chỉ xóa menu cũ sau khi gửi thành công để không mất giao diện nếu API lỗi.
             sent = await send_deposit_qr(ctx.bot, uid, qr_url, caption, kb, amount, content)
+            nap_order_schedule_expiry(ctx.bot, sent, _order_id)
             try:
                 await q.message.delete()
             except Exception:
@@ -7578,6 +7597,10 @@ async def sepay_webhook(request):
         now_str = get_vietnam_datetime_db()
         query("INSERT INTO deposit_history (user_id, amount, admin_id, status, time, ref_code) VALUES (%s, %s, %s, %s, %s, %s)",
               (user_id, amount, 0, 'success', now_str, ref_code))
+        try:
+            nap_orders_mark_paid(user_id)   # đã thanh toán => hết chờ, không bị tính vào hạn mức 5 mã
+        except Exception as _e:
+            print(f"SePay Webhook: không cập nhật được trạng thái lệnh nạp: {_e}")
         _cleared, _extra = apply_deposit_wager_rule(user_id, get_balance(user_id), amount)
         add_money(user_id, amount, f"Nạp tiền tự động (SePay) +{amount:,}đ")
         await notify_deposit_wager(_bot_instance, user_id, _cleared, _extra)
@@ -11513,6 +11536,146 @@ def _spam_ban_db(uid: int):
         (uid, "Spam: 5 thao tác trong 2 giây")
     )
 
+# ============================================================
+# CHỐNG SPAM LỆNH NẠP
+#  - Mỗi lệnh nạp (QR) có hiệu lực 10 phút.
+#  - Đang có lệnh còn hiệu lực => phải chờ hết hạn (hoặc thanh toán xong) mới tạo được lệnh mới.
+#  - Tạo quá 5 mã mà chưa thanh toán thành công lần nào => KHÓA VĨNH VIỄN ẨN:
+#    bot im lặng hoàn toàn (cả chat riêng lẫn nhóm), không báo lý do cho người dùng.
+#  - Admin gỡ khóa bằng /unbanspam USER_ID (đồng thời xóa lịch sử lệnh nạp của user đó).
+# ============================================================
+NAP_ORDER_TTL_MINUTES = 10
+NAP_MAX_UNPAID_ORDERS = 5
+NAP_BAN_REASON = "Nạp: tạo quá 5 mã nạp mà chưa thanh toán"
+
+query("""CREATE TABLE IF NOT EXISTS nap_orders (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    amount BIGINT,
+    content TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+)""")
+query("CREATE INDEX IF NOT EXISTS idx_nap_orders_user ON nap_orders(user_id, id DESC)")
+
+def _load_nap_banned():
+    rows = query("SELECT user_id FROM spam_permanent_bans WHERE reason LIKE %s", ("Nạp%",)) or []
+    return {int(r[0]) for r in rows}
+
+_NAP_BANNED = _load_nap_banned()
+_NAP_TASKS = set()   # giữ tham chiếu task hết hạn để không bị thu gom bộ nhớ
+print(f"[nap-guard] loaded {len(_NAP_BANNED)} hidden-banned users")
+
+def nap_hidden_ban(uid: int):
+    """Khóa vĩnh viễn ẨN: ghi DB + nạp vào RAM, người dùng không nhận bất kỳ thông báo nào."""
+    _NAP_BANNED.add(uid)
+    _SPAM_BANNED.add(uid)
+    _SPAM_ACTIVITY.pop(uid, None)
+    try:
+        query(
+            "INSERT INTO spam_permanent_bans(user_id, reason) VALUES(%s,%s) "
+            "ON CONFLICT(user_id) DO NOTHING",
+            (uid, NAP_BAN_REASON)
+        )
+    except Exception as e:
+        print(f"[nap-guard] db error khi khóa ẩn {uid}: {e}")
+    print(f"[nap-guard] hidden permanent ban user_id={uid}")
+
+def nap_order_gate(uid):
+    """Kiểm tra trước khi tạo lệnh nạp. Hàm ĐỒNG BỘ (không await) nên kiểm tra + ghi lệnh là nguyên tử.
+    Trả về:
+      ("ok", None)                          -> được tạo lệnh mới
+      ("wait", (amount, content, giây_còn)) -> đang có lệnh còn hạn, phải chờ
+      ("banned", None)                      -> bị khóa ẩn, bot im lặng
+    """
+    if uid in ADMIN_IDS:
+        return "ok", None
+    if uid in _NAP_BANNED:
+        return "banned", None
+
+    rows = query(
+        "SELECT amount, content, GREATEST(EXTRACT(EPOCH FROM (expires_at - NOW())), 0) "
+        "FROM nap_orders WHERE user_id=%s AND status='pending' AND expires_at > NOW() "
+        "ORDER BY id DESC LIMIT 1", (uid,))
+    if rows:
+        amount, content, secs = rows[0]
+        return "wait", (int(amount or 0), content or "", int(secs or 0))
+
+    # Hết cooldown: nếu đã tạo >= 5 mã mà chưa từng nạp thành công => khóa ẩn ngay lần tạo thứ 6.
+    paid = query("SELECT 1 FROM deposit_history WHERE user_id=%s AND status='success' LIMIT 1", (uid,))
+    if not paid:
+        cnt = query("SELECT COUNT(*) FROM nap_orders WHERE user_id=%s", (uid,))
+        if cnt and int(cnt[0][0] or 0) >= NAP_MAX_UNPAID_ORDERS:
+            nap_hidden_ban(uid)
+            return "banned", None
+    return "ok", None
+
+def nap_order_record(uid, amount, content):
+    """Ghi lệnh nạp mới, hiệu lực NAP_ORDER_TTL_MINUTES phút. Admin không bị ghi."""
+    if uid in ADMIN_IDS:
+        return None
+    rows = query(
+        "INSERT INTO nap_orders(user_id, amount, content, status, expires_at) "
+        "VALUES(%s,%s,%s,'pending', NOW() + make_interval(mins => %s)) RETURNING id",
+        (uid, int(amount), content, NAP_ORDER_TTL_MINUTES))
+    return int(rows[0][0]) if rows else None
+
+def nap_orders_mark_paid(uid):
+    """Gọi khi nạp thành công: lệnh đang chờ coi như đã thanh toán, user được tạo lệnh mới ngay."""
+    query("UPDATE nap_orders SET status='paid' WHERE user_id=%s AND status='pending'", (uid,))
+
+def nap_wait_text(info):
+    amount, content, secs = info
+    m, s = divmod(max(int(secs), 0), 60)
+    text = (
+        f'{ce("⏰")} <b>BẠN ĐANG CÓ LỆNH NẠP CHƯA HẾT HẠN</b>\n\n'
+        f'Vui lòng chờ <b>{m} phút {s:02d} giây</b> để tạo lệnh nạp mới '
+        f'(hoặc thanh toán lệnh hiện tại).'
+    )
+    if amount and content:
+        text += (
+            f'\n\n{ce("💰")} Số tiền: <code>{fmt_money(amount)}đ</code>\n'
+            f'{ce("✍️")} Nội dung: <code>{html.escape(str(content))}</code>'
+        )
+    return text
+
+async def _nap_order_expire(bot, sent, order_id, amount_hint=None):
+    await asyncio.sleep(NAP_ORDER_TTL_MINUTES * 60)
+    try:
+        rows = await asyncio.to_thread(
+            query, "UPDATE nap_orders SET status='expired' WHERE id=%s AND status='pending' RETURNING amount", (order_id,))
+    except Exception as e:
+        print(f"[nap-guard] không đánh dấu hết hạn được lệnh {order_id}: {e}")
+        return
+    if not rows or sent is None:
+        return   # đã thanh toán hoặc không còn tin nhắn để sửa
+    text = (
+        f'{ce("⏰")} <b>LỆNH NẠP ĐÃ HẾT HẠN</b>\n\n'
+        f'Lệnh nạp <code>{fmt_money(int(rows[0][0] or 0))}đ</code> đã quá {NAP_ORDER_TTL_MINUTES} phút.\n'
+        f'{ce("❌")} Vui lòng <b>không chuyển khoản</b> theo thông tin cũ. Gõ <code>/nap số_tiền</code> để tạo lệnh mới.'
+    )
+    try:
+        await bot.edit_message_caption(chat_id=sent.chat_id, message_id=sent.message_id,
+                                       caption=text, parse_mode=ParseMode.HTML)
+    except Exception:
+        try:
+            await bot.edit_message_text(chat_id=sent.chat_id, message_id=sent.message_id,
+                                        text=text, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            print(f"[nap-guard] không sửa được tin nhắn QR hết hạn: {e}")
+
+def nap_order_schedule_expiry(bot, sent, order_id):
+    """Sau 10 phút: nếu chưa thanh toán thì đánh dấu hết hạn và thay QR bằng thông báo hết hạn."""
+    if not order_id:
+        return
+    try:
+        task = asyncio.create_task(_nap_order_expire(bot, sent, order_id))
+        _NAP_TASKS.add(task)
+        task.add_done_callback(_NAP_TASKS.discard)
+    except Exception as e:
+        print(f"[nap-guard] không hẹn giờ hết hạn được: {e}")
+
 async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
@@ -11522,6 +11685,15 @@ async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Không áp dụng cho quản trị viên để tránh khóa nhầm người vận hành.
     if uid in ADMIN_IDS:
         return
+
+    # Khóa ẩn do spam lệnh nạp: im lặng hoàn toàn ở MỌI nơi (chat riêng và nhóm).
+    if uid in _NAP_BANNED:
+        if update.callback_query:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+        raise ApplicationHandlerStop
 
     # Chỉ kiểm soát chat riêng với bot, không phạt hoạt động bình thường ở nhóm.
     chat = update.effective_chat
@@ -11575,7 +11747,10 @@ async def unban_spam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     uid = int(ctx.args[0])
     await asyncio.to_thread(query, "DELETE FROM spam_permanent_bans WHERE user_id=%s", (uid,))
+    # Xóa lịch sử lệnh nạp để user không bị khóa ẩn lại ngay ở lần /nap kế tiếp.
+    await asyncio.to_thread(query, "DELETE FROM nap_orders WHERE user_id=%s", (uid,))
     _SPAM_BANNED.discard(uid)
+    _NAP_BANNED.discard(uid)
     _SPAM_ACTIVITY.pop(uid, None)
     await update.effective_message.reply_text(f"Đã gỡ khóa chống spam cho user {uid}.")
 
