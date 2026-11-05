@@ -46,7 +46,7 @@ ACCOUNT_NO = "101499100004641579"
 ACCOUNT_NAME = "BAN TIEN PHONG"
 
 _bot_instance = None
-GROUP_IDS = [-1004375247819]
+GROUP_IDS = [-1003663678808]
 
 group_games = {}
 room_betting_enabled = {}
