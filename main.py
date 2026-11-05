@@ -33,12 +33,12 @@ SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằn
 
 ADMIN_IDS = [5633649201, 7884394252]
 BOT_USERNAME = "xoclo88dtbot"
-SESSION_HISTORY_GROUP_ID = -1004491701518
+SESSION_HISTORY_GROUP_ID = -1003663678808
 SESSION_HISTORY_URL = "https://t.me/lspxoclo88"
 ROOM_LINK = "https://t.me/hocviencbm"
 MIN_WITHDRAW = 50000
 MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
-LOG_GROUP_ID = -1004375247819
+LOG_GROUP_ID = -1003663678808
 
 # THÔNG TIN NGÂN HÀNG MỚI
 BANK_ID = "970452"
