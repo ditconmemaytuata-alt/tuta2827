@@ -32,10 +32,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằng biến môi trường; không hardcode khóa bí mật
 
 ADMIN_IDS = [5633649201, 7884394252]
-BOT_USERNAME = "Jav88sangamebot"
+BOT_USERNAME = "Xoclo88sangamebot"
 SESSION_HISTORY_GROUP_ID = -1004491701518
-SESSION_HISTORY_URL = "https://t.me/lspjav88"
-ROOM_LINK = "https://t.me/jav88sanhu"
+SESSION_HISTORY_URL = "https://t.me/lspxoclo88"
+ROOM_LINK = "https://t.me/xoclo88sanhu"
 MIN_WITHDRAW = 50000
 MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
 LOG_GROUP_ID = -1004375247819
@@ -585,6 +585,8 @@ CREATE TABLE IF NOT EXISTS withdraw_history (
 """)
 query("ALTER TABLE withdraw_history ADD COLUMN IF NOT EXISTS request_code TEXT")
 query("ALTER TABLE withdraw_history ALTER COLUMN request_code TYPE TEXT USING request_code::TEXT")
+for _c in ("method", "bank", "stk", "acc_name", "qr_file_id", "memo"):
+    query(f"ALTER TABLE withdraw_history ADD COLUMN IF NOT EXISTS {_c} TEXT")
 query("DROP INDEX IF EXISTS idx_withdraw_pending_request_code")
 query("""
 CREATE TABLE IF NOT EXISTS user_payout_accounts (
@@ -905,6 +907,27 @@ def get_balance(uid):
     get_user(uid)
     res = query("SELECT balance FROM users WHERE user_id=%s", (uid,))
     return res[0][0] if res else 0
+
+def has_bank_linked(uid):
+    """True nếu người dùng đã liên kết tài khoản nhận tiền (bank/ví). Admin luôn được qua."""
+    if uid in ADMIN_IDS:
+        return True
+    try:
+        r = query("SELECT 1 FROM user_payout_accounts WHERE user_id=%s LIMIT 1", (uid,))
+        if r:
+            return True
+        r = query("SELECT bank, stk, bank_linked FROM users WHERE user_id=%s", (uid,))
+        if r and r[0][0] and r[0][1] and (r[0][2] or 0):
+            return True
+    except Exception as e:
+        print(f"has_bank_linked lỗi: {e}")
+    return False
+
+BANK_LINK_REQUIRED_MSG = (
+    '🏦 <b>CHƯA LIÊN KẾT TÀI KHOẢN NGÂN HÀNG</b>\n\n'
+    'Bạn cần liên kết tài khoản ngân hàng trước khi <b>chơi game</b> hoặc <b>nhập giftcode</b>.\n'
+    '👉 Dùng lệnh <code>/lienket</code> để liên kết ngay.'
+)
 
 def is_banned(uid):
     res = query("SELECT 1 FROM banned WHERE user_id=%s", (uid,))
@@ -2230,13 +2253,13 @@ async def sethoancuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ===== GIFTCODE 5 LOẠI ================================
 # ============================================================
 GIFT_TYPES = {
-    "TANTHU":  {"name": "Code Tân Thủ",  "icon": "🎁", "fmt": "JAV88-TANTHU-xxxxxxx"},
-    "CODEMUA": {"name": "Code Mua",      "icon": "🛒", "fmt": "JAV88-CODEMUA-xxxxxxx"},
-    "GIOVANG": {"name": "Code Giờ Vàng", "icon": "⏰", "fmt": "JAV88-GIOVANG-xxxxxxx"},
-    "NAP":     {"name": "Code Nạp",      "icon": "💳", "fmt": "JAV88-1234567-ABCDEFG"},
-    "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "JAV88-TRIAN-xxxxxxx"},
-    "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "JAV88-TICHLUY-xxxxxxx"},
-    "INTERACT": {"name": "Code Tương Tác", "icon": "💬", "fmt": "JAV88-INTERACT-xxxxxxx"},
+    "TANTHU":  {"name": "Code Tân Thủ",  "icon": "🎁", "fmt": "XOCLO88-TANTHU-xxxxxxx"},
+    "CODEMUA": {"name": "Code Mua",      "icon": "🛒", "fmt": "XOCLO88-CODEMUA-xxxxxxx"},
+    "GIOVANG": {"name": "Code Giờ Vàng", "icon": "⏰", "fmt": "XOCLO88-GIOVANG-xxxxxxx"},
+    "NAP":     {"name": "Code Nạp",      "icon": "💳", "fmt": "XOCLO88-1234567-ABCDEFG"},
+    "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "XOCLO88-TRIAN-xxxxxxx"},
+    "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
+    "INTERACT": {"name": "Code Tương Tác", "icon": "💬", "fmt": "XOCLO88-INTERACT-xxxxxxx"},
 }
 GIFT_BUY_EXPIRE_DAYS = 30
 _DIGITS = "0123456789"
@@ -2249,9 +2272,9 @@ def _rand(chars, n):
 def gen_gift_code(ctype):
     while True:
         if ctype == "NAP":
-            code = f"JAV88-{_rand(_DIGITS, 7)}-{_rand(_LETTERS, 7)}"
+            code = f"XOCLO88-{_rand(_DIGITS, 7)}-{_rand(_LETTERS, 7)}"
         else:
-            code = f"JAV88-{ctype}-{_rand(_ALNUM, 7)}"
+            code = f"XOCLO88-{ctype}-{_rand(_ALNUM, 7)}"
         if not query("SELECT 1 FROM giftcodes WHERE code=%s", (code,)):
             return code
 
@@ -2271,6 +2294,9 @@ def add_wager_requirement(uid, bonus_amount, required_bet, prev_balance=None):
 
 async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
     msg = update.effective_message
+    if not has_bank_linked(uid):
+        await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
+        return True
     row = query("SELECT ctype, reward, wager, expiry, require_deposit, required_amount, bound_user, used, "
                 "COALESCE(require_total_dep,0) FROM giftcodes WHERE code=%s", (code_str,))
     if not row:
@@ -3454,6 +3480,8 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
         return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
     if is_game_banned(user_id, 1):
         return False, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!'
+    if not has_bank_linked(user_id):
+        return False, BANK_LINK_REQUIRED_MSG
     if not room_betting_enabled.get(group_id, True) or _is_room_muted(group_id):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
@@ -3523,6 +3551,8 @@ async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
         return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
     if is_game_banned(user_id, 1):
         return False, f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!'
+    if not has_bank_linked(user_id):
+        return False, BANK_LINK_REQUIRED_MSG
     if not room_betting_enabled.get(group_id, True) or _is_room_muted(group_id):
         return False, f'{ce("🔒")} <b>PHÒNG ĐÃ BỊ KHÓA CƯỢC!</b>'
     game = group_games.get(group_id)
@@ -3663,6 +3693,8 @@ async def play_xucxac_don(update, ctx, choice_code, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 2):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_xucxac_don') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Xúc Xắc Đơn đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -3718,6 +3750,8 @@ async def play_longho(update, ctx, choice, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 3):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_longho') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Long Hổ đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -3794,6 +3828,8 @@ async def play_minipoker(update, ctx, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 4):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_minipoker') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Mini Poker đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -3870,6 +3906,8 @@ async def play_baccarat(update, ctx, choice, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 5):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_baccarat') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Baccarat đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -3944,6 +3982,8 @@ async def play_xocdia4(update, ctx, choice, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 7):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_xocdia4') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Xóc Đĩa 4 Vị đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -3997,6 +4037,8 @@ async def play_taixiumd5(update, ctx, choice, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 8):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_taixiumd5') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Tài Xỉu MD5 đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -4061,6 +4103,8 @@ async def play_baucua(update, ctx, choice, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 9):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_baucua') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Bầu Cua đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -4116,6 +4160,8 @@ async def play_xocdia6(update, ctx, choice, amount):
     uid = update.effective_user.id
     if is_game_banned(uid, 10):
         return await update.effective_message.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if check_mt('mt_xocdia6') and uid not in ADMIN_IDS:
         return await update.effective_message.reply_text(f'{ce("⚙️")} Game Xóc Đĩa 6 Vị đang bảo trì!', parse_mode=ParseMode.HTML)
     if amount < 1000:
@@ -4587,18 +4633,6 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg_obj.reply_text(f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>', parse_mode=ParseMode.HTML)
         return
     get_user(uid)
-    # Điều kiện rút theo NGÀY: tổng nạp thành công trong ngày Việt Nam phải đạt ít nhất 50.000đ.
-    # deposited_today() tự đổi ngày tại 00:00, vì vậy điều kiện được reset mỗi ngày.
-    daily_deposit = deposited_today(uid)
-    if daily_deposit < 50000:
-        remaining_deposit = 50000 - daily_deposit
-        return await msg_obj.reply_text(
-            f'{ce("🔐")} <b>CHƯA ĐỦ ĐIỀU KIỆN RÚT TIỀN HÔM NAY</b>\n\n'
-            f'{ce("💳")} Bạn cần nạp thành công tổng cộng ít nhất <b>50.000đ trong ngày hôm nay</b>.\n'
-            f'{ce("📥")} Đã nạp hôm nay: <code>{fmt_money(daily_deposit)}đ</code>\n'
-            f'{ce("📌")} Cần nạp thêm: <code>{fmt_money(remaining_deposit)}đ</code>\n'
-            f'{ce("🕛")} Điều kiện tự đặt lại lúc <b>00:00</b> mỗi ngày.',
-            parse_mode=ParseMode.HTML)
     if not args:
         return await show_withdraw_methods(msg_obj)
     selected_id = ctx.user_data.get("withdraw_payout_id")
@@ -4661,13 +4695,17 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         while request_code in used_codes:
             request_code = f"SHIN{random.randint(0, 99999):05d}"
         ins = query(
-            "INSERT INTO withdraw_history (user_id, amount, status, time, request_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (uid, amount, 'pending', now_str, request_code)
+            "INSERT INTO withdraw_history (user_id, amount, status, time, request_code, method, bank, stk, acc_name, qr_file_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (uid, amount, 'pending', now_str, request_code, str(method), str(bank or ''),
+             re.sub(r"\s+", "", str(stk or "")), str(name or ''), payout_qr_file_id)
         )
         withdraw_id = int(ins[0][0]) if ins else 0
         # Tạo mã nội dung chuyển khoản gồm 3 từ ngẫu nhiên, gắn với QR của người nhận tiền.
         memo_words = random.sample(["MAY", "LOC", "PHAT", "AN", "TAM", "KIM", "SONG", "VUI", "SEN", "LONG", "MINH", "THINH"], 3)
         transfer_memo = " ".join(memo_words)
+        if withdraw_id:
+            query("UPDATE withdraw_history SET memo=%s WHERE id=%s", (transfer_memo, withdraw_id))
         keyboard = InlineKeyboardMarkup([[
             btn("Duyệt", "✅", callback_data=f"ok_{uid}_{amount}"),
             btn("Từ chối", "❌", callback_data=f"no_{uid}_{amount}")
@@ -5038,7 +5076,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_reply = update.effective_message
     key = re.sub(r'^[^\w]+', '', txt).strip()
 
-    if update.effective_chat.type == "private" and re.fullmatch(r'JAV88-[A-Z0-9]+(?:-[A-Z0-9]+)?', txt.strip().upper()):
+    if update.effective_chat.type == "private" and re.fullmatch(r'XOCLO88-[A-Z0-9]+(?:-[A-Z0-9]+)?', txt.strip().upper()):
         code_in = txt.strip().upper()
         if await redeem_giftcode(update, uid, code_in):
             return
@@ -5067,7 +5105,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("Nhận thưởng", "🎉", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
             [btn("Tích lũy nạp", "💎", callback_data="acc_tich_luy")],
-            [btn("Hỗ trợ", "🆘", url="https://t.me/cskhjav88")]
+            [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
         ])
 
         msg = (
@@ -5163,7 +5201,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("Mời đệ tử", "🧑‍🤝‍🧑", callback_data="ev_moi_de_tu")]
         ])
         return await user_reply.reply_text(
-            f'{ce("🎁")} <b>TRUNG TÂM EVENT JAV88</b>\nChọn chương trình bạn muốn xem hoặc nhận thưởng:',
+            f'{ce("🎁")} <b>TRUNG TÂM EVENT XOCLO88</b>\nChọn chương trình bạn muốn xem hoặc nhận thưởng:',
             reply_markup=kb, parse_mode=ParseMode.HTML)
 
     if key == "LỆNH":
@@ -6797,6 +6835,8 @@ async def tx3d_api_bet(request):
         return _tx3d_json({"err": "Không tìm thấy tài khoản"})
     if (info[1] or info[2]) and not is_admin:
         return _tx3d_json({"err": "Tài khoản của bạn đã bị khóa"})
+    if not is_admin and not await asyncio.to_thread(has_bank_linked, uid):
+        return _tx3d_json({"err": "Bạn cần liên kết ngân hàng (/lienket) trước khi chơi"})
     async with _tx3d_lock():
         G = TX3D
         if G.phase != "bet" or time.time() >= G.phase_end - 0.25:
@@ -7098,6 +7138,8 @@ def tx3d_entry_view(uid, private=True, back=True):
         return f'{ce("⚙️")} Game Tài Xỉu 3D đang bảo trì!', InlineKeyboardMarkup(rows_back) if rows_back else None
     if is_game_banned(uid, TX3D_GAME_ID) and uid not in ADMIN_IDS:
         return f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', InlineKeyboardMarkup(rows_back) if rows_back else None
+    if not has_bank_linked(uid):
+        return BANK_LINK_REQUIRED_MSG, InlineKeyboardMarkup(rows_back) if rows_back else None
     kb = tx3d_play_kb(private)
     if kb is None:
         return (GAME_RULES["tx3d"] + f'\n\n{ce("⚠️")} Miniapp chưa cấu hình địa chỉ (biến MINIAPP_URL hoặc domain Railway).',
@@ -7440,7 +7482,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d.startswith("dep_"):
         if d == "dep_support":
             await q.answer()
-            return await q.message.reply_text(f'{ce("🔔")} <b>HỖ TRỢ NẠP TIỀN</b>\n\nVui lòng liên hệ CSKH JAV: @cskhjav88\nHoặc dùng lệnh <code>/nap [số_tiền]</code> để tạo QR.', parse_mode=ParseMode.HTML)
+            return await q.message.reply_text(f'{ce("🔔")} <b>HỖ TRỢ NẠP TIỀN</b>\n\nVui lòng liên hệ CSKH: @dgfrutil\nHoặc dùng lệnh <code>/nap [số_tiền]</code> để tạo QR.', parse_mode=ParseMode.HTML)
         try:
             await q.answer()
             amount = int(d.split("_")[1])
@@ -9885,6 +9927,92 @@ async def lsnaptatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
+_BANK_CODE_ALIASES = {
+    "MB": "MB", "MBBANK": "MB", "VIETCOMBANK": "VCB", "VCB": "VCB",
+    "TECHCOMBANK": "TCB", "TCB": "TCB", "BIDV": "BIDV",
+    "VIETINBANK": "CTG", "CTG": "CTG", "ACB": "ACB", "SACOMBANK": "STB",
+    "STB": "STB", "VPBANK": "VPB", "VPB": "VPB", "TPBANK": "TPB",
+    "TPB": "TPB", "AGRIBANK": "AGRIBANK", "VIB": "VIB", "SHB": "SHB",
+    "MSB": "MSB", "LPBANK": "LPB", "OCB": "OCB", "HDBANK": "HDB"
+}
+
+@admin_only
+async def lsrut_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/lsrut [ID] [số_lượng] - lịch sử rút kèm đầy đủ thông tin người rút và mã QR."""
+    msg = update.effective_message
+    target, limit = None, 10
+    for a in (ctx.args or []):
+        a = a.strip()
+        if not a.isdigit():
+            continue
+        if len(a) <= 3 and int(a) <= 50:
+            limit = max(1, int(a))
+        else:
+            target = int(a)
+    sql = ("SELECT w.id, w.user_id, w.amount, w.status, w.time, w.request_code, w.admin_id, w.admin_note, "
+           "COALESCE(w.method,''), COALESCE(w.bank,''), COALESCE(w.stk,''), COALESCE(w.acc_name,''), w.qr_file_id, w.memo, "
+           "u.bank, u.stk, u.name FROM withdraw_history w LEFT JOIN users u ON u.user_id=w.user_id ")
+    if target:
+        rows = query(sql + "WHERE w.user_id=%s ORDER BY w.id DESC LIMIT %s", (target, limit)) or []
+    else:
+        rows = query(sql + "ORDER BY w.id DESC LIMIT %s", (limit,)) or []
+    if not rows:
+        return await msg.reply_text("Chưa có lịch sử rút.")
+    status_txt = {"pending": "⏳ Chờ duyệt", "success": "✅ Đã duyệt", "rejected": "❌ Từ chối"}
+    for (wid, uid_, amount, status, time_, code, admin_id, admin_note, method, bank, stk, acc_name,
+         qr_fid, memo, u_bank, u_stk, u_name) in rows:
+        # Bản ghi cũ chưa lưu snapshot -> dùng thông tin hiện tại của user.
+        legacy = not (stk or bank)
+        if legacy:
+            bank, stk, acc_name, method = (u_bank or ''), (u_stk or ''), (u_name or ''), (method or 'BANKING')
+        method = (method or 'BANKING').upper()
+        amount = int(amount or 0)
+        lines = [
+            f'{ce("🧾")} <b>LỊCH SỬ RÚT #{wid}</b>',
+            '━━━━━━━━━━━━━━━━━━━━━',
+            f'{ce("🔖")} <b>Mã yêu cầu:</b> <code>{html.escape(str(code or "-"))}</code>',
+            f'{ce("👥")} <b>ID người rút:</b> <code>{uid_}</code>',
+            f'{ce("💰")} <b>Số tiền:</b> <code>{fmt_money(amount)}đ</code>',
+            f'{ce("💳")} <b>Phương thức:</b> <code>{html.escape(method)}</code>',
+            f'{ce("🏦")} <b>Ngân hàng:</b> <code>{html.escape(bank or "-")}</code>',
+            f'{ce("🔢")} <b>STK/SĐT:</b> <code>{html.escape(stk or "-")}</code>',
+            f'{ce("👤")} <b>Chủ TK:</b> <code>{html.escape(acc_name or "-")}</code>',
+        ]
+        if memo:
+            lines.append(f'{ce("📝")} <b>Nội dung CK:</b> <code>{html.escape(memo)}</code>')
+        lines += [
+            f'{ce("📌")} <b>Trạng thái:</b> {status_txt.get(status, html.escape(str(status)))}',
+            f'{ce("⏰")} <b>Thời gian:</b> <code>{html.escape(str(time_ or "-"))}</code>',
+        ]
+        if admin_id:
+            lines.append(f'{ce("🛡")} <b>Admin xử lý:</b> <code>{admin_id}</code>')
+        if admin_note:
+            lines.append(f'{ce("🗒")} <b>Ghi chú:</b> {html.escape(str(admin_note))}')
+        if legacy:
+            lines.append('<i>(Bản ghi cũ: thông tin lấy từ tài khoản liên kết hiện tại)</i>')
+        text = "\n".join(lines)
+        kb = None
+        if status == "pending":
+            kb = InlineKeyboardMarkup([[
+                btn("Duyệt", "✅", callback_data=f"ok_{uid_}_{amount}"),
+                btn("Từ chối", "❌", callback_data=f"no_{uid_}_{amount}")]])
+        sent = False
+        try:
+            if method == "BANKING" and stk:
+                key = re.sub(r"[^A-Z0-9]", "", str(bank).upper())
+                code_b = _BANK_CODE_ALIASES.get(key, key)
+                qr_bank = _BANK_BIN.get(code_b) or code_b
+                qr = make_local_qr(amount=amount, content=memo or str(code or ""), bank_id=qr_bank, account_no=stk)
+                await msg.reply_photo(photo=qr, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                sent = True
+            elif qr_fid:
+                await msg.reply_photo(photo=qr_fid, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                sent = True
+        except Exception as e:
+            print(f"lsrut gửi QR lỗi (#{wid}): {e}")
+        if not sent:
+            await msg.reply_text(text + "\n\n⚠️ Không có QR cho giao dịch này.", reply_markup=kb, parse_mode=ParseMode.HTML)
+
 @admin_only
 async def lsruttatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows = query("SELECT id,user_id,amount,status,time FROM withdraw_history ORDER BY id DESC LIMIT 50") or []
@@ -10592,6 +10720,7 @@ _ADM_CATS = [
         ("run", "dsrut", "Rút đang chờ duyệt", "dsrut", None, None),
         ("run", "lsnaptatca", "50 lịch sử nạp mới nhất", "lsnaptatca", None, None),
         ("run", "lsruttatca", "50 lịch sử rút mới nhất", "lsruttatca", None, None),
+        ("use", "lsrut", "Lịch sử rút kèm thông tin + QR", "x", "/lsrut [ID] [số lượng]", "/lsrut 123456789 5"),
         ("run", "soduall", "Số dư của tất cả user", "soduall", None, None),
         ("run", "hisall", "50 giao dịch gần nhất toàn hệ thống", "hisall", None, None),
         ("use", "naptien", "Nạp tiền tay cho user", "x", "/naptien [ID] [số tiền]", "/naptien 123456789 100000"),
@@ -10626,10 +10755,10 @@ _ADM_CATS = [
         ("use", "taocode", "Tạo code thường", "x", "/taocode [số tiền] [lượt dùng]", "/taocode 10000 50"),
         ("use", "taocodeall", "Tạo nhiều code 1 lượt", "x", "/taocodeall [số tiền] [số lượng]", "/taocodeall 5000 20"),
         ("use", "xoacode", "Xoá code thường", "x", "/xoacode [mã]", "/xoacode ABC12345"),
-        ("use", "xoagift", "Xoá giftcode", "x", "/xoagift [mã]", "/xoagift JAV88-TANTHU-XXXXXXX"),
+        ("use", "xoagift", "Xoá giftcode", "x", "/xoagift [mã]", "/xoagift XOCLO88-TANTHU-XXXXXXX"),
         ("run", "dsnaphomnay", "Danh sách người đã nạp thành công hôm nay", "dsnaphomnay", None, None),
         ("use", "tangcodenap", "Tặng code thủ công cho người đã nạp", "x", "/tangcodenap [giá trị] [vòng cược] [hạn] [homnay|all|id1,id2] [nạp tối thiểu]", "/tangcodenap 20k 1 1n homnay"),
-        ("use", "yccode", "Thêm / gỡ yêu cầu nhập code (nạp trong ngày, tổng nạp)", "x", "/yccode [mã] nap|tongnap [số tiền] | off", "/yccode JAV88-TRIAN-ABC1234 nap 100k"),
+        ("use", "yccode", "Thêm / gỡ yêu cầu nhập code (nạp trong ngày, tổng nạp)", "x", "/yccode [mã] nap|tongnap [số tiền] | off", "/yccode XOCLO88-TRIAN-ABC1234 nap 100k"),
     ]),
     ("tk", "📊", "THỐNG KÊ & XUẤT FILE", "Thống kê hệ thống và xuất file Excel đẹp nhiều sheet.", [
         ("run", "thongke", "Bảng thống kê hôm nay / tháng / tổng", "thongke", None, None),
@@ -10663,7 +10792,7 @@ _ADM_CATS.append((
         ("use", "resetall", "Lệnh reset toàn bộ số dư (bí danh)", "x", "/resetall", "/resetall"),
         ("use", "xoalsall", "Xoá toàn bộ lịch sử", "x", "/xoalsall", "/xoalsall"),
         ("use", "xoals", "Xoá lịch sử một user", "x", "/xoals [ID]", "/xoals 123456789"),
-        ("use", "setname", "Đổi tên bot", "x", "/setname [tên mới]", "/setname JAV88"),
+        ("use", "setname", "Đổi tên bot", "x", "/setname [tên mới]", "/setname XOCLO88"),
         ("use", "kmnapvc", "Tặng khuyến mãi theo vòng cược", "x", "/kmnapvc [ID] [số tiền]", "/kmnapvc 123456789 20000"),
         ("use", "lsnap", "Lịch sử nạp của user", "x", "/lsnap [ID]", "/lsnap 123456789"),
         ("use", "lsrut", "Lịch sử rút của user", "x", "/lsrut [ID]", "/lsrut 123456789"),
@@ -11114,7 +11243,7 @@ def _adm_runner(key):
         "baotri": baotri_cmd, "baotriht": baotri_he_thong_cmd, "trangthai": trangthai_cmd,
         "tatroom": tatroom_cmd, "moroom": moroom_cmd, "trangthairoom": trangthairoom_cmd,
         "all": all_user, "dsban": dsban_cmd, "topsodu": topsodu_cmd, "topcuoc": topcuoc_cmd,
-        "dsnap": dsnap_cmd, "dsrut": dsrut_cmd, "lsnaptatca": lsnaptatca_cmd, "lsruttatca": lsruttatca_cmd,
+        "dsnap": dsnap_cmd, "dsrut": dsrut_cmd, "lsnaptatca": lsnaptatca_cmd, "lsruttatca": lsruttatca_cmd, "lsrut": lsrut_cmd,
         "soduall": soduall_cmd, "hisall": history_all_admin, "dskm": dskm_cmd, "kmgio": kmgio_cmd,
         "homnay": homnay_cmd, "taogift": gift_flow_start, "dsgift": dsgift_cmd, "thongke": dashboard_cmd,
         "tong": tong_cmd, "xuatthongke": xuatthongke_cmd, "xuatnapall": xuatnapall_cmd,
@@ -11498,7 +11627,7 @@ async def yccode_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'<code>/yccode [mã] tongnap [số tiền]</code> — phải có <b>tổng nạp</b> đủ mức này\n'
         f'<code>/yccode [mã] off</code> — gỡ toàn bộ yêu cầu\n'
         f'<code>/yccode [mã]</code> — xem yêu cầu hiện tại\n\n'
-        f'{ce("💡")} VD: <code>/yccode JAV88-TRIAN-ABC1234 nap 100k</code>')
+        f'{ce("💡")} VD: <code>/yccode XOCLO88-TRIAN-ABC1234 nap 100k</code>')
     if not args:
         return await msg.reply_text(usage, parse_mode=ParseMode.HTML)
     code = args[0].strip().upper()
@@ -12054,6 +12183,7 @@ application.add_handler(CommandHandler("camtn", camtn_cmd))
 application.add_handler(CommandHandler("motn", motn_cmd))
 application.add_handler(CommandHandler("dsban", dsban_cmd))
 application.add_handler(CommandHandler("dsrut", dsrut_cmd))
+application.add_handler(CommandHandler("lsrut", lsrut_cmd))
 application.add_handler(CommandHandler("dsnap", dsnap_cmd))
 application.add_handler(CommandHandler("setsd", setsd_cmd))
 async def _early_top_cmd(update, ctx):
@@ -12077,7 +12207,7 @@ application.add_handler(CommandHandler("daythua", daythua_cmd), group=-3)
 application.add_handler(CommandHandler("top", _early_top_cmd), group=-3)
 application.add_handler(CommandHandler("checktt", _early_checktt_cmd), group=-3)
 # /top và /checktt đã được đăng ký ở group=-3 qua wrapper bên dưới
-# để chỉ xử lý một lần trên bot @Jav88sangamebot.
+# để chỉ xử lý một lần trên bot @Xoclo88sangamebot.
 application.add_handler(CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
 application.add_handler(CommandHandler("resetsystem", reset_system_cmd))
@@ -12111,7 +12241,7 @@ async def auto_settle_tich_luy_loop(bot):
 async def main():
     global _bot_instance
     await application.initialize()
-    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @Jav88sangamebot.
+    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @Xoclo88sangamebot.
     _identity = await application.bot.get_me()
     if (_identity.username or "").lower() != BOT_USERNAME.lower():
         raise RuntimeError(
