@@ -32,10 +32,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằng biến môi trường; không hardcode khóa bí mật
 
 ADMIN_IDS = [5633649201, 7884394252]
-BOT_USERNAME = "Xoclo88sangamebot"
+BOT_USERNAME = "xoclo88dtbot"
 SESSION_HISTORY_GROUP_ID = -1004491701518
 SESSION_HISTORY_URL = "https://t.me/lspxoclo88"
-ROOM_LINK = "https://t.me/xoclo88sanhu"
+ROOM_LINK = "https://t.me/hocviencbm"
 MIN_WITHDRAW = 50000
 MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
 LOG_GROUP_ID = -1004375247819
@@ -12207,7 +12207,7 @@ application.add_handler(CommandHandler("daythua", daythua_cmd), group=-3)
 application.add_handler(CommandHandler("top", _early_top_cmd), group=-3)
 application.add_handler(CommandHandler("checktt", _early_checktt_cmd), group=-3)
 # /top và /checktt đã được đăng ký ở group=-3 qua wrapper bên dưới
-# để chỉ xử lý một lần trên bot @Xoclo88sangamebot.
+# để chỉ xử lý một lần trên bot @xoclo88dtbot.
 application.add_handler(CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
 application.add_handler(CommandHandler("resetsystem", reset_system_cmd))
@@ -12241,7 +12241,7 @@ async def auto_settle_tich_luy_loop(bot):
 async def main():
     global _bot_instance
     await application.initialize()
-    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @Xoclo88sangamebot.
+    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @xoclo88dtbot.
     _identity = await application.bot.get_me()
     if (_identity.username or "").lower() != BOT_USERNAME.lower():
         raise RuntimeError(
