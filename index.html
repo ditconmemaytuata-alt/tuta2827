@@ -263,6 +263,32 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 .die{display:block;padding:0;width:calc(var(--c)*.3);height:calc(var(--c)*.3);border-radius:20%}.die svg{display:block;width:100%;height:100%}
 #potadd{margin-left:8px;font-size:10px;font-weight:800;color:#9dffb4}
 #pop b{font-size:clamp(30px,11vw,52px)}
+/* ===== v4: nền cô gái full màn hình, bát + bàn tay, chớp sáng kết quả ===== */
+#bg{display:none}
+#girl{inset:0;top:0;bottom:auto;height:100%;background:var(--girl) center top/cover no-repeat;-webkit-mask-image:none;mask-image:none;opacity:1;transform-origin:50% 50%;animation:sway 8s ease-in-out infinite}
+#girl::before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,#14060dcc 0,#14060d55 20%,#14060d00 40%,#14060d00 58%,#14060d99 100%)}
+#mini{z-index:6;pointer-events:none}
+#core.cvr #mini{color:#4a2a0a;text-shadow:0 1px 0 #fff9}
+#bowl{z-index:5}
+#hand{position:absolute;right:-18px;bottom:-18px;width:38px;height:38px;z-index:9;display:none;color:#ffe9a6}
+#hand svg{width:20px;height:20px}
+#core.cvr #hand{display:grid;animation:hnd 1.1s ease-in-out infinite}
+@keyframes hnd{50%{transform:translateY(-4px) scale(1.1)}}
+#hand.sq{color:#4a2400;background:var(--gb);box-shadow:0 0 0 2px #fff3b0,0 0 18px #ffb300,0 4px 10px #000a}
+#hand.wh{color:#fff;background:radial-gradient(circle at 35% 30%,#ffffff66,#ffffff22);box-shadow:0 0 0 2px #fff,0 0 22px #fff,0 4px 10px #000a;animation:none}
+#hand.wh svg{filter:drop-shadow(0 0 4px #fff)}
+#core{--rc:#fff6c9}
+#core[data-w=tai]{--rc:#ffd05a}#core[data-w=xiu]{--rc:#ff6b86}#core[data-w=bao]{--rc:#6fd3ff}
+#dice.res .die{animation:land .6s cubic-bezier(.3,1.7,.5,1) both,dblink .5s ease-in-out .6s infinite alternate}
+@keyframes dblink{0%{filter:brightness(1) drop-shadow(0 0 2px var(--rc));scale:1}100%{filter:brightness(1.6) saturate(1.3) drop-shadow(0 0 12px var(--rc)) drop-shadow(0 0 26px var(--rc));scale:1.15}}
+#core.glowres{animation:cglow .45s ease-in-out infinite alternate}
+@keyframes cglow{0%{box-shadow:0 0 0 3px #1a0a05,0 0 0 5px var(--rc),0 0 18px var(--rc),inset 0 0 22px #000}100%{box-shadow:0 0 0 3px #1a0a05,0 0 0 6px #fff,0 0 50px 10px var(--rc),0 0 95px 20px var(--rc),inset 0 0 28px #000}}
+#core.glowres::before{animation-duration:1s;filter:drop-shadow(0 0 8px var(--rc))}
+#tot.show{animation:tblink .45s ease-in-out infinite alternate}
+@keyframes tblink{to{box-shadow:0 0 0 2px #fff,0 0 22px 6px var(--rc),0 4px 8px #000b;scale:1.2}}
+.side.win{animation:wn .45s ease-in-out infinite alternate}
+#pop.on b{animation:pi .45s cubic-bezier(.2,1.6,.4,1),pbl .5s ease-in-out .45s infinite alternate}
+@keyframes pbl{to{filter:brightness(1.5) drop-shadow(0 0 14px #ffd05a)}}
 </style>
 </head>
 <body>
@@ -280,7 +306,7 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
   <div id="tbl">
    <div id="num"></div>
    <div class="side" id="sT"><h2>TÀI</h2><div class="pool" id="pt">0</div><button class="cb" id="bt">CƯỢC</button><div class="pp" id="ct"></div></div>
-   <div id="core"><div id="rays"></div><div id="cd">--</div><div id="dice"></div><div id="mini"></div><div id="tot"></div></div>
+   <div id="core"><div id="rays"></div><div id="cd">--</div><div id="dice"></div><div id="mini"></div><div id="bowl"></div><button class="ib" id="hand" data-ic="hand" aria-label="Nặn bát"></button><div id="tot"></div></div>
    <div class="side" id="sX"><h2>XỈU</h2><div class="pool" id="px">0</div><button class="cb" id="bx">CƯỢC</button><div class="pp" id="cx"></div></div>
    <div id="beads"></div>
   </div>
@@ -294,9 +320,10 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 </div>
 <script>
 window.onerror=m=>{const e=document.getElementById('msg');if(e)e.textContent='Lỗi: '+m};
-const tg=(window.Telegram&&Telegram.WebApp)||{};try{tg.ready();tg.expand()}catch(e){}
+const tg=(window.Telegram&&Telegram.WebApp)||{};try{tg.ready();tg.expand();tg.disableVerticalSwipes&&tg.disableVerticalSwipes()}catch(e){}
 const $=s=>document.querySelector(s),f=n=>String(Math.round(+n||0)).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
 const LOCK=10; /* còn <= 10s thì ngừng nhận cược */
+const AUTO=5; /* còn <= 5s mà chưa mở bát thì tự mở */
 const PIPS={1:[4],2:[0,8],3:[0,4,8],4:[0,2,6,8],5:[0,2,4,6,8],6:[0,2,3,5,6,8]};
 const CH=[[1e3],[1e4],[5e4],[1e5],[5e5],[1e6],[5e6],[5e7]];
 const lab=v=>v>=1e6?v/1e6+'M':v/1e3+'K';
@@ -321,8 +348,29 @@ const IC={trophy:sv('<path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H5.5A2.5 2.5 0 0 0 8 10
  note:sv('<path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/>'),
  crown:'<svg viewBox="0 0 24 24" fill="url(#gg)" stroke="#7a4a00" stroke-width=".8" stroke-linejoin="round"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>',
  user:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg>'};
+IC.hand=sv('<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>');
 document.querySelectorAll('[data-ic]').forEach(e=>e.innerHTML=IC[e.dataset.ic]);
 const core=$('#core'),K=d=>({Tài:'T',Xỉu:'X',Bão:'B'}[nm(d)]),sideId=s=>s==='tai'?'#bt':'#bx';
+
+/* ===== bát + bàn tay nặn bát =====
+   chạm ✋ lần 1: vào chế độ nặn (kéo bát ra khỏi đĩa) · chạm lần 2 (✋ trắng): không nặn, bát tự bay ra
+   kết quả chỉ chớp sáng sau khi bát đã rời đĩa */
+let bowlSt='none',handMode=0,bd={on:0,x:0,y:0,dx:0,dy:0};const bowl=$('#bowl'),hand=$('#hand');
+function updHand(){hand.className='ib'+(handMode===1?' sq':handMode===2?' wh':'');bowl.classList.toggle('can',handMode===1&&bowlSt==='on')}
+function placeBowl(){if(bowlSt!=='none')return;bowlSt='on';handMode=0;bowl.style.cssText='';bowl.className='drop';core.classList.add('cvr');updHand();setTimeout(()=>{if(bowlSt==='on')bowl.classList.remove('drop')},650);window.SFX&&SFX.thump()}
+function resetBowl(){bowlSt='none';handMode=0;bd.on=0;bowl.style.cssText='';bowl.className='';core.classList.remove('cvr','glowres');$('#dice').classList.remove('land','res');hand.className='ib'}
+function dropBowl(auto,dx,dy){if(bowlSt!=='on')return;bowlSt='off';bd.on=0;core.classList.remove('cvr');
+ bowl.classList.remove('can','drag','drop');bowl.classList.add('gone');
+ bowl.style.transform=auto?'translate(0,-170%) rotate(-28deg) scale(1.15)':`translate(${dx*2.4}px,${dy*2.4}px) rotate(${dx*.7}deg)`;
+ hap('heavy');window.SFX&&SFX.slash();reveal()}
+hand.onclick=e=>{e.stopPropagation();if(bowlSt!=='on')return;hap('light');window.SFX&&SFX.click();
+ if(handMode===0){handMode=1;updHand()}else if(handMode===1){handMode=2;updHand();dropBowl(true)}};
+bowl.addEventListener('pointerdown',e=>{if(bowlSt!=='on'||handMode!==1)return;bd={on:1,x:e.clientX,y:e.clientY,dx:0,dy:0};try{bowl.setPointerCapture(e.pointerId)}catch(_){}bowl.classList.add('drag');hap('light');e.preventDefault()});
+bowl.addEventListener('pointermove',e=>{if(!bd.on)return;bd.dx=e.clientX-bd.x;bd.dy=e.clientY-bd.y;
+ bowl.style.transform=`translate(${bd.dx}px,${bd.dy}px) rotate(${bd.dx*.25}deg)`;e.preventDefault()});
+const endDrag=()=>{if(!bd.on)return;bd.on=0;bowl.classList.remove('drag');
+ if(Math.hypot(bd.dx,bd.dy)>core.offsetWidth*.85)dropBowl(false,bd.dx,bd.dy);else{bowl.style.transform='';hap('light')}};
+bowl.addEventListener('pointerup',endDrag);bowl.addEventListener('pointercancel',endDrag);
 let HX=[];try{HX=JSON.parse(localStorage.getItem('hx'))||[]}catch(e){}
 
 /* ===== đặt cược (bảng tiền chỉ hiện khi bấm CƯỢC) ===== */
@@ -383,7 +431,7 @@ function fx(R,live){
  if(R.jp&&R.jp.total>0)setTimeout(()=>showJP(R.jp),live?1500:400);
  const stake=Object.values(R.my||{}).reduce((a,b)=>a+b,0),net=R.net||0,d=R.dice;
  hold={win:R.win||null,until:Date.now()+(live?4600:6500)};
- if(live){const dc=$('#dice');dc.classList.remove('land');void dc.offsetWidth;dc.classList.add('land');window.SFX&&SFX.thump();clearTimeout(fxT);fxT=setTimeout(()=>dc.classList.remove('land'),1200)}
+ if(live){const dc=$('#dice');dc.classList.remove('land','res');void dc.offsetWidth;dc.classList.add('res');core.dataset.w=R.win||'bao';core.classList.remove('glowres');void core.offsetWidth;core.classList.add('glowres');window.SFX&&(SFX.thump(),SFX.sparkle&&SFX.sparkle());burst(90,'win');setTimeout(()=>burst(60,'win'),450);setTimeout(()=>burst(50,'win'),950)}
  if(!stake)return;
  if(net>0){{const A=$('#app');A.classList.remove('gf');void A.offsetWidth;A.classList.add('gf')}stk={w:stk.w+1,l:0};window.SFX&&SFX.win()}else{stk={w:0,l:stk.l+1};window.SFX&&SFX.lose()}
  try{localStorage.setItem('stk',JSON.stringify(stk))}catch(e){}
@@ -396,7 +444,7 @@ function reveal(){if(opened||!S||S.phase!=='cover'||!S.dice)return;opened=true;h
 /* ===== render ===== */
 function render(){
  const k=S.id+S.phase,app=$('#app');
- if(S.id!==lastId){lastId=S.id;pend={s:null,a:0};$('#dice').classList.remove('land')}
+ if(S.id!==lastId){lastId=S.id;pend={s:null,a:0};resetBowl()}
  if(k!==key){if(S.phase==='cover'&&prevPh==='bet')shake();prevPh=S.phase;key=k;opened=false}
  deadline=(S._t||Date.now())+S.left*1000;app.dataset.ph=S.phase;
  $('#num').textContent='# '+S.id;$('#balv').textContent=f(S.bal);if(PB!==null&&S.bal>PB)pulseBal(true);PB=S.bal;$('#potadd').textContent=S.phase==='cover'&&S.pot_add>0?'+'+f(S.pot_add):'';
@@ -407,7 +455,7 @@ function render(){
  const wn=(S.phase==='cover'&&opened?S.win:null)||(Date.now()<hold.until?hold.win:null);
  $('#sT').classList.toggle('win',wn==='tai');$('#sX').classList.toggle('win',wn==='xiu');
  const sd=(S.dice||[0,0,0]).join();if(!shaking&&sd!==diceKey){diceKey=sd;setDice(S.dice||[0,0,0])}
- if(S.phase==='cover'&&!opened&&!shaking&&S.dice)reveal();
+ if(S.phase==='cover'&&!opened&&!shaking&&S.dice){if(secLeft()<=AUTO)bowlSt==='on'?dropBowl(true):(bowlSt==='none'&&(bowlSt='off',reveal()));else placeBowl()}
  const tot=$('#tot'),sh=S.phase==='cover'&&opened&&!shaking;tot.classList.toggle('show',sh);
  if(sh){tot.textContent=S.dice[0]+S.dice[1]+S.dice[2];tot.dataset.w=S.win||'bao'}
  $('#sw').textContent='DÂY THẮNG: '+stk.w;$('#sl').textContent='DÂY THUA: '+stk.l;
@@ -417,10 +465,10 @@ function render(){
  const sec=secLeft(),R=s=>{const st=Object.values(s.my||{}).reduce((a,b)=>a+b,0);return `${s.dice.join(' - ')} = ${s.dice[0]+s.dice[1]+s.dice[2]}, ${s.jp?'NỔ HŨ':nm(s.dice)}. `+(!st?'':s.net>0?'Thắng +'+f(s.net+st):s.net<0?'Thua '+f(s.net):'Hoàn tiền')};
  if(S.mt&&S.phase==='bet'){$('#msg').textContent='Game đang bảo trì - tạm dừng đặt cược';return}
  $('#msg').textContent=S.phase==='bet'?(S.last&&Date.now()<hold.until?`Phiên #${S.last.id}: `+R(S.last):closed()?'Đã đóng cược - đang chờ mở kết quả':'Bấm CƯỢC ở bên Tài hoặc Xỉu để đặt tiền'):
-  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:'Đang lắc xúc xắc...'):''}
+  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:(bowlSt==='on'?(handMode===1?'Kéo bát ra khỏi đĩa để mở · còn '+sec+'s':'Chạm ✋ để nặn bát, chạm lần nữa để mở ngay'):'Đang lắc xúc xắc...')):''}
 async function tick(){try{const r=await api('/api/state');if(!r.err){S=r;S._t=Date.now();render()}else $('#msg').textContent=r.msg||'Hãy mở từ nút trong bot Telegram'}catch(e){}}
 setInterval(tick,700);tick();
-setInterval(()=>{if(!S)return;const t=secLeft(),c=$('#core'),cd=$('#cd'),hot=S.phase==='bet'&&t>0&&t<=LOCK,p=n=>String(n).padStart(2,'0');
+setInterval(()=>{if(!S)return;if(S.phase==='cover'&&bowlSt==='on'&&secLeft()<=AUTO)dropBowl(true);const t=secLeft(),c=$('#core'),cd=$('#cd'),hot=S.phase==='bet'&&t>0&&t<=LOCK,p=n=>String(n).padStart(2,'0');
  cd.innerHTML=S.phase==='bet'?t+`<small>${hot?'ĐÓNG CƯỢC':'NHẬN CƯỢC'}</small>`:'';
  $('#mini').textContent=S.phase==='cover'?p(Math.floor(t/60))+':'+p(t%60):'';
  c.classList.toggle('hot',hot);$('#app').classList.toggle('lock',hot);cd.classList.toggle('pulse',S.phase==='bet'&&t>0&&t<=5);
@@ -435,7 +483,7 @@ function poolFx(){if(PV.id!==S.id){PV={id:S.id,tai:S.tot.tai[0],xiu:S.tot.xiu[0]
 function shake(){
  shaking=true;closeMd();core.classList.add('shk');window.SFX&&SFX.rattle(2);hap('heavy');
  const iv=setInterval(()=>setDice([0,0,0].map(()=>1+Math.floor(Math.random()*6))),90);
- setTimeout(()=>{clearInterval(iv);shaking=false;core.classList.remove('shk');setDice(S.dice||[0,0,0]);diceKey=(S.dice||[0,0,0]).join();window.SFX&&SFX.thump();reveal()},2000)}
+ setTimeout(()=>{clearInterval(iv);shaking=false;core.classList.remove('shk');setDice(S.dice||[0,0,0]);diceKey=(S.dice||[0,0,0]).join();window.SFX&&SFX.thump();placeBowl()},2000)}
 
 /* ===== hạt vàng (chỉ dùng khi NỔ HŨ) ===== */
 const cv=$('#fx'),g=cv.getContext('2d');let P=[],run=false;
@@ -465,7 +513,7 @@ $('#jp').onclick=hideJP;
 /* ===== Nhạc nền chill + âm thanh hiệu ứng (Web Audio, không cần file) ===== */
 (()=>{
 const AC=window.AudioContext||window.webkitAudioContext;if(!AC){$('#mus').style.display='none';return}
-let ctx,master,sg,noise,on=true,started=false,step=0,next=0;
+let ctx,master,sg,noise,on=true,started=false,step=0,next=0,au=null,PL=[],pi=0,errs=0;
 const hz=m=>440*Math.pow(2,(m-69)/12),BPM=68,B=60/BPM;
 const CHD=[[57,60,64,67,71],[53,57,60,64,67],[48,55,59,64,67],[55,59,62,64,69]],bass=[45,41,36,43];
 function tone(t,m,d,type,g,lp,dst){const o=ctx.createOscillator(),v=ctx.createGain(),f=ctx.createBiquadFilter();
@@ -481,12 +529,17 @@ function start(){if(started)return;started=true;ctx=new AC();
  noise=ctx.createBuffer(1,ctx.sampleRate,ctx.sampleRate);const nd=noise.getChannelData(0);for(let i=0;i<nd.length;i++)nd[i]=Math.random()*2-1;
  const d=ctx.createDelay(1);d.delayTime.value=B*.75;const fb=ctx.createGain();fb.gain.value=.35;
  master.connect(ctx.destination);master.connect(d);d.connect(fb);fb.connect(d);d.connect(ctx.destination);sg.connect(ctx.destination);
- next=ctx.currentTime+.1;sched();setInterval(sched,400);if(on)master.gain.linearRampToValueAtTime(.8,ctx.currentTime+3)}
+ tracksP.then(tr=>{if(tr.length)playFiles(tr);else{next=ctx.currentTime+.1;sched();setInterval(sched,400);if(on)master.gain.linearRampToValueAtTime(.8,ctx.currentTime+3)}})}
 function burst(t,f,g,len){const s=ctx.createBufferSource(),b=ctx.createBiquadFilter(),v=ctx.createGain();
  s.buffer=noise;b.type='bandpass';b.frequency.value=f;b.Q.value=2;
  v.gain.setValueAtTime(g,t);v.gain.exponentialRampToValueAtTime(.0001,t+len);
  s.connect(b);b.connect(v);v.connect(sg);s.start(t,Math.random()*.8);s.stop(t+len+.02)}
 const ok=()=>ctx&&on;
+/* playlist: cưới Luân được không → Thuyền hoa → Sơn thùy trùng mây → Tương tư nàng ca sĩ → lặp lại
+   (file mp3 đặt trong thư mục music/ cạnh main_9.py; chưa có file thì dùng nhạc nền synth cũ) */
+const tracksP=fetch('/api/music').then(r=>r.json()).then(j=>(j&&j.tracks)||[]).catch(()=>[]);
+function playNext(){pi=(pi+1)%PL.length;au.src=PL[pi];if(on)au.play().catch(()=>{})}
+function playFiles(tr){PL=tr;au=new Audio();au.preload='auto';au.volume=.6;au.onended=playNext;au.onerror=()=>{if(++errs<=PL.length*3)playNext()};au.src=PL[0];if(on)au.play().catch(()=>{})}
 window.SFX={
  rattle(d){if(!ok())return;const t=ctx.currentTime,n=Math.floor(d*26);
   for(let i=0;i<n;i++){const tt=t+i*d/n+Math.random()*.02;burst(tt,2200+Math.random()*3500,.5,.045);if(i%3==0)burst(tt,500+Math.random()*400,.35,.05)}},
@@ -500,6 +553,7 @@ window.SFX={
  lose(){if(!ok())return;const t=ctx.currentTime;tone(t,60,.5,'triangle',.18,1500,sg);tone(t+.18,55,.7,'triangle',.18,1200,sg)}
 };
 Object.assign(SFX,{
+ sparkle(){if(!ok())return;const t=ctx.currentTime;for(let i=0;i<9;i++)tone(t+i*.05,92+i*2,.35,'sine',.12,9000,sg)},
  thunder(){if(!ok())return;const t=ctx.currentTime,x=ctx.createBufferSource(),f=ctx.createBiquadFilter(),v=ctx.createGain();x.buffer=noise;x.loop=true;f.type='lowpass';f.frequency.setValueAtTime(1100,t);f.frequency.exponentialRampToValueAtTime(110,t+1.7);
   v.gain.setValueAtTime(.0001,t);v.gain.exponentialRampToValueAtTime(.9,t+.04);v.gain.exponentialRampToValueAtTime(.0001,t+1.9);x.connect(f);f.connect(v);v.connect(sg);x.start(t);x.stop(t+2);burst(t,5000,.6,.09)},
  roar(){if(!ok())return;const t=ctx.currentTime,o=ctx.createOscillator(),l=ctx.createOscillator(),lg=ctx.createGain(),f=ctx.createBiquadFilter(),v=ctx.createGain();
@@ -512,12 +566,13 @@ Object.assign(SFX,{
 });
 function set(v){on=v;$('#mus').classList.toggle('off',!v);try{localStorage.setItem('mus',v?1:0)}catch(e){}
  if(!started){if(v)start();return}
- ctx.resume();sg.gain.value=v?1:0;master.gain.cancelScheduledValues(ctx.currentTime);master.gain.linearRampToValueAtTime(v?.8:0,ctx.currentTime+(v?1:.4))}
+ ctx.resume();if(au){v?au.play().catch(()=>{}):au.pause()}sg.gain.value=v?1:0;master.gain.cancelScheduledValues(ctx.currentTime);master.gain.linearRampToValueAtTime(v?.8:0,ctx.currentTime+(v?1:.4))}
 try{if(localStorage.getItem('mus')==='0')on=false}catch(e){}
 $('#mus').classList.toggle('off',!on);
 $('#mus').onclick=e=>{e.stopPropagation();set(!on)};
-addEventListener('pointerdown',()=>{if(!started)start();else if(ctx.state==='suspended')ctx.resume()},{passive:true});
-document.addEventListener('visibilitychange',()=>{if(!ctx)return;document.hidden?ctx.suspend():ctx.resume()});
+addEventListener('pointerdown',()=>{if(!started)start();else if(ctx.state==='suspended')ctx.resume();if(au&&on&&au.paused)au.play().catch(()=>{})},{passive:true});
+document.addEventListener('visibilitychange',()=>{if(!ctx)return;if(document.hidden){ctx.suspend();au&&au.pause()}else{ctx.resume();au&&on&&au.play().catch(()=>{})}});
+setTimeout(()=>{try{if(on&&!started)start()}catch(e){}},400);
 })();
 
 
