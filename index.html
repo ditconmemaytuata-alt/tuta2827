@@ -270,13 +270,6 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 #mini{z-index:6;pointer-events:none}
 #core.cvr #mini{color:#4a2a0a;text-shadow:0 1px 0 #fff9}
 #bowl{z-index:5}
-#hand{position:absolute;right:-18px;bottom:-18px;width:38px;height:38px;z-index:9;display:none;color:#ffe9a6}
-#hand svg{width:20px;height:20px}
-#core.cvr #hand{display:grid;animation:hnd 1.1s ease-in-out infinite}
-@keyframes hnd{50%{transform:translateY(-4px) scale(1.1)}}
-#hand.sq{color:#4a2400;background:var(--gb);box-shadow:0 0 0 2px #fff3b0,0 0 18px #ffb300,0 4px 10px #000a}
-#hand.wh{color:#fff;background:radial-gradient(circle at 35% 30%,#ffffff66,#ffffff22);box-shadow:0 0 0 2px #fff,0 0 22px #fff,0 4px 10px #000a;animation:none}
-#hand.wh svg{filter:drop-shadow(0 0 4px #fff)}
 #core{--rc:#fff6c9}
 #core[data-w=tai]{--rc:#ffd05a}#core[data-w=xiu]{--rc:#ff6b86}#core[data-w=bao]{--rc:#6fd3ff}
 #dice.res .die{animation:land .6s cubic-bezier(.3,1.7,.5,1) both,dblink .5s ease-in-out .6s infinite alternate}
@@ -289,6 +282,38 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 .side.win{animation:wn .45s ease-in-out infinite alternate}
 #pop.on b{animation:pi .45s cubic-bezier(.2,1.6,.4,1),pbl .5s ease-in-out .45s infinite alternate}
 @keyframes pbl{to{filter:brightness(1.5) drop-shadow(0 0 14px #ffd05a)}}
+/* ===== v5: bàn tay ở mép phải bàn, nút đẹp hơn, chớp Tài/Xỉu ===== */
+#hand.ico.e{right:-11px;top:50%;width:40px;height:40px;opacity:.5;transition:opacity .2s}
+#hand svg{width:20px;height:20px}
+#hand.act{opacity:1}
+#hand.rdy{animation:hnd 1.1s ease-in-out infinite;box-shadow:0 0 0 2px #fff3b0,0 0 18px #ffb300,0 4px 10px #000a}
+@keyframes hnd{50%{transform:translateY(-4px) scale(1.12)}}
+#hand.red{color:#fff;background:radial-gradient(circle at 35% 30%,#ff8a8a,#d11a2a 60%,#6a0710);box-shadow:0 0 0 2px #ffd0d0,0 0 18px #ff2d2d,0 4px 10px #000a;animation:none}
+#hand.wh{color:#fff;background:radial-gradient(circle at 35% 30%,#ffffff99,#ffffff33);box-shadow:0 0 0 2px #fff,0 0 22px #fff,0 4px 10px #000a;animation:none}
+#hand.wh svg{filter:drop-shadow(0 0 4px #fff)}
+#core.idle #dice{display:none!important}
+#core.idle #cd{display:grid!important;font-size:calc(var(--c)*.36)}
+#core.idle #cd small{font-size:calc(var(--c)*.075)}
+.side.win h2{animation:hblink .36s ease-in-out infinite alternate}
+@keyframes hblink{0%{transform:scale(1);filter:brightness(1)}100%{transform:scale(1.24);filter:brightness(1.9) drop-shadow(0 0 12px #fff) drop-shadow(0 0 26px #ffb300)}}
+.side.win .pool{color:#fff;text-shadow:0 0 10px #ffd05a}
+.side.lose{opacity:.4;filter:saturate(.4);transition:opacity .3s}
+.ib{background:radial-gradient(circle at 32% 25%,#8a5a22,#2a1306 70%);box-shadow:0 0 0 1.5px #f3cf7a,0 0 0 3px #150803,0 4px 10px #000c,inset 0 1px 0 #ffe9a688,inset 0 -3px 6px #0008}
+.cb{height:34px;border-radius:17px;border:1.5px solid #fff1c0;letter-spacing:1.5px}
+#sT .cb{background:linear-gradient(#fff6bd,#f6c244 50%,#c8861a 52%,#f0b83a);color:#4a2400;text-shadow:0 1px 0 #fff9;box-shadow:0 3px 0 #7a4a08,0 6px 10px #000a,inset 0 1px 0 #fffc}
+#sX .cb{background:linear-gradient(#ff9aab,#e0304f 50%,#a80f2f 52%,#d32a4a);color:#fff;border-color:#ffd0d8;text-shadow:0 1px 2px #5a0618;box-shadow:0 3px 0 #5a0618,0 6px 10px #000a,inset 0 1px 0 #fff9}
+#panel{border:1.5px solid #f0c66aaa;background:linear-gradient(#2a1208ee,#0c0504f2);box-shadow:0 10px 26px #000d,0 0 20px #ffb30033,inset 0 1px 0 #ffe9a644}
+.chip{position:relative;overflow:hidden;height:38px;border-radius:19px;border:1.5px solid #fff3c4;color:#5a3300;font-weight:900;font-size:13.5px;letter-spacing:.3px;
+ background:linear-gradient(#fffdf2 0%,#fbe9b5 48%,#e9c06a 52%,#f6d98c 100%);box-shadow:0 3px 0 #9a6a1c,0 6px 10px #000a,inset 0 -3px 5px #b8862a55}
+.chip:nth-child(n+5){background:linear-gradient(#fff3f0 0%,#ffd2c2 48%,#e8896e 52%,#f5b49d 100%);color:#6a1a05;box-shadow:0 3px 0 #8a3a1c,0 6px 10px #000a,inset 0 -3px 5px #b8503a55}
+.chip::after{content:"";position:absolute;left:8%;right:8%;top:2px;height:38%;border-radius:20px;background:linear-gradient(#ffffffcc,#ffffff00);pointer-events:none}
+.bt{position:relative;overflow:hidden;height:42px;border:1.5px solid #fff1c0;border-radius:21px;letter-spacing:1px;font-weight:900;font-size:13px;text-shadow:0 1px 2px #0009;box-shadow:0 3px 0 #0008,0 6px 12px #000b,inset 0 0 0 1px #ffffff33}
+.bt::after{content:"";position:absolute;left:8%;right:8%;top:2px;height:42%;border-radius:20px;background:linear-gradient(#ffffff77,#ffffff00);pointer-events:none}
+.bt:active{transform:translateY(2px);box-shadow:0 1px 0 #0008,0 3px 8px #000b}
+#allin{background:linear-gradient(#ffe48a,#f0a92a 55%,#b86f10);color:#4a2400;text-shadow:0 1px 0 #fff8}
+#ok{background:linear-gradient(#b86bff,#6a28d8 55%,#3c0f94);color:#fff;font-size:15px;border-color:#e3ccff;animation:okp 1.6s ease-in-out infinite alternate}
+@keyframes okp{from{box-shadow:0 3px 0 #1c0650,0 0 12px #9a5cff88,0 6px 12px #000b}to{box-shadow:0 3px 0 #1c0650,0 0 28px #b98aff,0 6px 12px #000b}}
+#no{background:linear-gradient(#a0386a,#5a1038 55%,#34061f);color:#ffd6e6;border-color:#e8a6c4}
 </style>
 </head>
 <body>
@@ -303,10 +328,11 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
   <button class="ib ico b" data-md="rule" data-ic="help" aria-label="Thể lệ"></button>
   <button class="ib ico c" data-md="hist" data-ic="clock" aria-label="Lịch sử"></button>
   <button class="ib ico d" data-md="cau" data-ic="chart" aria-label="Soi cầu"></button>
+  <button class="ib ico e" id="hand" data-ic="hand" aria-label="Tung xúc xắc / nặn bát"></button>
   <div id="tbl">
    <div id="num"></div>
    <div class="side" id="sT"><h2>TÀI</h2><div class="pool" id="pt">0</div><button class="cb" id="bt">CƯỢC</button><div class="pp" id="ct"></div></div>
-   <div id="core"><div id="rays"></div><div id="cd">--</div><div id="dice"></div><div id="mini"></div><div id="bowl"></div><button class="ib" id="hand" data-ic="hand" aria-label="Nặn bát"></button><div id="tot"></div></div>
+   <div id="core"><div id="rays"></div><div id="cd">--</div><div id="dice"></div><div id="mini"></div><div id="bowl"></div><div id="tot"></div></div>
    <div class="side" id="sX"><h2>XỈU</h2><div class="pool" id="px">0</div><button class="cb" id="bx">CƯỢC</button><div class="pp" id="cx"></div></div>
    <div id="beads"></div>
   </div>
@@ -323,7 +349,7 @@ window.onerror=m=>{const e=document.getElementById('msg');if(e)e.textContent='L�
 const tg=(window.Telegram&&Telegram.WebApp)||{};try{tg.ready();tg.expand();tg.disableVerticalSwipes&&tg.disableVerticalSwipes()}catch(e){}
 const $=s=>document.querySelector(s),f=n=>String(Math.round(+n||0)).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
 const LOCK=10; /* còn <= 10s thì ngừng nhận cược */
-const AUTO=5; /* còn <= 5s mà chưa mở bát thì tự mở */
+const AUTO=4; /* còn <= 5s mà chưa mở bát thì tự mở */
 const PIPS={1:[4],2:[0,8],3:[0,4,8],4:[0,2,6,8],5:[0,2,4,6,8],6:[0,2,3,5,6,8]};
 const CH=[[1e3],[1e4],[5e4],[1e5],[5e5],[1e6],[5e6],[5e7]];
 const lab=v=>v>=1e6?v/1e6+'M':v/1e3+'K';
@@ -355,16 +381,22 @@ const core=$('#core'),K=d=>({Tài:'T',Xỉu:'X',Bão:'B'}[nm(d)]),sideId=s=>s===
 /* ===== bát + bàn tay nặn bát =====
    chạm ✋ lần 1: vào chế độ nặn (kéo bát ra khỏi đĩa) · chạm lần 2 (✋ trắng): không nặn, bát tự bay ra
    kết quả chỉ chớp sáng sau khi bát đã rời đĩa */
-let bowlSt='none',handMode=0,bd={on:0,x:0,y:0,dx:0,dy:0};const bowl=$('#bowl'),hand=$('#hand');
-function updHand(){hand.className='ib'+(handMode===1?' sq':handMode===2?' wh':'');bowl.classList.toggle('can',handMode===1&&bowlSt==='on')}
-function placeBowl(){if(bowlSt!=='none')return;bowlSt='on';handMode=0;bowl.style.cssText='';bowl.className='drop';core.classList.add('cvr');updHand();setTimeout(()=>{if(bowlSt==='on')bowl.classList.remove('drop')},650);window.SFX&&SFX.thump()}
-function resetBowl(){bowlSt='none';handMode=0;bd.on=0;bowl.style.cssText='';bowl.className='';core.classList.remove('cvr','glowres');$('#dice').classList.remove('land','res');hand.className='ib'}
+let bowlSt='none',handMode=0,bd={on:0,x:0,y:0,dx:0,dy:0};const bowl=$('#bowl'),hand=$('#hand'),AUTOROLL=11;
+/* ✋ ở mép phải bàn: chạm 1 lần → xúc xắc được tung (✋ chuyển ĐỎ) rồi úp bát, kéo bát ra khỏi đĩa để mở
+   chạm ✋ lần nữa (✋ TRẮNG) → bát tự bay ra · còn <= AUTOROLL giây mà chưa chạm thì tự tung */
+function updHand(){const a=bowlSt==='idle'||bowlSt==='rolling'||bowlSt==='on';
+ hand.className='ib ico e'+(a?' act':'')+(bowlSt==='idle'?' rdy':'')+(handMode===1?' red':handMode===2?' wh':'');
+ core.classList.toggle('idle',bowlSt==='idle');bowl.classList.toggle('can',handMode===1&&bowlSt==='on')}
+function armHand(){if(bowlSt!=='none')return;bowlSt='idle';handMode=0;updHand()}
+function startRoll(){if(bowlSt!=='idle'||!S||!S.dice)return;bowlSt='rolling';handMode=1;updHand();hap('medium');shake()}
+function placeBowl(){if(bowlSt==='on'||bowlSt==='off')return;bowlSt='on';bowl.style.cssText='';bowl.className='drop';core.classList.add('cvr');updHand();setTimeout(()=>{if(bowlSt==='on')bowl.classList.remove('drop')},650);window.SFX&&SFX.thump()}
+function resetBowl(){bowlSt='none';handMode=0;bd.on=0;bowl.style.cssText='';bowl.className='';core.classList.remove('cvr','glowres');$('#dice').classList.remove('land','res');updHand()}
 function dropBowl(auto,dx,dy){if(bowlSt!=='on')return;bowlSt='off';bd.on=0;core.classList.remove('cvr');
  bowl.classList.remove('can','drag','drop');bowl.classList.add('gone');
  bowl.style.transform=auto?'translate(0,-170%) rotate(-28deg) scale(1.15)':`translate(${dx*2.4}px,${dy*2.4}px) rotate(${dx*.7}deg)`;
- hap('heavy');window.SFX&&SFX.slash();reveal()}
-hand.onclick=e=>{e.stopPropagation();if(bowlSt!=='on')return;hap('light');window.SFX&&SFX.click();
- if(handMode===0){handMode=1;updHand()}else if(handMode===1){handMode=2;updHand();dropBowl(true)}};
+ updHand();hap('heavy');window.SFX&&SFX.slash();reveal()}
+hand.onclick=e=>{e.stopPropagation();if(bowlSt==='idle'){hap('light');window.SFX&&SFX.click();startRoll()}
+ else if(bowlSt==='on'&&handMode===1){hap('light');window.SFX&&SFX.click();handMode=2;updHand();setTimeout(()=>dropBowl(true),200)}};
 bowl.addEventListener('pointerdown',e=>{if(bowlSt!=='on'||handMode!==1)return;bd={on:1,x:e.clientX,y:e.clientY,dx:0,dy:0};try{bowl.setPointerCapture(e.pointerId)}catch(_){}bowl.classList.add('drag');hap('light');e.preventDefault()});
 bowl.addEventListener('pointermove',e=>{if(!bd.on)return;bd.dx=e.clientX-bd.x;bd.dy=e.clientY-bd.y;
  bowl.style.transform=`translate(${bd.dx}px,${bd.dy}px) rotate(${bd.dx*.25}deg)`;e.preventDefault()});
@@ -445,7 +477,7 @@ function reveal(){if(opened||!S||S.phase!=='cover'||!S.dice)return;opened=true;h
 function render(){
  const k=S.id+S.phase,app=$('#app');
  if(S.id!==lastId){lastId=S.id;pend={s:null,a:0};resetBowl()}
- if(k!==key){if(S.phase==='cover'&&prevPh==='bet')shake();prevPh=S.phase;key=k;opened=false}
+ if(k!==key){if(S.phase==='cover'&&prevPh==='bet')armHand();prevPh=S.phase;key=k;opened=false}
  deadline=(S._t||Date.now())+S.left*1000;app.dataset.ph=S.phase;
  $('#num').textContent='# '+S.id;$('#balv').textContent=f(S.bal);if(PB!==null&&S.bal>PB)pulseBal(true);PB=S.bal;$('#potadd').textContent=S.phase==='cover'&&S.pot_add>0?'+'+f(S.pot_add):'';
  {const pv=f(S.pot||0),pe=$('#potv');if(pe.textContent!==pv){pe.textContent=pv;pe.style.fontSize=pv.length>14?'12px':pv.length>12?'14px':pv.length>10?'16px':'18px'}}
@@ -453,9 +485,9 @@ function render(){
  $('#ct').innerHTML=IC.user+S.tot.tai[1];$('#cx').innerHTML=IC.user+S.tot.xiu[1];
  if(pend.s&&closed())pend={s:null,a:0};
  const wn=(S.phase==='cover'&&opened?S.win:null)||(Date.now()<hold.until?hold.win:null);
- $('#sT').classList.toggle('win',wn==='tai');$('#sX').classList.toggle('win',wn==='xiu');
+ $('#sT').classList.toggle('win',wn==='tai');$('#sX').classList.toggle('win',wn==='xiu');$('#sT').classList.toggle('lose',wn==='xiu');$('#sX').classList.toggle('lose',wn==='tai');
  const sd=(S.dice||[0,0,0]).join();if(!shaking&&sd!==diceKey){diceKey=sd;setDice(S.dice||[0,0,0])}
- if(S.phase==='cover'&&!opened&&!shaking&&S.dice){if(secLeft()<=AUTO)bowlSt==='on'?dropBowl(true):(bowlSt==='none'&&(bowlSt='off',reveal()));else placeBowl()}
+ if(S.phase==='cover'&&!opened&&!shaking&&S.dice){if(secLeft()<=AUTO){if(bowlSt==='on')dropBowl(true);else if(bowlSt==='none'||bowlSt==='idle'){bowlSt='off';handMode=2;updHand();reveal()}}else if(bowlSt==='none')armHand()}
  const tot=$('#tot'),sh=S.phase==='cover'&&opened&&!shaking;tot.classList.toggle('show',sh);
  if(sh){tot.textContent=S.dice[0]+S.dice[1]+S.dice[2];tot.dataset.w=S.win||'bao'}
  $('#sw').textContent='DÂY THẮNG: '+stk.w;$('#sl').textContent='DÂY THUA: '+stk.l;
@@ -465,11 +497,11 @@ function render(){
  const sec=secLeft(),R=s=>{const st=Object.values(s.my||{}).reduce((a,b)=>a+b,0);return `${s.dice.join(' - ')} = ${s.dice[0]+s.dice[1]+s.dice[2]}, ${s.jp?'NỔ HŨ':nm(s.dice)}. `+(!st?'':s.net>0?'Thắng +'+f(s.net+st):s.net<0?'Thua '+f(s.net):'Hoàn tiền')};
  if(S.mt&&S.phase==='bet'){$('#msg').textContent='Game đang bảo trì - tạm dừng đặt cược';return}
  $('#msg').textContent=S.phase==='bet'?(S.last&&Date.now()<hold.until?`Phiên #${S.last.id}: `+R(S.last):closed()?'Đã đóng cược - đang chờ mở kết quả':'Bấm CƯỢC ở bên Tài hoặc Xỉu để đặt tiền'):
-  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:(bowlSt==='on'?(handMode===1?'Kéo bát ra khỏi đĩa để mở · còn '+sec+'s':'Chạm ✋ để nặn bát, chạm lần nữa để mở ngay'):'Đang lắc xúc xắc...')):''}
+  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:(bowlSt==='idle'?'Chạm ✋ để tung xúc xắc · còn '+sec+'s':bowlSt==='on'?'Kéo bát ra khỏi đĩa để mở · còn '+sec+'s (chạm ✋ lần nữa để mở ngay)':'Đang tung xúc xắc...')):''}
 async function tick(){try{const r=await api('/api/state');if(!r.err){S=r;S._t=Date.now();render()}else $('#msg').textContent=r.msg||'Hãy mở từ nút trong bot Telegram'}catch(e){}}
 setInterval(tick,700);tick();
-setInterval(()=>{if(!S)return;if(S.phase==='cover'&&bowlSt==='on'&&secLeft()<=AUTO)dropBowl(true);const t=secLeft(),c=$('#core'),cd=$('#cd'),hot=S.phase==='bet'&&t>0&&t<=LOCK,p=n=>String(n).padStart(2,'0');
- cd.innerHTML=S.phase==='bet'?t+`<small>${hot?'ĐÓNG CƯỢC':'NHẬN CƯỢC'}</small>`:'';
+setInterval(()=>{if(!S)return;if(S.phase==='cover'){if(bowlSt==='idle'&&secLeft()<=AUTOROLL)startRoll();else if(bowlSt==='on'&&secLeft()<=AUTO)dropBowl(true)}const t=secLeft(),c=$('#core'),cd=$('#cd'),hot=S.phase==='bet'&&t>0&&t<=LOCK,p=n=>String(n).padStart(2,'0');
+ cd.innerHTML=S.phase==='bet'?t+`<small>${hot?'ĐÓNG CƯỢC':'NHẬN CƯỢC'}</small>`:(bowlSt==='idle'?'?<small>CHẠM ✋</small>':'');
  $('#mini').textContent=S.phase==='cover'?p(Math.floor(t/60))+':'+p(t%60):'';
  c.classList.toggle('hot',hot);$('#app').classList.toggle('lock',hot);cd.classList.toggle('pulse',S.phase==='bet'&&t>0&&t<=5);
  if(S.phase==='bet'&&t>0&&t<=5&&t!==lastTick){lastTick=t;window.SFX&&SFX.tick()}
@@ -483,7 +515,7 @@ function poolFx(){if(PV.id!==S.id){PV={id:S.id,tai:S.tot.tai[0],xiu:S.tot.xiu[0]
 function shake(){
  shaking=true;closeMd();core.classList.add('shk');window.SFX&&SFX.rattle(2);hap('heavy');
  const iv=setInterval(()=>setDice([0,0,0].map(()=>1+Math.floor(Math.random()*6))),90);
- setTimeout(()=>{clearInterval(iv);shaking=false;core.classList.remove('shk');setDice(S.dice||[0,0,0]);diceKey=(S.dice||[0,0,0]).join();window.SFX&&SFX.thump();placeBowl()},2000)}
+ setTimeout(()=>{clearInterval(iv);shaking=false;core.classList.remove('shk');setDice(S.dice||[0,0,0]);diceKey=(S.dice||[0,0,0]).join();window.SFX&&SFX.thump();if(bowlSt==='rolling')placeBowl()},2000)}
 
 /* ===== hạt vàng (chỉ dùng khi NỔ HŨ) ===== */
 const cv=$('#fx'),g=cv.getContext('2d');let P=[],run=false;
