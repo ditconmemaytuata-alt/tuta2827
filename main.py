@@ -8022,10 +8022,10 @@ async function api(path,opt){
   var j=await r.json();if(j.err){throw new Error(j.err);}return j;
 }
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
-var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['log','Nhật ký']];
+var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['log','Nhật ký']];
 var cur='stats',view=document.getElementById('view');
 function nav(){var n=document.getElementById('nav');n.innerHTML='';tabs.forEach(function(t){var b=document.createElement('button');b.textContent=t[1];if(t[0]===cur)b.className='on';b.onclick=function(){cur=t[0];nav();load();};n.appendChild(b);});}
-function load(){view.innerHTML='<p class="mut">Đang tải…</p>';({stats:vStats,wd:vWd,dep:vDep,user:vUser,log:vLog})[cur]().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
+function load(){view.innerHTML='<p class="mut">Đang tải…</p>';({stats:vStats,wd:vWd,dep:vDep,user:vUser,gift:vGift,log:vLog})[cur]().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
 
 async function vStats(){
   var d=await api('stats');var c=[
@@ -8069,17 +8069,73 @@ async function vDep(){
    d.rows.map(function(r){return '<tr><td>'+esc(r.id)+'</td><td>'+esc(r.user_id)+'</td><td>'+money(r.amount)+'</td><td><span class="tag '+esc(r.status)+'">'+esc(r.status)+'</span></td><td>'+esc(r.time)+'</td></tr>';}).join('')+'</table></div>';
 }
 
+var curUser=null;
+function tagc(s){return {'Thành công':'success','Đã dùng':'success','Chờ duyệt':'pending','Chưa dùng':'pending','Từ chối':'rejected','Hết hạn':'rejected'}[s]||'';}
+function tbl(d,idCols){
+  var mc=d.money_cols||[],ic=idCols||[];
+  var h='<div class="item tw"><table><tr>'+d.headers.map(function(x){return '<th>'+esc(x)+'</th>';}).join('')+'</tr>';
+  h+=d.rows.map(function(r){return '<tr>'+r.map(function(c,i){
+    if(mc.indexOf(i)>=0&&c!==''&&c!=null&&!isNaN(c))return '<td>'+money(c)+'</td>';
+    if(i===d.status_col)return '<td><span class="tag '+tagc(c)+'">'+esc(c)+'</span></td>';
+    if(ic.indexOf(i)>=0&&/^[0-9]+$/.test(String(c)))return '<td><a href="#" data-open="'+esc(c)+'">'+esc(c)+'</a></td>';
+    return '<td>'+esc(c)+'</td>';}).join('')+'</tr>';}).join('');
+  return h+'</table></div>'+(d.rows.length===0?'<p class="mut">Không có dữ liệu.</p>':'');
+}
+function card(k,v){return '<div class="card"><div class="k">'+esc(k)+'</div><div class="v" style="font-size:18px">'+esc(v)+'</div></div>';}
+
 async function vUser(){
-  view.innerHTML='<div class="inl"><input id="uq" placeholder="ID / STK / tên"><button class="btn" id="ug">Tìm</button></div><div id="ur"></div>';
-  var run=async function(){var q=document.getElementById('uq').value.trim();if(!q)return;var d=await api('users?q='+encodeURIComponent(q));
+  if(curUser){return openUser(curUser);}
+  view.innerHTML='<div class="inl"><input id="uq" placeholder="ID / STK / tên (bỏ trống = top số dư)"><button class="btn" id="ug">Tìm</button></div><div id="ur"></div>';
+  var run=async function(){var q=document.getElementById('uq').value.trim();var d=await api('users?q='+encodeURIComponent(q));
     var out=document.getElementById('ur');
     out.innerHTML=d.rows.length?d.rows.map(function(u){return '<div class="item"><div class="row"><span>ID: <b>'+esc(u.user_id)+'</b></span><span>Số dư: <b>'+money(u.balance)+'</b></span><span>Cược: <b>'+money(u.total_bet)+'</b></span><span>Nạp: <b>'+money(u.dep)+'</b></span><span>Rút: <b>'+money(u.wd)+'</b></span>'+(u.banned?'<span class="tag rejected">ĐÃ KHÓA</span>':'')+'</div>'
       +'<div class="row" style="margin-top:6px"><span>Ngân hàng: <b>'+esc(u.bank||'Chưa liên kết')+'</b></span><span>STK: <b>'+esc(u.stk||'-')+'</b></span><span>Chủ TK: <b>'+esc(u.name||'-')+'</b></span></div>'
-      +'<div class="inl" style="margin-top:10px"><input data-amt="'+esc(u.user_id)+'" placeholder="Số tiền (vd 50000)" inputmode="numeric"><button class="btn ok" data-u="add" data-id="'+esc(u.user_id)+'">+ Cộng</button><button class="btn bad" data-u="sub" data-id="'+esc(u.user_id)+'">− Trừ</button></div>'
-      +'<div class="acts"><button class="btn gray" data-u="'+(u.banned?'unban':'ban')+'" data-id="'+esc(u.user_id)+'">'+(u.banned?'Mở khóa':'Khóa tài khoản')+'</button><button class="btn gray" data-u="resetbank" data-id="'+esc(u.user_id)+'">Gỡ liên kết ngân hàng</button></div></div>';}).join(''):'<p class="mut">Không tìm thấy.</p>';};
+      +'<div class="acts"><button class="btn" data-d="'+esc(u.user_id)+'">Xem đầy đủ thông tin</button></div></div>';}).join(''):'<p class="mut">Không tìm thấy.</p>';};
   document.getElementById('ug').onclick=run;document.getElementById('uq').onkeydown=function(e){if(e.key==='Enter')run();};
+  run();
+}
+
+var secs=[['his','Lịch sử số dư'],['nap','Nạp tiền'],['rut','Rút tiền'],['cuoc','Cược / thắng'],['code','Code đã nhập'],['mua','Giftcode đã mua'],['gift','Giftcode nhận / dùng']];
+async function openUser(id){
+  curUser=id;view.innerHTML='<p class="mut">Đang tải…</p>';
+  var d=await api('user/'+encodeURIComponent(id)+'/full');var p=d.p;
+  var pnl=p.wins-p.total_bet,net=p.dep-p.wd;
+  var cards=[
+    ['Số dư',money(p.balance)],['Tổng nạp',money(p.dep)+' · '+p.dep_n+' lần'],['Tổng rút',money(p.wd)+' · '+p.wd_n+' lần'],
+    ['Nạp − Rút',(net<0?'−':'+')+money(Math.abs(net))],['Rút đang chờ',money(p.wd_pend)+' · '+p.wd_pend_n+' đơn'],['Nạp hôm nay',money(p.dep_today)],
+    ['Tổng cược',money(p.total_bet)],['Tổng thắng/hoàn',money(p.wins)],['Kết quả chơi',(pnl<0?'−':'+')+money(Math.abs(pnl))],
+    ['Vòng cược còn lại',money(p.wager_remaining)],['VIP',p.vip||'—'],['Đã mời',p.refs+' người'],
+    ['Code đã nhập',p.codes_used+' code'],['Giftcode đã dùng',p.gifts_used+' · '+money(p.received_sum)],['Giftcode đã mua',p.bought_n+' · '+money(p.bought_sum)+' (đã dùng '+p.bought_used+')']];
+  var h='<div class="acts" style="margin:0 0 10px"><button class="btn gray" id="bk">← Quay lại danh sách</button></div>'
+   +'<div class="item"><div class="row"><span>ID: <b>'+esc(d.user_id)+'</b></span><span>Telegram: <b>'+esc(p.tg_name||'—')+'</b></span>'+(p.banned?'<span class="tag rejected">ĐÃ KHÓA</span>':'<span class="tag success">Hoạt động</span>')+'</div>'
+   +'<div class="row" style="margin-top:8px"><span>Ngân hàng: <b>'+esc(p.bank||'Chưa liên kết')+'</b></span><span>STK: <b>'+esc(p.stk||'—')+'</b></span><span>Chủ TK: <b>'+esc(p.name||'—')+'</b></span><span>Liên kết: <b>'+(p.bank_linked?'Đã liên kết':'Chưa')+'</b></span></div>'
+   +'<div class="row" style="margin-top:8px"><span>Hoạt động đầu: <b>'+esc(p.first_time||'—')+'</b></span><span>Check-in cuối: <b>'+esc(p.last_checkin||'—')+'</b></span><span>Rút gần nhất: <b>'+esc(p.last_withdraw||'—')+'</b></span><span>'+(p.refed?'Được người khác mời':'Tự đăng ký')+'</span></div>'
+   +((p.banned_games.length||p.banned_features.length)?'<div class="row" style="margin-top:8px"><span>Bị cấm game: <b>'+esc(p.banned_games.join(', ')||'—')+'</b></span><span>Bị cấm tính năng: <b>'+esc(p.banned_features.join(', ')||'—')+'</b></span></div>':'')
+   +(p.bonus?'<div class="row" style="margin-top:8px"><span>Khuyến mãi: <b>'+money(p.bonus.amount)+'</b></span><span>Vòng cược: <b>'+money(p.bonus.current)+' / '+money(p.bonus.required)+'</b></span></div>':'')
+   +(p.payouts.length?'<div style="margin-top:8px" class="mut">Tài khoản nhận tiền đã liên kết:</div>'+p.payouts.map(function(a){return '<div class="row" style="margin-top:4px"><span>'+esc(a.method)+(a.default?' (mặc định)':'')+'</span><span>'+esc(a.bank||'')+'</span><span><b>'+esc(a.number)+'</b></span><span>'+esc(a.name)+'</span></div>';}).join(''):'')
+   +'</div><div class="grid">'+cards.map(function(c){return card(c[0],c[1]);}).join('')+'</div>'
+   +'<div class="item"><div class="inl"><input data-amt="'+esc(id)+'" placeholder="Số tiền (vd 50000)" inputmode="numeric"><button class="btn ok" data-u="add" data-id="'+esc(id)+'">+ Cộng</button><button class="btn bad" data-u="sub" data-id="'+esc(id)+'">− Trừ</button></div>'
+   +'<div class="acts"><button class="btn gray" data-u="'+(p.banned?'unban':'ban')+'" data-id="'+esc(id)+'">'+(p.banned?'Mở khóa':'Khóa tài khoản')+'</button><button class="btn gray" data-u="resetbank" data-id="'+esc(id)+'">Gỡ liên kết ngân hàng</button></div></div>'
+   +'<nav id="snav"></nav><div id="sbody"></div>';
+  view.innerHTML=h;
+  document.getElementById('bk').onclick=function(){curUser=null;vUser();};
+  var sn=document.getElementById('snav');
+  secs.forEach(function(s,i){var b=document.createElement('button');b.textContent=s[1];b.onclick=function(){sn.querySelectorAll('button').forEach(function(x){x.className='';});b.className='on';loadSec(id,s[0]);};sn.appendChild(b);});
+  sn.firstChild.click();
+}
+async function loadSec(id,kind){
+  var body=document.getElementById('sbody');body.innerHTML='<p class="mut">Đang tải…</p>';
+  var d=await api('user/'+encodeURIComponent(id)+'/sec/'+kind);var x=d.extra||{},sum='';
+  if(kind==='nap'||kind==='rut')sum='Thành công: '+money(x.ok)+' ('+(x.ok_n||0)+' lần) · Đang chờ: '+money(x.pending);
+  if(kind==='his')sum='Tổng tiền vào: '+money(x.in)+' · Tổng tiền ra: '+money(x.out);
+  if(kind==='cuoc')sum='Tổng cược: '+money(x.bets)+' ('+(x.n_bet||0)+' lượt) · Thắng/hoàn: '+money(x.wins)+' · Kết quả: '+((x.net||0)<0?'−':'+')+money(Math.abs(x.net||0));
+  if(kind==='code')sum='Tổng giá trị code đã nhập: '+money(x.sum);
+  if(kind==='mua'||kind==='gift')sum='Tổng giá trị: '+money(x.sum)+' · Đã dùng: '+(x.used_n||0)+' code';
+  body.innerHTML='<p class="mut" style="margin:8px 0">'+esc(sum)+(d.total>d.rows.length?' · hiển thị '+d.rows.length+'/'+d.total+' dòng mới nhất':' · '+d.total+' dòng')+'</p>'+tbl(d,(kind==='mua'||kind==='gift')?[2,3]:[]);
 }
 view.addEventListener('click',async function(ev){
+  var o=ev.target.closest('a[data-open]');if(o){ev.preventDefault();cur='user';nav();openUser(o.getAttribute('data-open')).catch(function(e){toast(e.message);});return;}
+  var d=ev.target.closest('button[data-d]');if(d){openUser(d.getAttribute('data-d')).catch(function(e){toast(e.message);});return;}
   var b=ev.target.closest('button[data-u]');if(!b)return;
   var act=b.getAttribute('data-u'),id=b.getAttribute('data-id'),body={};
   if(act==='add'||act==='sub'){var inp=view.querySelector('input[data-amt="'+id+'"]');var amt=parseInt((inp.value||'').replace(/[^0-9]/g,''),10);
@@ -8087,8 +8143,29 @@ view.addEventListener('click',async function(ev){
     if(!confirm((act==='add'?'CỘNG ':'TRỪ ')+money(amt)+' cho ID '+id+'?'))return;}
   else if(!confirm('Xác nhận thao tác "'+act+'" cho ID '+id+'?'))return;
   b.disabled=true;
-  try{var r=await post('user/'+encodeURIComponent(id)+'/'+act,body);toast(r.msg||'Xong');document.getElementById('ug').click();}catch(e){toast(e.message);b.disabled=false;}
+  try{var r=await post('user/'+encodeURIComponent(id)+'/'+act,body);toast(r.msg||'Xong');if(curUser){openUser(curUser);}else{var g=document.getElementById('ug');if(g)g.click();}}catch(e){toast(e.message);b.disabled=false;}
 });
+
+var gf={type:'',status:'all',q:'',page:1};
+async function vGift(){
+  var s=await api('gifts/summary');var t=s.total;
+  var cards=[['Tổng code (giftcode)',t.count],['Đã dùng',t.used],['Chưa dùng',t.unused],['Hết hạn',t.expired],['Tổng giá trị',money(t.value)],['Giá trị đã dùng',money(t.used_value)],
+             ['Code thường (số mã)',s.regular.codes],['Code thường đã nhập',s.regular.entered+' lượt']];
+  var types=tbl({headers:['Loại','Tổng','Đã dùng','Chưa dùng','Hết hạn','Tổng giá trị','Giá trị đã dùng'],money_cols:[5,6],rows:s.types.map(function(x){return [x.name,x.total,x.used,x.unused,x.expired,x.value,x.used_value];})});
+  var buyers=tbl({headers:['ID người mua','Số code đã mua','Tổng giá trị','Đã dùng'],money_cols:[2],rows:s.buyers.map(function(x){return [x.user_id,x.count,x.value,x.used];})},[0]);
+  var opts='<option value="">Tất cả loại</option>'+s.types.map(function(x){return '<option value="'+esc(x.type)+'">'+esc(x.name)+'</option>';}).join('');
+  view.innerHTML='<div class="grid">'+cards.map(function(c){return card(c[0],c[1]);}).join('')+'</div><h3 style="margin:18px 0 4px">Theo loại code</h3>'+types
+   +'<h3 style="margin:18px 0 4px">Người mua code nhiều nhất (Code Mua)</h3>'+buyers
+   +'<h3 style="margin:18px 0 8px">Danh sách code</h3><div class="inl"><select id="gt" style="max-width:190px">'+opts+'</select><select id="gs" style="max-width:150px"><option value="all">Mọi trạng thái</option><option value="used">Đã dùng</option><option value="unused">Chưa dùng</option><option value="expired">Hết hạn</option></select><input id="gq" placeholder="Mã code / ID tạo / ID dùng"><button class="btn" id="gg">Lọc</button></div><div id="gl"></div>';
+  document.getElementById('gt').value=gf.type;document.getElementById('gs').value=gf.status;document.getElementById('gq').value=gf.q;
+  var go=async function(pg){gf.type=document.getElementById('gt').value;gf.status=document.getElementById('gs').value;gf.q=document.getElementById('gq').value.trim();gf.page=pg||1;
+    var d=await api('gifts?type='+encodeURIComponent(gf.type)+'&status='+gf.status+'&q='+encodeURIComponent(gf.q)+'&page='+gf.page);
+    var rows=d.rows.map(function(r){return [r.code,r.type,r.reward,'x'+(r.wager||0),r.status,r.created_by||'',r.created_at||'',r.used_by||'',r.used_at||'',r.expiry,r.bound_user||'',r.need_dep];});
+    var pager='<div class="acts"><button class="btn gray" class="btn gray gp"'+(d.page<=1?' disabled':'')+'>← Trước</button><span class="mut" style="align-self:center">Trang '+d.page+'/'+d.pages+' · '+d.total+' code</span><button class="btn gray" class="btn gray gn"'+(d.page>=d.pages?' disabled':'')+'>Sau →</button></div>';
+    document.getElementById('gl').innerHTML=pager+tbl({headers:['Mã','Loại','Giá trị','Vòng cược','Trạng thái','ID tạo/mua','Thời gian tạo','ID dùng','Thời gian dùng','Hạn dùng','ID gắn','Yêu cầu tổng nạp'],money_cols:[2,11],status_col:4,rows:rows},[5,7,10])+pager;
+    document.querySelectorAll('.gp').forEach(function(e){e.onclick=function(){go(d.page-1);};});document.querySelectorAll('.gn').forEach(function(e){e.onclick=function(){go(d.page+1);};});};
+  document.getElementById('gg').onclick=function(){go(1);};go(gf.page);
+}
 
 async function vLog(){
   var d=await api('log');
@@ -8319,28 +8396,6 @@ async def aw_api_deposits(request):
     return _aw_json({"rows": [{"id": r[0], "user_id": r[1], "amount": int(r[2] or 0), "status": r[3], "time": r[4]} for r in rows]})
 
 
-def _aw_users_sync(q):
-    q = q.strip()[:60]
-    like = f"%{q}%"
-    rows = query(
-        "SELECT u.user_id, u.balance, COALESCE(u.total_bet,0), u.bank, u.stk, u.name, "
-        "(SELECT COALESCE(SUM(amount),0) FROM deposit_history d WHERE d.user_id=u.user_id AND d.status='success'), "
-        "(SELECT COALESCE(SUM(amount),0) FROM withdraw_history w WHERE w.user_id=u.user_id AND w.status='success'), "
-        "EXISTS(SELECT 1 FROM banned b WHERE b.user_id=u.user_id) "
-        "FROM users u WHERE CAST(u.user_id AS TEXT)=%s OR COALESCE(u.stk,'') LIKE %s OR COALESCE(u.name,'') ILIKE %s "
-        "ORDER BY u.balance DESC LIMIT 15", (q, like, like)) or []
-    return [{"user_id": r[0], "balance": int(r[1] or 0), "total_bet": int(r[2] or 0), "bank": r[3], "stk": r[4],
-             "name": r[5], "dep": int(r[6] or 0), "wd": int(r[7] or 0), "banned": bool(r[8])} for r in rows]
-
-
-async def aw_api_users(request):
-    await asyncio.to_thread(_aw_auth, request)
-    q = request.query.get("q", "")
-    if not q.strip():
-        return _aw_json({"rows": []})
-    return _aw_json({"rows": await asyncio.to_thread(_aw_users_sync, q)})
-
-
 async def aw_api_user_act(request):
     tok, s = await asyncio.to_thread(_aw_auth, request, True)
     uid_s, act = request.match_info.get("uid", ""), request.match_info.get("act", "")
@@ -8389,6 +8444,190 @@ async def aw_api_log(request):
     return _aw_json({"rows": [{"time": r[0], "username": r[1], "action": r[2], "detail": r[3], "ip": r[4]} for r in rows]})
 
 
+def _aw_jsafe(v):
+    if v is None or isinstance(v, (int, float, str, bool)):
+        return v
+    return str(v)
+
+
+def _aw_users_sync(q):
+    q = (q or "").strip()[:60]
+    base = ("SELECT u.user_id, u.balance, COALESCE(u.total_bet,0), u.bank, u.stk, u.name, "
+            "(SELECT COALESCE(SUM(amount),0) FROM deposit_history d WHERE d.user_id=u.user_id AND d.status='success'), "
+            "(SELECT COALESCE(SUM(amount),0) FROM withdraw_history w WHERE w.user_id=u.user_id AND w.status='success'), "
+            "EXISTS(SELECT 1 FROM banned b WHERE b.user_id=u.user_id) FROM users u ")
+    if q:
+        like = f"%{q}%"
+        rows = query(base + "WHERE CAST(u.user_id AS TEXT)=%s OR COALESCE(u.stk,'') LIKE %s OR COALESCE(u.name,'') ILIKE %s "
+                            "ORDER BY u.balance DESC LIMIT 20", (q, like, like)) or []
+    else:
+        rows = query(base + "ORDER BY u.balance DESC LIMIT 20") or []
+    return [{"user_id": r[0], "balance": int(r[1] or 0), "total_bet": int(r[2] or 0), "bank": r[3], "stk": r[4],
+             "name": r[5], "dep": int(r[6] or 0), "wd": int(r[7] or 0), "banned": bool(r[8])} for r in rows]
+
+
+async def aw_api_users(request):
+    await asyncio.to_thread(_aw_auth, request)
+    return _aw_json({"rows": await asyncio.to_thread(_aw_users_sync, request.query.get("q", ""))})
+
+
+def _aw_user_full_sync(uid):
+    p = _rp_profile_sync(uid)
+    if not p:
+        return None
+    bonus = p.get("bonus")
+    one = lambda q, a=(): (query(q, a) or [(0,)])[0]
+    bought = one("SELECT COUNT(*), COALESCE(SUM(reward),0), COALESCE(SUM(CASE WHEN COALESCE(used,0)=1 THEN 1 ELSE 0 END),0) "
+                 "FROM giftcodes WHERE created_by=%s", (uid,))
+    received = one("SELECT COUNT(*), COALESCE(SUM(reward),0) FROM giftcodes WHERE used_by=%s", (uid,))
+    payouts = query("SELECT method, bank_code, account_number, account_name, created_at, is_default "
+                    "FROM user_payout_accounts WHERE user_id=%s ORDER BY id DESC", (uid,)) or []
+    try:
+        remaining = int(get_remaining_bet_required(uid) or 0)
+    except Exception:
+        remaining = 0
+    try:
+        dep_today = int(deposited_today(uid) or 0)
+    except Exception:
+        dep_today = 0
+    try:
+        vip = str(get_vip_info(p["total_bet"])[0])
+    except Exception:
+        vip = ""
+    return {
+        "balance": p["balance"], "refs": int(p["refs"] or 0), "refed": int(p["refed"] or 0),
+        "bank": p["bank"], "stk": p["stk"], "name": p["name"], "bank_linked": bool(p["bank_linked"]),
+        "last_checkin": p["last_checkin"], "last_withdraw": p["last_withdraw"], "first_time": p["first_time"],
+        "total_bet": p["total_bet"], "wins": p["wins"], "dep": p["dep"], "dep_n": p["dep_n"], "wd": p["wd"], "wd_n": p["wd_n"],
+        "wd_pend": p["wd_pend"], "wd_pend_n": p["wd_pend_n"], "banned": p["banned"],
+        "banned_games": p["banned_games"], "banned_features": p["banned_features"],
+        "codes_used": p["codes_used"], "gifts_used": p["gifts_used"],
+        "bonus": ({"amount": int(bonus[0] or 0), "required": int(bonus[1] or 0), "current": int(bonus[2] or 0)} if bonus else None),
+        "wager_remaining": remaining, "dep_today": dep_today, "vip": vip,
+        "bought_n": int(bought[0] or 0), "bought_sum": int(bought[1] or 0), "bought_used": int(bought[2] or 0),
+        "received_n": int(received[0] or 0), "received_sum": int(received[1] or 0),
+        "payouts": [{"method": r[0], "bank": r[1], "number": r[2], "name": r[3], "at": _aw_jsafe(r[4]), "default": bool(r[5])} for r in payouts],
+    }
+
+
+async def aw_api_user_full(request):
+    await asyncio.to_thread(_aw_auth, request)
+    uid_s = request.match_info.get("uid", "")
+    if not uid_s.isdigit():
+        return _aw_json({"err": "ID không hợp lệ"}, 400)
+    uid = int(uid_s)
+    p = await asyncio.to_thread(_aw_user_full_sync, uid)
+    if p is None:
+        return _aw_json({"err": "Không tìm thấy người dùng"}, 404)
+    tg = ""
+    try:
+        chat = await asyncio.wait_for(application.bot.get_chat(uid), timeout=4)
+        tg = (("@" + chat.username) if getattr(chat, "username", None) else "") or (getattr(chat, "full_name", None) or "")
+    except Exception:
+        tg = ""
+    p["tg_name"] = tg
+    return _aw_json({"user_id": uid, "p": p})
+
+
+_AW_SECTIONS = {"his", "nap", "rut", "cuoc", "code", "mua", "gift"}
+
+
+def _aw_user_section_sync(uid, kind):
+    d = _rp_collect(kind, uid, None, None)
+    rows = d.get("rows", [])
+    total = len(rows)
+    return {
+        "headers": d.get("headers", []), "money_cols": d.get("money_cols", []), "status_col": d.get("status_col"),
+        "total": total, "rows": [[_aw_jsafe(c) for c in r] for r in rows[:300]],
+        "extra": {k: _aw_jsafe(v) for k, v in (d.get("extra") or {}).items()},
+    }
+
+
+async def aw_api_user_section(request):
+    await asyncio.to_thread(_aw_auth, request)
+    uid_s, kind = request.match_info.get("uid", ""), request.match_info.get("kind", "")
+    if not uid_s.isdigit() or kind not in _AW_SECTIONS:
+        return _aw_json({"err": "Yêu cầu không hợp lệ"}, 400)
+    return _aw_json(await asyncio.to_thread(_aw_user_section_sync, int(uid_s), kind))
+
+
+def _aw_gift_summary_sync():
+    expired_sql = "COALESCE(used,0)=0 AND expiry IS NOT NULL AND expiry < NOW()"
+    rows = query(
+        "SELECT ctype, COUNT(*), "
+        "COALESCE(SUM(CASE WHEN COALESCE(used,0)=1 THEN 1 ELSE 0 END),0), "
+        f"COALESCE(SUM(CASE WHEN {expired_sql} THEN 1 ELSE 0 END),0), "
+        "COALESCE(SUM(reward),0), COALESCE(SUM(CASE WHEN COALESCE(used,0)=1 THEN reward ELSE 0 END),0) "
+        "FROM giftcodes GROUP BY ctype ORDER BY COUNT(*) DESC") or []
+    types = []
+    tot = [0, 0, 0, 0, 0]
+    for r in rows:
+        total, used, exp, val, uval = int(r[1] or 0), int(r[2] or 0), int(r[3] or 0), int(r[4] or 0), int(r[5] or 0)
+        types.append({"type": r[0] or "?", "name": GIFT_TYPES.get(r[0], {}).get("name", r[0] or "Khác"),
+                      "total": total, "used": used, "expired": exp, "unused": total - used - exp, "value": val, "used_value": uval})
+        for i, v in enumerate((total, used, exp, val, uval)):
+            tot[i] += v
+    buyers = query(
+        "SELECT created_by, COUNT(*), COALESCE(SUM(reward),0), "
+        "COALESCE(SUM(CASE WHEN COALESCE(used,0)=1 THEN 1 ELSE 0 END),0) FROM giftcodes "
+        "WHERE ctype='CODEMUA' GROUP BY created_by ORDER BY SUM(reward) DESC LIMIT 15") or []
+    reg = (query("SELECT COUNT(*), COALESCE(SUM(uses),0) FROM codes") or [(0, 0)])[0]
+    reg_used = (query("SELECT COUNT(*) FROM code_usage") or [(0,)])[0][0]
+    return {
+        "types": types,
+        "total": {"count": tot[0], "used": tot[1], "expired": tot[2], "unused": tot[0] - tot[1] - tot[2], "value": tot[3], "used_value": tot[4]},
+        "buyers": [{"user_id": r[0], "count": int(r[1] or 0), "value": int(r[2] or 0), "used": int(r[3] or 0)} for r in buyers],
+        "regular": {"codes": int(reg[0] or 0), "uses_left": int(reg[1] or 0), "entered": int(reg_used or 0)},
+    }
+
+
+async def aw_api_gift_summary(request):
+    await asyncio.to_thread(_aw_auth, request)
+    return _aw_json(await asyncio.to_thread(_aw_gift_summary_sync))
+
+
+def _aw_gifts_sync(ctype, status, q, page):
+    cond, args = [], []
+    if ctype and ctype in GIFT_TYPES:
+        cond.append("ctype=%s"); args.append(ctype)
+    if status == "used":
+        cond.append("COALESCE(used,0)=1")
+    elif status == "unused":
+        cond.append("COALESCE(used,0)=0 AND (expiry IS NULL OR expiry >= NOW())")
+    elif status == "expired":
+        cond.append("COALESCE(used,0)=0 AND expiry IS NOT NULL AND expiry < NOW()")
+    q = (q or "").strip()[:60]
+    if q:
+        cond.append("(code ILIKE %s OR CAST(created_by AS TEXT)=%s OR CAST(used_by AS TEXT)=%s OR CAST(bound_user AS TEXT)=%s)")
+        args += [f"%{q}%", q, q, q]
+    where = ("WHERE " + " AND ".join(cond) + " ") if cond else ""
+    cnt = (query("SELECT COUNT(*) FROM giftcodes " + where, tuple(args)) or [(0,)])[0][0]
+    raw = query("SELECT code, ctype, reward, wager, expiry, COALESCE(used,0), used_by, used_at, created_by, created_at, bound_user, "
+                "COALESCE(require_total_dep,0), CASE WHEN COALESCE(used,0)=0 AND expiry IS NOT NULL AND expiry < NOW() THEN 1 ELSE 0 END "
+                "FROM giftcodes " + where + "LIMIT 5000", tuple(args)) or []
+    epoch = datetime(1970, 1, 1).date()
+    key_idx = 7 if status == "used" else 9
+    raw = sorted(raw, key=lambda r: (_rp_date(r[key_idx]) or epoch, str(r[key_idx] or "")), reverse=True)
+    size = 50
+    page = max(1, page)
+    part = raw[(page - 1) * size: page * size]
+    out = []
+    for r in part:
+        st = "Đã dùng" if r[5] else ("Hết hạn" if r[12] else "Chưa dùng")
+        out.append({"code": r[0], "type": GIFT_TYPES.get(r[1], {}).get("name", r[1] or ""), "reward": int(r[2] or 0),
+                    "wager": r[3], "expiry": str(r[4] or "")[:19], "status": st, "used_by": r[6], "used_at": r[7],
+                    "created_by": r[8], "created_at": r[9], "bound_user": r[10], "need_dep": int(r[11] or 0)})
+    return {"rows": out, "total": int(cnt or 0), "page": page, "pages": max(1, (min(int(cnt or 0), 5000) + size - 1) // size)}
+
+
+async def aw_api_gifts(request):
+    await asyncio.to_thread(_aw_auth, request)
+    page_s = request.query.get("page", "1")
+    return _aw_json(await asyncio.to_thread(
+        _aw_gifts_sync, request.query.get("type", ""), request.query.get("status", "all"),
+        request.query.get("q", ""), int(page_s) if page_s.isdigit() else 1))
+
+
 def admin_web_register_routes(app):
     app.router.add_get("/admin/login", aw_login_page)
     app.router.add_post("/admin/login", aw_login_post)
@@ -8403,6 +8642,10 @@ def admin_web_register_routes(app):
     app.router.add_post("/admin/api/withdraw/{wid}/{act}", aw_api_withdraw_act)
     app.router.add_get("/admin/api/deposits", aw_api_deposits)
     app.router.add_get("/admin/api/users", aw_api_users)
+    app.router.add_get("/admin/api/user/{uid}/full", aw_api_user_full)
+    app.router.add_get("/admin/api/user/{uid}/sec/{kind}", aw_api_user_section)
+    app.router.add_get("/admin/api/gifts/summary", aw_api_gift_summary)
+    app.router.add_get("/admin/api/gifts", aw_api_gifts)
     app.router.add_post("/admin/api/user/{uid}/{act}", aw_api_user_act)
     app.router.add_get("/admin/api/log", aw_api_log)
 
