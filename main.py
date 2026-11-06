@@ -8757,6 +8757,709 @@ async def dsadminweb_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
+# ============================================================
+# WEB ADMIN PLUS  —  DÁN NGUYÊN KHỐI NÀY NGAY TRƯỚC DÒNG:
+#     async def start_webhook_server():
+# rồi thêm 1 dòng  admin_web_plus_register(app)  vào trong start_webhook_server()
+# (ngay sau dòng admin_web_register_routes(app)).
+#
+# Thêm vào web /admin:
+#   • Tổng quan + biểu đồ 14 ngày        • Duyệt / từ chối NẠP, nạp thủ công
+#   • Điều khiển: bảo trì từng game/nạp/rút/hệ thống, tắt-mở room, khoá cược nhóm,
+#     chỉnh giờ vàng, % hoàn cược, hũ jackpot, tên bot
+#   • Trang người dùng: đặt/reset số dư, cấm/gỡ cấm game, khoá nạp/rút, khoá/reset hoàn trả,
+#     xoá/thêm vòng cược, tặng khuyến mãi, nhắn riêng, xuất Excel của user
+#   • Giftcode: tạo nhiều loại, xoá       • Thông báo toàn bộ user, thêm vòng cược hàng loạt
+#   • Xuất file Excel: thống kê / nạp / rút
+# Mọi thao tác đều ghi vào Nhật ký web admin và bắt buộc đăng nhập + CSRF như cũ.
+# ============================================================
+_AWP_TASKS = set()
+_AWP_BC = {"running": False, "sent": 0, "failed": 0, "total": 0}
+_AWP_PERIODS = ("ngay", "tuan", "all")
+
+
+def _awp_int(v, lo=None, hi=None):
+    n = int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else int(parse_money_text(str(v)))
+    if (lo is not None and n < lo) or (hi is not None and n > hi):
+        raise ValueError("out of range")
+    return n
+
+
+async def _awp_body(request):
+    try:
+        b = await request.json()
+        return b if isinstance(b, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _awp_send(uid, text, **kw):
+    try:
+        await application.bot.send_message(uid, text, parse_mode=ParseMode.HTML, **kw)
+        return True
+    except Exception as e:
+        print(f"[web-plus] không nhắn được {uid}: {e}")
+        return False
+
+
+# ---------- Biểu đồ ----------
+def _awp_chart_sync(days):
+    today = get_vietnam_time().date()
+    start = today - timedelta(days=days - 1)
+    sheets, _ = _stat_collect_sync(start, today, False)
+    rows = sheets[1]["rows"]
+    return [{"day": r[0], "dep": int(r[2]), "wd": int(r[4]), "bet": int(r[6]), "pnl": int(r[8])} for r in rows]
+
+
+async def awp_api_chart(request):
+    await asyncio.to_thread(_aw_auth, request)
+    d = request.query.get("days", "14")
+    days = max(3, min(60, int(d))) if d.isdigit() else 14
+    return _aw_json({"rows": await asyncio.to_thread(_awp_chart_sync, days)})
+
+
+# ---------- Điều khiển: bảo trì / room / cài đặt ----------
+def _awp_control_sync():
+    games = [{"alias": a, "key": v[0], "gid": v[1], "name": v[2], "mt": check_mt(v[0])} for a, v in ADMIN_GAMES.items()]
+    feats = [{"alias": a, "key": v[0], "name": v[1], "mt": check_mt(v[0])} for a, v in ADMIN_FEATURES.items()]
+    rooms = [{"id": g, "muted": _is_room_muted(g), "bet": bool(room_betting_enabled.get(g, True))} for g in GROUP_IDS]
+    return {
+        "games": games, "features": feats, "rooms": rooms,
+        "system": is_system_maintenance(), "total": is_total_maintenance(),
+        "promo_mode": promo_mode(), "promo_active": promo_is_active(), "promo_windows": promo_windows_text(),
+        "rebate_ngay": get_rebate_pct("ngay"), "rebate_tuan": get_rebate_pct("tuan"),
+        "jackpot": int(get_jackpot()), "tx3d_pot": int(TX3D.pot), "bot_name": get_bot_name(),
+    }
+
+
+async def awp_api_control(request):
+    await asyncio.to_thread(_aw_auth, request)
+    return _aw_json(await asyncio.to_thread(_awp_control_sync))
+
+
+def _awp_mt_keys():
+    keys = {v[0] for v in ADMIN_GAMES.values()} | {v[0] for v in ADMIN_FEATURES.values()}
+    return keys | {"system_maintenance", "mt_tongbao"}
+
+
+async def awp_api_mt(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    key, val = str(b.get("key", "")), "1" if str(b.get("value", "0")) in ("1", "True", "true") else "0"
+    if key not in _awp_mt_keys():
+        return _aw_json({"err": "Khoá bảo trì không hợp lệ"}, 400)
+    await asyncio.to_thread(set_setting, key, val)
+    await asyncio.to_thread(_aw_log, s["user"], "MAINTENANCE", f"{key}={val}", _aw_ip(request))
+    return _aw_json({"ok": True})
+
+
+async def awp_api_mtall(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    val = "1" if str(b.get("value", "0")) in ("1", "True", "true") else "0"
+    scope = str(b.get("scope", "games"))
+    keys = []
+    if scope in ("games", "all"):
+        keys += [v[0] for v in ADMIN_GAMES.values()]
+    if scope in ("features", "all"):
+        keys += [v[0] for v in ADMIN_FEATURES.values()]
+    if not keys:
+        return _aw_json({"err": "Phạm vi không hợp lệ"}, 400)
+    for k in keys:
+        await asyncio.to_thread(set_setting, k, val)
+    await asyncio.to_thread(_aw_log, s["user"], "MAINTENANCE_ALL", f"{scope}={val}", _aw_ip(request))
+    return _aw_json({"ok": True})
+
+
+async def awp_api_room(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    act = str(b.get("act", ""))
+    gid = b.get("id")
+    try:
+        ids = [int(gid)] if gid not in (None, "", "all") else list(GROUP_IDS)
+        if any(g not in GROUP_IDS for g in ids) or act not in ("mute", "unmute", "betoff", "beton"):
+            raise ValueError
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Yêu cầu không hợp lệ"}, 400)
+    for g in ids:
+        if act == "mute":
+            await asyncio.to_thread(_set_room_muted, g, True)
+        elif act == "unmute":
+            await asyncio.to_thread(_set_room_muted, g, False)
+        else:
+            room_betting_enabled[g] = (act == "beton")
+    await asyncio.to_thread(_aw_log, s["user"], "ROOM_" + act.upper(), str(ids), _aw_ip(request))
+    return _aw_json({"ok": True})
+
+
+def _awp_setting_sync(name, value):
+    if name == "promo_mode":
+        v = str(value).lower()
+        if v not in ("auto", "on", "off"):
+            raise ValueError
+        set_setting("promo_mode", v)
+        return f"Giờ vàng: {v}"
+    if name in ("rebate_ngay", "rebate_tuan"):
+        f = float(str(value).replace(",", "."))
+        if not 0 <= f <= 100:
+            raise ValueError
+        set_setting(f"rebate_{name[7:]}_pct", f)
+        return f"Hoàn cược {name[7:]}: {f:g}%"
+    if name == "jackpot":
+        n = _awp_int(value, 0, 10 ** 13)
+        update_jackpot(n)
+        return f"Hũ jackpot: {fmt_money(n)}đ"
+    if name == "tx3d_pot":
+        n = _awp_int(value, 0, 10 ** 13)
+        TX3D.pot = n
+        set_setting(TX3D_POT_KEY, n)
+        return f"Hũ Tài Xỉu 3D: {fmt_money(n)}đ"
+    if name == "bot_name":
+        v = str(value).strip()[:60]
+        if not v:
+            raise ValueError
+        set_setting("bot_display_name", v)
+        return "Đã đổi tên bot"
+    raise ValueError
+
+
+async def awp_api_setting(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    try:
+        msg = await asyncio.to_thread(_awp_setting_sync, str(b.get("name", "")), b.get("value"))
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Giá trị không hợp lệ"}, 400)
+    await asyncio.to_thread(_aw_log, s["user"], "SETTING", f"{b.get('name')}={b.get('value')}", _aw_ip(request))
+    return _aw_json({"ok": True, "msg": msg})
+
+
+# ---------- Nạp tiền ----------
+def _awp_deposits_sync(status):
+    sql = "SELECT id,user_id,amount,status,time,ref_code FROM deposit_history "
+    if status == "pending":
+        sql += "WHERE status='pending' "
+    rows = query(sql + "ORDER BY id DESC LIMIT 100") or []
+    return [{"id": r[0], "user_id": r[1], "amount": int(r[2] or 0), "status": r[3], "time": r[4], "ref": r[5] or ""} for r in rows]
+
+
+async def awp_api_deposits2(request):
+    await asyncio.to_thread(_aw_auth, request)
+    st = "pending" if request.query.get("status") != "all" else "all"
+    return _aw_json({"rows": await asyncio.to_thread(_awp_deposits_sync, st)})
+
+
+def _awp_credit_deposit_sync(uid, amount, note):
+    prev = get_balance(uid)
+    cleared, extra = apply_deposit_wager_rule(uid, prev, amount)
+    add_money(uid, amount, note)
+    try:
+        nap_orders_mark_paid(uid)
+    except Exception:
+        pass
+    return cleared, extra
+
+
+async def _awp_after_deposit(uid, amount, cleared, extra):
+    bot = application.bot
+    try:
+        await notify_deposit_wager(bot, uid, cleared, extra)
+    except Exception:
+        pass
+    masked = "*****" + str(uid)[5:] if len(str(uid)) > 5 else str(uid)
+    try:
+        await send_group_notice(bot, chat_id=LOG_GROUP_ID, parse_mode=ParseMode.HTML,
+                                text=f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("👥")} ID: <code>{masked}</code>\n'
+                                     f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>')
+    except Exception:
+        pass
+    offer = await asyncio.to_thread(promo_build_offer, uid, amount)
+    head = (f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n{ce("💰")} Số tiền nạp: <code>+{fmt_money(amount)}đ</code>\n'
+            f'{bal_block(uid)}{deposit_wager_line(uid)}')
+    if offer:
+        await _awp_send(uid, head + "\n\n" + offer[0], reply_markup=offer[1])
+    else:
+        await _awp_send(uid, head)
+
+
+async def awp_api_deposit_act(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    did, act = request.match_info.get("did", ""), request.match_info.get("act", "")
+    if not did.isdigit() or act not in ("approve", "reject"):
+        return _aw_json({"err": "Yêu cầu không hợp lệ"}, 400)
+    new_status = "success" if act == "approve" else "rejected"
+    r = await asyncio.to_thread(
+        query, "UPDATE deposit_history SET status=%s, admin_id=0 WHERE id=%s AND status='pending' RETURNING user_id, amount",
+        (new_status, int(did)))
+    if not r:
+        return _aw_json({"err": "Đơn nạp đã được xử lý hoặc không tồn tại"}, 409)
+    uid, amount = int(r[0][0]), int(r[0][1])
+    if act == "approve":
+        cleared, extra = await asyncio.to_thread(
+            _awp_credit_deposit_sync, uid, amount, f"Nạp tiền (duyệt web {s['user']}) +{amount:,}đ")
+        await _awp_after_deposit(uid, amount, cleared, extra)
+    else:
+        await _awp_send(uid, f'{ce("❌")} Yêu cầu nạp <code>{fmt_money(amount)}đ</code> của bạn đã bị từ chối.')
+    await asyncio.to_thread(_aw_log, s["user"], "DEPOSIT_" + act.upper(), f"#{did} ID {uid} {amount}đ", _aw_ip(request))
+    return _aw_json({"ok": True})
+
+
+async def awp_api_naptien(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    try:
+        uid = int(str(b.get("uid", "")).strip())
+        amount = _awp_int(b.get("amount"), 30000, 10 ** 10)
+    except (ValueError, TypeError):
+        return _aw_json({"err": "ID hoặc số tiền không hợp lệ (tối thiểu 30.000đ)"}, 400)
+    if not await asyncio.to_thread(query, "SELECT 1 FROM users WHERE user_id=%s", (uid,)):
+        return _aw_json({"err": "Không tìm thấy người dùng"}, 404)
+    await asyncio.to_thread(
+        query, "INSERT INTO deposit_history (user_id, amount, admin_id, status, time) VALUES (%s,%s,0,'success',%s)",
+        (uid, amount, get_vietnam_datetime_db()))
+    cleared, extra = await asyncio.to_thread(
+        _awp_credit_deposit_sync, uid, amount, f"Nạp tiền +{amount:,}đ (web {s['user']})")
+    await _awp_after_deposit(uid, amount, cleared, extra)
+    await asyncio.to_thread(_aw_log, s["user"], "NAPTIEN", f"ID {uid} {amount}đ", _aw_ip(request))
+    return _aw_json({"ok": True, "msg": f"Đã nạp {fmt_money(amount)}đ cho {uid}"})
+
+
+# ---------- Quản lý người dùng nâng cao ----------
+def _awp_user_state_sync(uid):
+    gb = [int(r[0]) for r in (query("SELECT game_id FROM banned_games WHERE user_id=%s", (uid,)) or [])]
+    fb = [str(r[0]) for r in (query("SELECT feature FROM banned_features WHERE user_id=%s", (uid,)) or [])]
+    st = get_bet_progress_status(uid)
+    try:
+        items, pend, live = _rh_preview_sync(uid, "all")
+    except Exception:
+        items = pend = live = 0
+    return {
+        "games": [{"alias": a, "gid": v[1], "name": v[2]} for a, v in ADMIN_GAMES.items()],
+        "banned_game_ids": gb, "features": fb,
+        "wager": ({k: (float(v) if isinstance(v, float) else v) for k, v in st.items()} if st else None),
+        "rewards": {"items": items, "pending": pend, "live": live}, "balance": get_balance(uid),
+    }
+
+
+async def awp_api_user_state(request):
+    await asyncio.to_thread(_aw_auth, request)
+    uid = request.match_info.get("uid", "")
+    if not uid.isdigit():
+        return _aw_json({"err": "ID không hợp lệ"}, 400)
+    return _aw_json(await asyncio.to_thread(_awp_user_state_sync, int(uid)))
+
+
+def _awp_user_act_sync(uid, act, b, who):
+    tag = f"(web {who})"
+    if act in ("setbal", "resetbal"):
+        if uid in ADMIN_IDS:
+            return False, "Không thể đổi số dư tài khoản admin", None
+        new = 0 if act == "resetbal" else _awp_int(b.get("amount"), 0, 10 ** 13)
+        old = get_balance(uid)
+        if new - old:
+            add_money(uid, new - old, f"Admin điều chỉnh số dư {tag}")
+        return True, f"Số dư: {fmt_money(old)}đ → {fmt_money(new)}đ", None
+    if act in ("camgame", "mogame"):
+        g = str(b.get("game", "")).lower()
+        if act == "mogame" and g == "all":
+            query("DELETE FROM banned_games WHERE user_id=%s", (uid,))
+            return True, "Đã gỡ cấm tất cả game", None
+        if g not in ADMIN_GAMES:
+            return False, "Game không hợp lệ", None
+        gid = ADMIN_GAMES[g][1]
+        if act == "camgame":
+            query("INSERT INTO banned_games(user_id,game_id) VALUES(%s,%s) ON CONFLICT DO NOTHING", (uid, gid))
+        else:
+            query("DELETE FROM banned_games WHERE user_id=%s AND game_id=%s", (uid, gid))
+        return True, f'{"Đã cấm" if act == "camgame" else "Đã gỡ cấm"} {ADMIN_GAMES[g][2]}', None
+    if act in ("camtn", "motn"):
+        w = str(b.get("what", "")).lower()
+        if w not in ("nap", "rut", "all") or (act == "camtn" and w == "all"):
+            return False, "Loại không hợp lệ", None
+        if act == "camtn":
+            query("INSERT INTO banned_features(user_id,feature) VALUES(%s,%s) ON CONFLICT DO NOTHING", (uid, w))
+        elif w == "all":
+            query("DELETE FROM banned_features WHERE user_id=%s AND feature IN ('nap','rut')", (uid,))
+        else:
+            query("DELETE FROM banned_features WHERE user_id=%s AND feature=%s", (uid, w))
+        return True, f'{"Đã khoá" if act == "camtn" else "Đã mở"} {w.upper()}', None
+    if act in ("camhoan", "mohoan"):
+        p = str(b.get("period", "")).lower()
+        if p not in _AWP_PERIODS:
+            return False, "Loại không hợp lệ", None
+        feats = ["hoan_ngay", "hoan_tuan"] if p == "all" else [f"hoan_{p}"]
+        for f in feats:
+            if act == "camhoan":
+                query("INSERT INTO banned_features(user_id,feature) VALUES(%s,%s) ON CONFLICT DO NOTHING", (uid, f))
+            else:
+                query("DELETE FROM banned_features WHERE user_id=%s AND feature=%s", (uid, f))
+        _REWARD_BAN_CACHE.pop(uid, None)
+        return True, f'{"Đã khoá" if act == "camhoan" else "Đã mở"} nhận hoàn trả ({p})', None
+    if act == "resethoan":
+        p = str(b.get("period", "all")).lower()
+        if p not in _AWP_PERIODS:
+            return False, "Loại không hợp lệ", None
+        res = _rh_apply_sync(uid, p)
+        if res is None:
+            return False, "Lỗi cơ sở dữ liệu, chưa reset được", None
+        return True, f"Đã reset hoàn trả: xoá {res[0]} khoản = {fmt_money(res[1])}đ", None
+    if act == "xoacuoc":
+        row = query("DELETE FROM user_bonus WHERE user_id=%s RETURNING required_bet", (uid,))
+        return True, ("Đã xoá vòng cược" if row else "User không có vòng cược"), \
+            ({"text": f'{ce("🔓")} Admin đã xoá yêu cầu vòng cược của bạn. Bạn có thể rút tiền bình thường.'} if row else None)
+    if act == "themcuoc":
+        amt = _awp_int(b.get("amount"), -10 ** 13, 10 ** 13)
+        row = query("SELECT required_bet, current_bet FROM user_bonus WHERE user_id=%s", (uid,)) or []
+        if not row or int(row[0][0] or 0) <= 0:
+            return False, "User không có vòng cược để cộng", None
+        req, cur = int(row[0][0]), int(row[0][1] or 0)
+        new = max(0, cur + amt)
+        query("UPDATE user_bonus SET current_bet=%s WHERE user_id=%s", (new, uid))
+        return True, f"Tiến độ cược: {fmt_money(new)}đ / {fmt_money(req)}đ", ({"done": (uid, new, req)} if new >= req else None)
+    if act == "themvong":
+        amt = _awp_int(b.get("amount"), 1, 10 ** 13)
+        add_wager_requirement(uid, 0, amt)
+        return True, f"Đã thêm yêu cầu cược {fmt_money(amt)}đ", \
+            {"text": f'{ce("🎯")} <b>THÔNG BÁO VÒNG CƯỢC</b>\nBạn được yêu cầu cược thêm <code>{fmt_money(amt)}đ</code> trước khi rút tiền.'}
+    if act == "kmnap":
+        amt = _awp_int(b.get("amount"), 1, 10 ** 12)
+        req = add_bonus_with_requirement(uid, amt)
+        return True, f"Đã tặng {fmt_money(amt)}đ (cược {fmt_money(req)}đ)", \
+            {"text": f'{ce("🎁")} <b>KHUYẾN MÃI</b>\nBạn nhận <code>+{fmt_money(amt)}đ</code>. Cần cược <code>{fmt_money(req)}đ</code> trước khi rút.'}
+    return False, "Thao tác không hợp lệ", None
+
+
+async def awp_api_user_act(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    us, act = request.match_info.get("uid", ""), request.match_info.get("act", "")
+    if not us.isdigit():
+        return _aw_json({"err": "ID không hợp lệ"}, 400)
+    uid = int(us)
+    if not await asyncio.to_thread(query, "SELECT 1 FROM users WHERE user_id=%s", (uid,)):
+        return _aw_json({"err": "Không tìm thấy người dùng"}, 404)
+    b = await _awp_body(request)
+    if act == "message":
+        text = str(b.get("text", "")).strip()[:3500]
+        if not text:
+            return _aw_json({"err": "Nội dung trống"}, 400)
+        ok = await _awp_send(uid, f'{ce("✍️")} <b>PHẢN HỒI TỪ ADMIN:</b>\n\n{html.escape(text)}')
+        await asyncio.to_thread(_aw_log, s["user"], "MESSAGE", f"ID {uid}", _aw_ip(request))
+        return _aw_json({"ok": ok, "msg": "Đã gửi" if ok else "Không gửi được (user chưa /start bot?)"})
+    try:
+        ok, msg, notify = await asyncio.to_thread(_awp_user_act_sync, uid, act, b, s["user"])
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Dữ liệu không hợp lệ"}, 400)
+    if not ok:
+        return _aw_json({"err": msg}, 400)
+    if notify:
+        if notify.get("text"):
+            await _awp_send(uid, notify["text"])
+        if notify.get("done"):
+            await check_and_notify_bet_completion(*notify["done"])
+    await asyncio.to_thread(_aw_log, s["user"], "USER_" + act.upper(), f"ID {uid} {msg}", _aw_ip(request))
+    return _aw_json({"ok": True, "msg": msg})
+
+
+# ---------- Giftcode ----------
+async def awp_api_gift_types(request):
+    await asyncio.to_thread(_aw_auth, request)
+    return _aw_json({"types": [{"type": k, "name": v["name"]} for k, v in GIFT_TYPES.items()]})
+
+
+async def awp_api_gift_create(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    try:
+        ctype = str(b.get("ctype", ""))
+        if ctype not in GIFT_TYPES:
+            raise ValueError
+        st = {"ctype": ctype, "reward": _awp_int(b.get("reward"), 1000, 10 ** 8),
+              "wager": _awp_int(b.get("wager", 0), 0, 100), "duration": _awp_int(b.get("minutes"), 1, 525600),
+              "qty": _awp_int(b.get("qty", 1), 1, 100), "require_deposit": 0, "required_amount": 0, "bound_user": None}
+        if str(b.get("req_dep", "")).strip():
+            st["required_amount"] = _awp_int(b.get("req_dep"), 1000, 10 ** 10)
+            st["require_deposit"] = 1
+        if str(b.get("bound", "")).strip():
+            st["bound_user"] = int(str(b.get("bound")).strip())
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Thông tin code không hợp lệ"}, 400)
+    codes, expiry = await asyncio.to_thread(_create_gift_codes, st, 0)
+    await asyncio.to_thread(_aw_log, s["user"], "GIFT_CREATE", f"{ctype} x{len(codes)} {st['reward']}đ", _aw_ip(request))
+    return _aw_json({"ok": True, "codes": codes, "expiry": expiry.strftime("%d/%m/%Y %H:%M")})
+
+
+async def awp_api_gift_delete(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    code = str(b.get("code", "")).strip().upper()[:60]
+    r = await asyncio.to_thread(query, "DELETE FROM giftcodes WHERE code=%s RETURNING reward", (code,))
+    if not r:
+        return _aw_json({"err": "Không tìm thấy code"}, 404)
+    await asyncio.to_thread(_aw_log, s["user"], "GIFT_DELETE", code, _aw_ip(request))
+    return _aw_json({"ok": True, "msg": f"Đã xoá {code}"})
+
+
+# ---------- Thông báo / vòng cược hàng loạt ----------
+async def _awp_broadcast_task(users, text):
+    _AWP_BC.update(running=True, sent=0, failed=0, total=len(users))
+    try:
+        for (u,) in users:
+            ok = await _awp_send(int(u), f'{ce("🔔")} <b>THÔNG BÁO MỚI</b>\n\n{html.escape(text)}')
+            _AWP_BC["sent" if ok else "failed"] += 1
+            if (_AWP_BC["sent"] + _AWP_BC["failed"]) % 20 == 0:
+                await asyncio.sleep(1)
+    finally:
+        _AWP_BC["running"] = False
+
+
+async def awp_api_broadcast(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    text = str(b.get("text", "")).strip()[:3500]
+    if not text:
+        return _aw_json({"err": "Nội dung trống"}, 400)
+    if _AWP_BC["running"]:
+        return _aw_json({"err": "Đang có đợt gửi khác chạy, vui lòng chờ"}, 409)
+    users = await asyncio.to_thread(query, "SELECT user_id FROM users") or []
+    t = asyncio.create_task(_awp_broadcast_task(users, text))
+    _AWP_TASKS.add(t)
+    t.add_done_callback(_AWP_TASKS.discard)
+    await asyncio.to_thread(_aw_log, s["user"], "BROADCAST", f"{len(users)} người", _aw_ip(request))
+    return _aw_json({"ok": True, "total": len(users)})
+
+
+async def awp_api_broadcast_status(request):
+    await asyncio.to_thread(_aw_auth, request)
+    return _aw_json(dict(_AWP_BC))
+
+
+async def awp_api_vcall_preview(request):
+    await asyncio.to_thread(_aw_auth, request)
+    try:
+        mult = _vc_parse_mult(request.query.get("mult", ""))
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Số vòng không hợp lệ"}, 400)
+    rows = await asyncio.to_thread(query, "SELECT user_id, balance FROM users WHERE balance>0") or []
+    rows = [(int(u), int(bl)) for u, bl in rows if int(u) not in ADMIN_IDS]
+    return _aw_json({"users": len(rows), "total": sum(int(bl * mult) for _u, bl in rows)})
+
+
+async def awp_api_vcall(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    try:
+        mult = _vc_parse_mult(b.get("mult", ""))
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Số vòng không hợp lệ"}, 400)
+    done, total, targets = await asyncio.to_thread(_vcall_apply_sync, mult)
+    t = asyncio.create_task(_vcall_notify(application.bot, mult, targets))
+    _AWP_TASKS.add(t)
+    t.add_done_callback(_AWP_TASKS.discard)
+    await asyncio.to_thread(_aw_log, s["user"], "VCALL", f"x{mult:g} {done} người", _aw_ip(request))
+    return _aw_json({"ok": True, "msg": f"Đã thêm vòng cược x{mult:g} cho {done} người (tổng {fmt_money(total)}đ)"})
+
+
+# ---------- Xuất file ----------
+_AWP_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_AWP_USER_SHEETS = {"his": "Biến động số dư", "nap": "Nạp", "rut": "Rút", "cuoc": "Cược & Thắng",
+                    "code": "Code đã nhập", "mua": "Gift đã mua", "gift": "Gift đã dùng"}
+
+
+def _awp_export_sync(kind, token, uid):
+    start, end, label = _rp_range(token)
+    tag = _rp_tag(token)
+    stamp = get_vietnam_time().strftime("%Y%m%d_%H%M")
+    if kind == "stats":
+        sheets, _sm = _stat_collect_sync(start, end, False)
+        head, sub, base = "BÁO CÁO THỐNG KÊ HỆ THỐNG", f"Kỳ báo cáo: {label}", f"thongke_{tag}_{stamp}"
+    elif kind == "nap":
+        raw = [r for r in (query("SELECT id,user_id,amount,status,time,ref_code,admin_id FROM deposit_history ORDER BY id ASC") or [])
+               if _rp_in_range(r[4], start, end)]
+        sheets, head, sub, base = [_xs_dep_sheet(raw)], "LỊCH SỬ NẠP", f"Kỳ: {label}", f"nap_{tag}_{stamp}"
+    elif kind == "rut":
+        raw = [r for r in (query("SELECT id,user_id,amount,status,time,admin_id,admin_note FROM withdraw_history ORDER BY id ASC") or [])
+               if _rp_in_range(r[4], start, end)]
+        sheets, head, sub, base = [_xs_wd_sheet(raw)], "LỊCH SỬ RÚT", f"Kỳ: {label}", f"rut_{tag}_{stamp}"
+    elif kind == "user":
+        sheets = []
+        for k, name in _AWP_USER_SHEETS.items():
+            data = _rp_collect(k, uid, start, end)
+            sheets.append({"name": name, **data, "kpis": _rp_kpis(k, data)})
+        head, sub, base = f"HỒ SƠ NGƯỜI DÙNG {uid}", f"Kỳ: {label}", f"user_{uid}_{tag}_{stamp}"
+    else:
+        raise ValueError("kind")
+    try:
+        return _rp_build_xlsx(head, sub, sheets).getvalue(), base + ".xlsx", _AWP_XLSX
+    except ImportError:
+        return _rp_build_csv(head, sub, sheets).getvalue(), base + ".csv", "text/csv"
+
+
+async def awp_api_export(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request)
+    kind = request.match_info.get("kind", "")
+    token = _rp_token_from_text(request.query.get("period", "30")) or "n30"
+    us = request.query.get("uid", "")
+    if kind not in ("stats", "nap", "rut", "user") or (kind == "user" and not us.isdigit()):
+        return _aw_json({"err": "Yêu cầu không hợp lệ"}, 400)
+    try:
+        data, fname, ctype = await asyncio.to_thread(_awp_export_sync, kind, token, int(us) if us.isdigit() else 0)
+    except Exception as e:
+        traceback.print_exc()
+        return _aw_json({"err": f"Không xuất được file: {e}"}, 500)
+    await asyncio.to_thread(_aw_log, s["user"], "EXPORT", f"{kind} {token} {us}", _aw_ip(request))
+    return web.Response(body=data, content_type=ctype,
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"', **_AW_SEC_HEADERS})
+
+
+def admin_web_plus_register(app):
+    r = app.router
+    r.add_get("/admin/api/chart", awp_api_chart)
+    r.add_get("/admin/api/control", awp_api_control)
+    r.add_post("/admin/api/control/mt", awp_api_mt)
+    r.add_post("/admin/api/control/mtall", awp_api_mtall)
+    r.add_post("/admin/api/control/room", awp_api_room)
+    r.add_post("/admin/api/control/setting", awp_api_setting)
+    r.add_get("/admin/api/deposits2", awp_api_deposits2)
+    r.add_post("/admin/api/deposit/{did}/{act}", awp_api_deposit_act)
+    r.add_post("/admin/api/naptien", awp_api_naptien)
+    r.add_get("/admin/api/u2/{uid}/state", awp_api_user_state)
+    r.add_post("/admin/api/u2/{uid}/{act}", awp_api_user_act)
+    r.add_get("/admin/api/gift/types", awp_api_gift_types)
+    r.add_post("/admin/api/gift/create", awp_api_gift_create)
+    r.add_post("/admin/api/gift/delete", awp_api_gift_delete)
+    r.add_post("/admin/api/broadcast", awp_api_broadcast)
+    r.add_get("/admin/api/broadcast/status", awp_api_broadcast_status)
+    r.add_get("/admin/api/vcall/preview", awp_api_vcall_preview)
+    r.add_post("/admin/api/vcall", awp_api_vcall)
+    r.add_get("/admin/api/export/{kind}", awp_api_export)
+
+
+# ---------- Giao diện: JS bổ sung (được ghép vào _AW_JS lúc khởi động) ----------
+_AWP_JS = r'''
+function sw(label,key,on){return '<button class="btn '+(on?'bad':'ok')+'" data-x="mt" data-key="'+esc(key)+'" data-v="'+(on?0:1)+'">'+(on?'🔴 ':'🟢 ')+esc(label)+(on?' — ĐANG BẢO TRÌ':' — hoạt động')+'</button>';}
+function vals(b){var o={};b.parentNode.querySelectorAll('[data-k]').forEach(function(e){o[e.getAttribute('data-k')]=e.value;});return o;}
+function ub(id,label,act,cls,body,cf){return '<button class="btn '+(cls||'gray')+'" data-x="u" data-id="'+esc(id)+'" data-act="'+act+'"'+(body?' data-body="'+esc(JSON.stringify(body))+'"':'')+(cf?' data-cf="'+esc(cf)+'"':'')+'>'+esc(label)+'</button>';}
+var TA='style="background:#0f1117;border:1px solid #272b38;color:#e8eaf0;border-radius:9px;padding:10px 12px;font-size:15px;width:100%;min-height:90px"';
+
+async function vStats2(){
+  await vStats();
+  var c=await api('chart?days=14');var mx=1;
+  c.rows.forEach(function(r){mx=Math.max(mx,r.dep,r.wd);});
+  var h='<div class="item"><b>📈 14 ngày gần nhất</b><div class="tw"><table><tr><th>Ngày</th><th>Nạp</th><th>Rút</th><th></th><th>Cược</th><th>Lãi/lỗ game</th></tr>'+c.rows.slice().reverse().map(function(r){
+    return '<tr><td>'+esc(r.day)+'</td><td>'+money(r.dep)+'</td><td>'+money(r.wd)+'</td><td style="min-width:110px"><div style="height:5px;background:#27c281;width:'+Math.round(r.dep*100/mx)+'%"></div><div style="height:5px;margin-top:2px;background:#ff5d6c;width:'+Math.round(r.wd*100/mx)+'%"></div></td><td>'+money(r.bet)+'</td><td style="color:'+(r.pnl>=0?'#27c281':'#ff5d6c')+'">'+(r.pnl<0?'−':'+')+money(Math.abs(r.pnl))+'</td></tr>';}).join('')+'</table></div><p class="mut" style="font-size:12.5px;margin:6px 0 0">Thanh xanh: nạp · thanh đỏ: rút</p></div>';
+  view.insertAdjacentHTML('beforeend',h);
+}
+
+async function vDep2(){
+  var f=vDep2.f||'pending';var d=await api('deposits2?status='+f);
+  var h='<div class="item"><b>➕ Nạp tiền thủ công</b><div class="inl" style="margin-top:8px"><input data-k="uid" placeholder="ID người dùng" inputmode="numeric"><input data-k="amount" placeholder="Số tiền (vd 100k)"><button class="btn ok" data-x="naptien">Nạp</button></div></div>';
+  h+='<div class="inl" style="margin:8px 0"><select id="df"><option value="pending">Chờ duyệt</option><option value="all">100 giao dịch gần nhất</option></select></div>';
+  h+='<div class="item tw"><table><tr><th>#</th><th>ID</th><th>Số tiền</th><th>Trạng thái</th><th>Thời gian</th><th>Mã GD</th><th></th></tr>'+d.rows.map(function(r){
+    return '<tr><td>'+esc(r.id)+'</td><td><a href="#" data-open="'+esc(r.user_id)+'">'+esc(r.user_id)+'</a></td><td>'+money(r.amount)+'</td><td><span class="tag '+esc(r.status)+'">'+esc(r.status)+'</span></td><td>'+esc(r.time)+'</td><td>'+esc(r.ref)+'</td><td>'+(r.status==='pending'?'<button class="btn ok" data-x="dep" data-id="'+esc(r.id)+'" data-act="approve">Duyệt</button> <button class="btn bad" data-x="dep" data-id="'+esc(r.id)+'" data-act="reject">Từ chối</button>':'')+'</td></tr>';}).join('')+'</table></div>'+(d.rows.length?'':'<p class="mut">Không có giao dịch.</p>');
+  view.innerHTML=h;var s=document.getElementById('df');s.value=f;s.onchange=function(){vDep2.f=s.value;load();};
+}
+
+async function vGift2(){
+  await vGift();
+  var t=await api('gift/types');
+  var h='<div class="item"><b>🎁 Tạo giftcode</b><div class="inl" style="margin-top:8px"><select data-k="ctype">'+t.types.map(function(x){return '<option value="'+esc(x.type)+'">'+esc(x.name)+'</option>';}).join('')+'</select><input data-k="qty" placeholder="Số lượng" value="1" inputmode="numeric"><input data-k="reward" placeholder="Giá trị mỗi code (vd 20k)"><input data-k="wager" placeholder="Vòng cược" value="1" inputmode="numeric"></div>'
+   +'<div class="inl" style="margin-top:8px"><input data-k="mins" placeholder="Hạn dùng" value="1" inputmode="numeric"><select data-k="unit"><option value="1440">ngày</option><option value="60">giờ</option><option value="1">phút</option></select><input data-k="bound" placeholder="Chỉ ID này dùng được (tuỳ chọn)"><input data-k="req_dep" placeholder="Yêu cầu nạp trong ngày (tuỳ chọn)"><button class="btn ok" data-x="gcreate">Tạo code</button></div><pre id="gout" class="mut" style="white-space:pre-wrap;user-select:all"></pre></div>'
+   +'<div class="item"><b>🗑 Xoá giftcode</b><div class="inl" style="margin-top:8px"><input data-k="code" placeholder="Mã code"><button class="btn bad" data-x="gdel">Xoá</button></div></div>';
+  view.insertAdjacentHTML('beforeend',h);
+}
+
+async function vCtl(){
+  var d=await api('control');
+  var h='<div class="item"><b>🛠 Bảo trì</b><p class="mut" style="margin:4px 0 8px">Xanh = hoạt động · đỏ = đang bảo trì (admin vẫn chơi được). Bấm để đổi.</p><div class="acts">'+sw('Toàn hệ thống','system_maintenance',d.system)+sw('Toàn bộ (kể cả menu)','mt_tongbao',d.total)+'</div></div>';
+  h+='<div class="item"><b>🎮 Game</b><div class="acts">'+d.games.map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div><div class="acts"><button class="btn bad" data-x="mtall" data-v="1" data-scope="games" data-cf="Bảo trì TẤT CẢ game?">Bảo trì tất cả game</button><button class="btn ok" data-x="mtall" data-v="0" data-scope="games">Mở tất cả game</button></div></div>';
+  h+='<div class="item"><b>💳 Nạp / Rút</b><div class="acts">'+d.features.map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div></div>';
+  h+='<div class="item"><b>🏠 Room nhóm</b>'+d.rooms.map(function(r){return '<div class="row" style="margin-top:8px"><span>Nhóm <b>'+esc(r.id)+'</b></span><span>Bot: <b>'+(r.muted?'ĐÃ TẮT':'đang bật')+'</b></span><span>Cược: <b>'+(r.bet?'mở':'khoá')+'</b></span></div><div class="acts">'+
+    (r.muted?'<button class="btn ok" data-x="room" data-id="'+esc(r.id)+'" data-act="unmute">Bật lại room</button>':'<button class="btn bad" data-x="room" data-id="'+esc(r.id)+'" data-act="mute" data-cf="Tắt room? Bot ngừng gửi tin và hoàn cược phiên đang mở.">Tắt room</button>')+
+    (r.bet?'<button class="btn gray" data-x="room" data-id="'+esc(r.id)+'" data-act="betoff">Khoá cược</button>':'<button class="btn ok" data-x="room" data-id="'+esc(r.id)+'" data-act="beton">Mở cược</button>')+'</div>';}).join('')+'</div>';
+  function srow(label,name,val,sel){return '<div class="inl" style="margin-top:8px"><span style="min-width:200px;align-self:center">'+label+'</span>'+(sel?'<select data-k="value">'+sel.map(function(o){return '<option value="'+o+'"'+(o===val?' selected':'')+'>'+o+'</option>';}).join('')+'</select>':'<input data-k="value" value="'+esc(val)+'">')+'<button class="btn" data-x="set" data-name="'+name+'">Lưu</button></div>';}
+  h+='<div class="item"><b>⚙️ Cài đặt</b>'+srow('Giờ vàng nạp ('+esc(d.promo_windows)+') — '+(d.promo_active?'đang mở':'đang tắt'),'promo_mode',d.promo_mode,['auto','on','off'])+srow('Hoàn cược ngày (%)','rebate_ngay',d.rebate_ngay)+srow('Hoàn cược tuần (%)','rebate_tuan',d.rebate_tuan)+srow('Hũ jackpot Tài Xỉu Room (đ)','jackpot',d.jackpot)+srow('Hũ Tài Xỉu 3D (đ)','tx3d_pot',d.tx3d_pot)+srow('Tên hiển thị của bot','bot_name',d.bot_name)+'</div>';
+  view.innerHTML=h;
+}
+
+async function vBc(){
+  var h='<div class="item"><b>📣 Gửi thông báo tới TẤT CẢ người dùng</b><div style="margin-top:8px"><textarea id="bct" '+TA+' placeholder="Nội dung thông báo"></textarea></div><div class="acts"><button class="btn" data-x="bc">Gửi</button><span id="bcs" class="mut" style="align-self:center"></span></div></div>'
+   +'<div class="item"><b>🎯 Thêm vòng cược cho TẤT CẢ người có số dư</b><p class="mut" style="margin:4px 0 8px">Yêu cầu cược thêm = số dư × số vòng (cộng dồn). Không áp dụng cho admin.</p><div class="inl"><input data-k="mult" placeholder="Số vòng, vd 7" value="7"><button class="btn gray" data-x="vcprev">Xem trước</button><button class="btn bad" data-x="vcall">Áp dụng</button></div><p id="vcs" class="mut"></p></div>';
+  view.innerHTML=h;
+}
+
+async function vExp(){
+  function row(title,kind){return '<div class="item"><b>'+title+'</b><div class="inl" style="margin-top:8px"><input data-k="period" value="30" placeholder="all | 7 | 29/10/2026 | 01/10/2026 - 29/10/2026"><button class="btn" data-x="dl" data-kind="'+kind+'">Tải file Excel</button></div></div>';}
+  view.innerHTML='<p class="mut">Kỳ: <b>all</b> (tất cả), số ngày gần nhất (vd <b>7</b>), một ngày hoặc khoảng ngày DD/MM/YYYY.</p>'+row('📊 Thống kê hệ thống (nhiều sheet + biểu đồ)','stats')+row('📥 Lịch sử nạp','nap')+row('📤 Lịch sử rút','rut');
+}
+
+async function uPlus(id,p){
+  var box=document.getElementById('uplus');if(!box)return;
+  var s;try{s=await api('u2/'+encodeURIComponent(id)+'/state');}catch(e){return;}
+  var gname={};s.games.forEach(function(g){gname[g.gid]=g.name;});
+  var bg=s.banned_game_ids.map(function(i){return esc(gname[i]||('Game '+i));}).join(', ')||'—';
+  var f=s.features;function has(x){return f.indexOf(x)>=0;}
+  var w=s.wager;
+  var h='<div class="item"><b>🧰 Quản lý nâng cao</b>';
+  h+='<div class="inl" style="margin-top:10px"><input data-k="amount" placeholder="Số dư mới (vd 500k)"><button class="btn" data-x="u" data-id="'+esc(id)+'" data-act="setbal" data-cf="Đặt lại số dư?">Đặt số dư</button>'+ub(id,'Reset số dư về 0','resetbal','bad',null,'Đặt số dư về 0?')+'</div>';
+  h+='<div class="inl" style="margin-top:10px"><input data-k="amount" placeholder="Tặng khuyến mãi (có vòng cược), vd 20k"><button class="btn" data-x="u" data-id="'+esc(id)+'" data-act="kmnap">Tặng KM</button></div>';
+  h+='<div class="mut" style="margin-top:12px">Game đang bị cấm: <b>'+bg+'</b></div><div class="inl" style="margin-top:6px"><select data-k="game">'+s.games.map(function(g){return '<option value="'+esc(g.alias)+'">'+esc(g.name)+'</option>';}).join('')+'</select>'+ub(id,'Cấm game','camgame','bad')+ub(id,'Gỡ cấm','mogame','ok')+ub(id,'Gỡ tất cả','mogame','gray',{game:'all'})+'</div>';
+  h+='<div class="mut" style="margin-top:12px">Nạp: <b>'+(has('nap')?'ĐÃ KHOÁ':'mở')+'</b> · Rút: <b>'+(has('rut')?'ĐÃ KHOÁ':'mở')+'</b></div><div class="acts">'+ub(id,'Khoá nạp','camtn','bad',{what:'nap'})+ub(id,'Khoá rút','camtn','bad',{what:'rut'})+ub(id,'Mở nạp','motn','ok',{what:'nap'})+ub(id,'Mở rút','motn','ok',{what:'rut'})+'</div>';
+  h+='<div class="mut" style="margin-top:12px">Hoàn trả: ngày <b>'+(has('hoan_ngay')?'ĐÃ KHOÁ':'mở')+'</b> · tuần <b>'+(has('hoan_tuan')?'ĐÃ KHOÁ':'mở')+'</b> · chờ nhận <b>'+money(s.rewards.pending)+'</b> · đang tích luỹ <b>'+money(s.rewards.live)+'</b></div><div class="acts">'+ub(id,'Khoá hoàn ngày','camhoan','bad',{period:'ngay'})+ub(id,'Khoá hoàn tuần','camhoan','bad',{period:'tuan'})+ub(id,'Mở tất cả hoàn','mohoan','ok',{period:'all'})+ub(id,'RESET toàn bộ hoàn trả','resethoan','bad',{period:'all'},'Reset toàn bộ tiền hoàn trả của người này về 0?')+'</div>';
+  h+='<div class="mut" style="margin-top:12px">Vòng cược: '+(w?'đã cược <b>'+money(w.current_bet)+'</b> / yêu cầu <b>'+money(w.required_bet)+'</b> · còn thiếu <b>'+money(Math.max(0,w.remaining))+'</b>':'<b>không có</b>')+'</div><div class="inl" style="margin-top:6px"><input data-k="amount" placeholder="Số tiền, vd 500k (âm để trừ tiến độ)">'+ub(id,'Thêm yêu cầu cược','themvong','')+ub(id,'Cộng tiến độ cược','themcuoc','')+ub(id,'Xoá vòng cược','xoacuoc','bad',null,'Xoá toàn bộ vòng cược?')+'</div>';
+  h+='<div class="inl" style="margin-top:12px"><input data-k="text" placeholder="Nhắn riêng cho người này qua bot">'+ub(id,'Gửi','message','')+'</div>';
+  h+='<div class="inl" style="margin-top:12px"><input data-k="period" value="all" placeholder="Kỳ: all | 7 | 29/10/2026"><button class="btn gray" data-x="dl" data-kind="user" data-uid="'+esc(id)+'">Tải Excel của user này</button></div></div>';
+  box.innerHTML=h;
+}
+
+view.addEventListener('click',async function(ev){
+  var b=ev.target.closest('button[data-x]');if(!b)return;
+  var x=b.getAttribute('data-x');function g(k){return b.getAttribute('data-'+k);}
+  if(g('cf')&&!confirm(g('cf')))return;
+  var v=vals(b);b.disabled=true;
+  try{
+    if(x==='mt'){await post('control/mt',{key:g('key'),value:+g('v')});toast('Đã cập nhật');return load();}
+    if(x==='mtall'){await post('control/mtall',{value:+g('v'),scope:g('scope')});toast('Đã cập nhật');return load();}
+    if(x==='room'){await post('control/room',{id:g('id'),act:g('act')});toast('Đã cập nhật');return load();}
+    if(x==='set'){var r=await post('control/setting',{name:g('name'),value:v.value});toast(r.msg||'Đã lưu');return load();}
+    if(x==='dep'){if(!confirm((g('act')==='approve'?'DUYỆT':'TỪ CHỐI')+' đơn nạp #'+g('id')+'?')){b.disabled=false;return;}await post('deposit/'+g('id')+'/'+g('act'));toast('Đã xử lý');return load();}
+    if(x==='naptien'){if(!confirm('Nạp '+v.amount+' cho ID '+v.uid+'?')){b.disabled=false;return;}var r2=await post('naptien',{uid:v.uid,amount:v.amount});toast(r2.msg);return load();}
+    if(x==='u'){var body=Object.assign({},v,g('body')?JSON.parse(g('body')):{});var r3=await post('u2/'+encodeURIComponent(g('id'))+'/'+g('act'),body);toast(r3.msg||'Xong');return openUser(g('id'));}
+    if(x==='gcreate'){var r4=await post('gift/create',{ctype:v.ctype,qty:v.qty,reward:v.reward,wager:v.wager,minutes:(parseFloat(v.mins)||0)*parseInt(v.unit,10),bound:v.bound,req_dep:v.req_dep});document.getElementById('gout').textContent='Hạn đến '+r4.expiry+'\n'+r4.codes.join('\n');toast('Đã tạo '+r4.codes.length+' code');b.disabled=false;return;}
+    if(x==='gdel'){var r5=await post('gift/delete',{code:v.code});toast(r5.msg);b.disabled=false;return;}
+    if(x==='bc'){var t=document.getElementById('bct').value;if(!t.trim()||!confirm('Gửi thông báo cho TẤT CẢ người dùng?')){b.disabled=false;return;}
+      var r6=await post('broadcast',{text:t});var st=document.getElementById('bcs');st.textContent='Đang gửi tới '+r6.total+' người…';
+      var tm=setInterval(async function(){try{var s=await api('broadcast/status');st.textContent='Đã gửi '+s.sent+' · lỗi '+s.failed+' / '+s.total;if(!s.running){clearInterval(tm);b.disabled=false;toast('Gửi xong');}}catch(e){clearInterval(tm);b.disabled=false;}},2000);return;}
+    if(x==='vcprev'){var p2=await api('vcall/preview?mult='+encodeURIComponent(v.mult));document.getElementById('vcs').textContent=p2.users+' người · tổng yêu cầu cược thêm '+money(p2.total);b.disabled=false;return;}
+    if(x==='vcall'){if(!confirm('Thêm vòng cược x'+v.mult+' cho TẤT CẢ người có số dư? Không hoàn tác được.')){b.disabled=false;return;}var r7=await post('vcall',{mult:v.mult});toast(r7.msg);document.getElementById('vcs').textContent=r7.msg;b.disabled=false;return;}
+    if(x==='dl'){var url='/admin/api/export/'+g('kind')+'?period='+encodeURIComponent(v.period||'30')+(g('uid')?'&uid='+encodeURIComponent(g('uid')):'');b.disabled=false;location.href=url;return;}
+  }catch(e){toast(e.message);b.disabled=false;}
+});
+'''
+
+
+def _awp_patch_js(js):
+    reps = [
+        ("var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['log','Nhật ký']];",
+         "var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['log','Nhật ký']];"),
+        ("({stats:vStats,wd:vWd,dep:vDep,user:vUser,gift:vGift,log:vLog})[cur]()",
+         "({stats:vStats2,wd:vWd,dep:vDep2,user:vUser,gift:vGift2,ctl:vCtl,bc:vBc,exp:vExp,log:vLog})[cur]()"),
+        ("""'<nav id="snav"></nav><div id="sbody"></div>'""",
+         """'<div id="uplus"></div><nav id="snav"></nav><div id="sbody"></div>'"""),
+        ("document.getElementById('bk').onclick=", "uPlus(id,p);document.getElementById('bk').onclick="),
+        ("document.getElementById('out').onclick=", _AWP_JS + "\ndocument.getElementById('out').onclick="),
+    ]
+    for old, new in reps:
+        if old not in js:
+            print(f"[web-plus] CẢNH BÁO: không tìm thấy đoạn cần vá trong _AW_JS: {old[:60]}…")
+            continue
+        js = js.replace(old, new, 1)
+    return js
+
+
+_AW_JS = _awp_patch_js(_AW_JS)
+
+
 async def start_webhook_server():
     app = web.Application()
     # Nhận webhook ở cả gốc "/" lẫn /sepay_webhook (SePay đang gọi thẳng tên miền, không kèm đường dẫn).
@@ -8768,6 +9471,7 @@ async def start_webhook_server():
     app.router.add_get('/health', _health)
     tx3d_register_routes(app)      # miniapp Tài Xỉu 3D: /app , /api/state , /api/bet
     admin_web_register_routes(app)  # web admin: /admin (đăng nhập bằng tài khoản tạo qua /taoadmin)
+    admin_web_plus_register(app)  # mở rộng giao diện và API admin
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8080"))   # Railway cấp cổng qua biến PORT
