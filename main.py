@@ -7833,6 +7833,687 @@ async def sepay_webhook(request):
         traceback.print_exc()
         return web.Response(status=500, text="Internal Server Error")
 
+# ============================================================
+# WEB ADMIN (đăng nhập bằng tên đăng nhập + mật khẩu do admin tạo qua bot)
+#   Bot:  /taoadmin  /xoaadmin  /doimkadmin  /dsadminweb
+#   Web:  https://<tên-miền>/admin
+# ============================================================
+import secrets as _secrets
+import string as _string
+
+query("""CREATE TABLE IF NOT EXISTS admin_web_users (
+    username TEXT PRIMARY KEY,
+    pw_hash TEXT NOT NULL,
+    created_by BIGINT,
+    created_at TEXT,
+    active INTEGER DEFAULT 1,
+    last_login TEXT
+)""")
+query("""CREATE TABLE IF NOT EXISTS admin_web_log (
+    id SERIAL PRIMARY KEY,
+    username TEXT,
+    action TEXT,
+    detail TEXT,
+    ip TEXT,
+    time TEXT
+)""")
+
+ADMIN_WEB_SESSION_TTL = 8 * 3600      # tối đa 8 giờ
+ADMIN_WEB_IDLE_TTL = 2 * 3600         # 2 giờ không thao tác thì hết phiên
+_ADMIN_SESSIONS = {}                  # token -> {user, csrf, created, last, ip}
+_ADMIN_LOGIN_FAILS = {}               # key (ip / user) -> [timestamps]
+_USERNAME_RE = re.compile(r"^[a-z0-9_]{3,20}$")
+
+
+def _aw_hash_password(password: str, salt: bytes = None, iters: int = 200_000) -> str:
+    salt = salt or os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iters)
+    return f"pbkdf2_sha256${iters}${salt.hex()}${dk.hex()}"
+
+
+def _aw_verify_password(password: str, stored: str) -> bool:
+    try:
+        algo, iters, salt_hex, hash_hex = stored.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iters))
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except Exception:
+        return False
+
+
+def _aw_gen_password(n: int = 12) -> str:
+    alphabet = _string.ascii_letters + _string.digits
+    return "".join(_secrets.choice(alphabet) for _ in range(n))
+
+
+def _aw_ip(request) -> str:
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()[:64]
+    return (request.remote or "?")[:64]
+
+
+def _aw_log(username, action, detail="", ip=""):
+    try:
+        query("INSERT INTO admin_web_log(username, action, detail, ip, time) VALUES(%s,%s,%s,%s,%s)",
+              (username, action, str(detail)[:500], ip, get_vietnam_datetime_db()))
+    except Exception as e:
+        print(f"admin_web_log lỗi: {e}")
+
+
+def _aw_rate_blocked(key: str, limit: int = 5, window: int = 600) -> bool:
+    now = time.time()
+    arr = [t for t in _ADMIN_LOGIN_FAILS.get(key, []) if now - t < window]
+    _ADMIN_LOGIN_FAILS[key] = arr
+    return len(arr) >= limit
+
+
+def _aw_rate_fail(key: str):
+    _ADMIN_LOGIN_FAILS.setdefault(key, []).append(time.time())
+
+
+def _aw_kill_sessions(username: str):
+    for tok in [t for t, s in _ADMIN_SESSIONS.items() if s["user"] == username]:
+        _ADMIN_SESSIONS.pop(tok, None)
+
+
+def _aw_session(request):
+    tok = request.cookies.get("xl_adm", "")
+    s = _ADMIN_SESSIONS.get(tok)
+    if not s:
+        return None, None
+    now = time.time()
+    if now - s["created"] > ADMIN_WEB_SESSION_TTL or now - s["last"] > ADMIN_WEB_IDLE_TTL:
+        _ADMIN_SESSIONS.pop(tok, None)
+        return None, None
+    # tài khoản bị xoá/khoá thì phiên mất hiệu lực ngay
+    row = query("SELECT active FROM admin_web_users WHERE username=%s", (s["user"],))
+    if not row or not row[0][0]:
+        _ADMIN_SESSIONS.pop(tok, None)
+        return None, None
+    s["last"] = now
+    return tok, s
+
+
+_AW_SEC_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
+                               "script-src 'self'; connect-src 'self'; form-action 'self'; "
+                               "frame-ancestors 'none'; base-uri 'none'",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
+def _aw_html(body: str, status: int = 200):
+    return web.Response(text=body, status=status, content_type="text/html", charset="utf-8", headers=_AW_SEC_HEADERS)
+
+
+def _aw_json(data, status: int = 200):
+    return web.json_response(data, status=status, headers=_AW_SEC_HEADERS)
+
+
+_AW_CSS = """
+:root{--bg:#0f1117;--card:#181b24;--line:#272b38;--tx:#e8eaf0;--mut:#8b91a3;--pri:#4f8cff;--ok:#27c281;--bad:#ff5d6c;--warn:#f5b942}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+a{color:var(--pri)}
+.wrap{max-width:1100px;margin:0 auto;padding:14px 16px 60px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
+header b{font-size:17px}.mut{color:var(--mut)}
+nav{display:flex;gap:6px;overflow:auto;padding:12px 0}
+nav button{background:var(--card);color:var(--mut);border:1px solid var(--line);padding:8px 14px;border-radius:10px;white-space:nowrap;cursor:pointer;font-size:14px}
+nav button.on{color:#fff;background:var(--pri);border-color:var(--pri)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+.card .k{color:var(--mut);font-size:12.5px}.card .v{font-size:21px;font-weight:650;margin-top:4px}
+.item{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:10px 0}
+.row{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:14px}.row span b{font-weight:600}
+.btn{border:0;border-radius:9px;padding:9px 14px;font-size:14px;cursor:pointer;color:#fff;background:var(--pri)}
+.btn.ok{background:var(--ok)}.btn.bad{background:var(--bad)}.btn.gray{background:#2c3142}
+.btn:disabled{opacity:.5}
+input,select{background:#0f1117;border:1px solid var(--line);color:var(--tx);border-radius:9px;padding:10px 12px;font-size:15px;width:100%}
+.inl{display:flex;gap:8px;flex-wrap:wrap}.inl input{flex:1;min-width:140px;width:auto}
+.tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;border:1px solid var(--line)}
+.tag.pending{color:var(--warn);border-color:var(--warn)}.tag.success{color:var(--ok);border-color:var(--ok)}.tag.rejected{color:var(--bad);border-color:var(--bad)}
+.qr{width:170px;height:170px;background:#fff;border-radius:10px;object-fit:contain}
+.acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse;font-size:13.5px}td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--mut);font-weight:500}
+.tw{overflow:auto}
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#222838;border:1px solid var(--line);padding:10px 16px;border-radius:10px;display:none;z-index:9;max-width:90vw}
+.login{max-width:360px;margin:12vh auto;padding:0 16px}.login .card{padding:22px}.login h2{margin:0 0 16px}
+.login label{display:block;margin:12px 0 5px;color:var(--mut);font-size:13px}.err{color:var(--bad);margin-top:12px;font-size:14px}
+"""
+
+_AW_LOGIN_PAGE = """<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Đăng nhập quản trị</title><style>__CSS__</style></head><body>
+<div class="login"><div class="card"><h2>🔐 Đăng nhập quản trị</h2>
+<form method="post" action="/admin/login" autocomplete="off">
+<label>Tên đăng nhập</label><input name="username" autocomplete="username" autocapitalize="none" required>
+<label>Mật khẩu</label><input name="password" type="password" autocomplete="current-password" required>
+<div style="margin-top:18px"><button class="btn" style="width:100%" type="submit">Đăng nhập</button></div>
+__ERR__
+</form></div></div></body></html>"""
+
+_AW_APP_PAGE = """<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Quản trị</title><style>__CSS__</style></head><body>
+<header><b>⚙️ Quản trị</b><span class="mut"><span id="who"></span> · <a href="#" id="out">Đăng xuất</a></span></header>
+<div class="wrap">
+<nav id="nav"></nav>
+<div id="view"></div>
+</div><div id="toast"></div>
+<script src="/admin/app.js"></script></body></html>"""
+
+_AW_JS = r"""
+(function(){
+'use strict';
+var csrf = '';
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function money(n){return Number(n||0).toLocaleString('vi-VN')+'đ';}
+function toast(t){var e=document.getElementById('toast');e.textContent=t;e.style.display='block';clearTimeout(toast._t);toast._t=setTimeout(function(){e.style.display='none';},3200);}
+async function api(path,opt){
+  opt=opt||{};opt.headers=Object.assign({'X-CSRF':csrf},opt.headers||{});opt.credentials='same-origin';
+  var r=await fetch('/admin/api/'+path,opt);
+  if(r.status===401){location.href='/admin/login';throw new Error('unauth');}
+  var j=await r.json();if(j.err){throw new Error(j.err);}return j;
+}
+function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
+var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['log','Nhật ký']];
+var cur='stats',view=document.getElementById('view');
+function nav(){var n=document.getElementById('nav');n.innerHTML='';tabs.forEach(function(t){var b=document.createElement('button');b.textContent=t[1];if(t[0]===cur)b.className='on';b.onclick=function(){cur=t[0];nav();load();};n.appendChild(b);});}
+function load(){view.innerHTML='<p class="mut">Đang tải…</p>';({stats:vStats,wd:vWd,dep:vDep,user:vUser,log:vLog})[cur]().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
+
+async function vStats(){
+  var d=await api('stats');var c=[
+   ['Người dùng',d.users],['Tổng số dư',money(d.balance)],['Nạp hôm nay',money(d.dep_today)],['Rút hôm nay',money(d.wd_today)],
+   ['Tổng nạp',money(d.dep_total)],['Tổng rút',money(d.wd_total)],['Rút chờ duyệt',d.wd_pending_n+' đơn · '+money(d.wd_pending_sum)],['Cược hôm nay',money(d.bet_today)]];
+  view.innerHTML='<div class="grid">'+c.map(function(x){return '<div class="card"><div class="k">'+esc(x[0])+'</div><div class="v">'+esc(x[1])+'</div></div>';}).join('')+'</div>';
+}
+
+function wdCard(w){
+  var h='<div class="item"><div class="row"><span><b>#'+esc(w.id)+'</b> · <span class="tag '+esc(w.status)+'">'+esc({pending:'Chờ duyệt',success:'Đã duyệt',rejected:'Từ chối'}[w.status]||w.status)+'</span></span><span>'+esc(w.time)+'</span></div>'
+  +'<div class="row" style="margin-top:8px"><span>Mã: <b>'+esc(w.code||'-')+'</b></span><span>ID: <b>'+esc(w.user_id)+'</b></span><span>Số tiền: <b>'+money(w.amount)+'</b></span></div>'
+  +'<div class="row" style="margin-top:6px"><span>'+esc(w.method)+'</span><span>Ngân hàng: <b>'+esc(w.bank||'-')+'</b></span><span>STK: <b>'+esc(w.stk||'-')+'</b></span><span>Chủ TK: <b>'+esc(w.acc_name||'-')+'</b></span></div>';
+  if(w.memo)h+='<div class="row" style="margin-top:6px"><span>Nội dung CK: <b>'+esc(w.memo)+'</b></span></div>';
+  if(w.note)h+='<div class="row mut" style="margin-top:6px"><span>'+esc(w.note)+'</span></div>';
+  if(w.legacy)h+='<div class="mut" style="margin-top:6px;font-size:12.5px">Bản ghi cũ: thông tin lấy từ tài khoản liên kết hiện tại.</div>';
+  h+='<div style="margin-top:10px"><img class="qr" alt="QR" loading="lazy" src="/admin/api/wqr/'+encodeURIComponent(w.id)+'"></div>';
+  if(w.status==='pending')h+='<div class="acts"><button class="btn ok" data-a="approve" data-id="'+esc(w.id)+'">✅ Duyệt</button><button class="btn bad" data-a="reject" data-id="'+esc(w.id)+'">❌ Từ chối (hoàn tiền)</button></div>';
+  return h+'</div>';
+}
+async function vWd(){
+  var d=await api('withdraws?status='+(vWd.f||'pending'));
+  var f='<div class="inl" style="margin-bottom:8px"><select id="wf"><option value="pending">Chờ duyệt</option><option value="all">Tất cả (50 gần nhất)</option></select><input id="wu" placeholder="Lọc theo ID người dùng"><button class="btn gray" id="wg">Lọc</button></div>';
+  var list=function(rows){return rows.length?rows.map(wdCard).join(''):'<p class="mut">Không có yêu cầu.</p>';};
+  view.innerHTML=f+'<div id="wl">'+list(d.rows)+'</div>';
+  var s=document.getElementById('wf');s.value=vWd.f||'pending';document.getElementById('wu').value=vWd.u||'';
+  document.getElementById('wg').onclick=async function(){vWd.f=s.value;vWd.u=document.getElementById('wu').value.trim();
+    var r=await api('withdraws?status='+vWd.f+(vWd.u?'&uid='+encodeURIComponent(vWd.u):''));
+    document.getElementById('wl').innerHTML=list(r.rows);};
+}
+view.addEventListener('click',async function(ev){
+  var b=ev.target.closest('button[data-a]');if(!b)return;
+  var act=b.getAttribute('data-a'),id=b.getAttribute('data-id');
+  if(!confirm((act==='approve'?'Xác nhận ĐÃ CHUYỂN KHOẢN và duyệt':'Từ chối và hoàn tiền')+' đơn #'+id+'?'))return;
+  b.disabled=true;
+  try{await post('withdraw/'+encodeURIComponent(id)+'/'+act);toast('Đã xử lý đơn #'+id);load();}catch(e){toast(e.message);b.disabled=false;}
+});
+
+async function vDep(){
+  var d=await api('deposits');
+  view.innerHTML='<div class="item tw"><table><tr><th>#</th><th>ID</th><th>Số tiền</th><th>Trạng thái</th><th>Thời gian</th></tr>'+
+   d.rows.map(function(r){return '<tr><td>'+esc(r.id)+'</td><td>'+esc(r.user_id)+'</td><td>'+money(r.amount)+'</td><td><span class="tag '+esc(r.status)+'">'+esc(r.status)+'</span></td><td>'+esc(r.time)+'</td></tr>';}).join('')+'</table></div>';
+}
+
+async function vUser(){
+  view.innerHTML='<div class="inl"><input id="uq" placeholder="ID / STK / tên"><button class="btn" id="ug">Tìm</button></div><div id="ur"></div>';
+  var run=async function(){var q=document.getElementById('uq').value.trim();if(!q)return;var d=await api('users?q='+encodeURIComponent(q));
+    var out=document.getElementById('ur');
+    out.innerHTML=d.rows.length?d.rows.map(function(u){return '<div class="item"><div class="row"><span>ID: <b>'+esc(u.user_id)+'</b></span><span>Số dư: <b>'+money(u.balance)+'</b></span><span>Cược: <b>'+money(u.total_bet)+'</b></span><span>Nạp: <b>'+money(u.dep)+'</b></span><span>Rút: <b>'+money(u.wd)+'</b></span>'+(u.banned?'<span class="tag rejected">ĐÃ KHÓA</span>':'')+'</div>'
+      +'<div class="row" style="margin-top:6px"><span>Ngân hàng: <b>'+esc(u.bank||'Chưa liên kết')+'</b></span><span>STK: <b>'+esc(u.stk||'-')+'</b></span><span>Chủ TK: <b>'+esc(u.name||'-')+'</b></span></div>'
+      +'<div class="inl" style="margin-top:10px"><input data-amt="'+esc(u.user_id)+'" placeholder="Số tiền (vd 50000)" inputmode="numeric"><button class="btn ok" data-u="add" data-id="'+esc(u.user_id)+'">+ Cộng</button><button class="btn bad" data-u="sub" data-id="'+esc(u.user_id)+'">− Trừ</button></div>'
+      +'<div class="acts"><button class="btn gray" data-u="'+(u.banned?'unban':'ban')+'" data-id="'+esc(u.user_id)+'">'+(u.banned?'Mở khóa':'Khóa tài khoản')+'</button><button class="btn gray" data-u="resetbank" data-id="'+esc(u.user_id)+'">Gỡ liên kết ngân hàng</button></div></div>';}).join(''):'<p class="mut">Không tìm thấy.</p>';};
+  document.getElementById('ug').onclick=run;document.getElementById('uq').onkeydown=function(e){if(e.key==='Enter')run();};
+}
+view.addEventListener('click',async function(ev){
+  var b=ev.target.closest('button[data-u]');if(!b)return;
+  var act=b.getAttribute('data-u'),id=b.getAttribute('data-id'),body={};
+  if(act==='add'||act==='sub'){var inp=view.querySelector('input[data-amt="'+id+'"]');var amt=parseInt((inp.value||'').replace(/[^0-9]/g,''),10);
+    if(!amt||amt<=0){toast('Số tiền không hợp lệ');return;}body.amount=amt;
+    if(!confirm((act==='add'?'CỘNG ':'TRỪ ')+money(amt)+' cho ID '+id+'?'))return;}
+  else if(!confirm('Xác nhận thao tác "'+act+'" cho ID '+id+'?'))return;
+  b.disabled=true;
+  try{var r=await post('user/'+encodeURIComponent(id)+'/'+act,body);toast(r.msg||'Xong');document.getElementById('ug').click();}catch(e){toast(e.message);b.disabled=false;}
+});
+
+async function vLog(){
+  var d=await api('log');
+  view.innerHTML='<div class="item tw"><table><tr><th>Thời gian</th><th>Tài khoản</th><th>Thao tác</th><th>Chi tiết</th><th>IP</th></tr>'+
+   d.rows.map(function(r){return '<tr><td>'+esc(r.time)+'</td><td>'+esc(r.username)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.detail)+'</td><td>'+esc(r.ip)+'</td></tr>';}).join('')+'</table></div>';
+}
+
+document.getElementById('out').onclick=async function(e){e.preventDefault();try{await post('logout');}catch(x){}location.href='/admin/login';};
+(async function(){var m=await api('me');csrf=m.csrf;document.getElementById('who').textContent=m.user;nav();load();})().catch(function(){});
+})();
+"""
+
+
+async def aw_login_page(request):
+    tok, s = _aw_session(request)
+    if s:
+        raise web.HTTPFound("/admin")
+    return _aw_html(_AW_LOGIN_PAGE.replace("__CSS__", _AW_CSS).replace("__ERR__", ""))
+
+
+async def aw_login_post(request):
+    ip = _aw_ip(request)
+    try:
+        form = await request.post()
+        username = str(form.get("username", "")).strip().lower()[:40]
+        password = str(form.get("password", ""))[:200]
+    except Exception:
+        return _aw_html(_AW_LOGIN_PAGE.replace("__CSS__", _AW_CSS).replace("__ERR__", '<div class="err">Yêu cầu không hợp lệ.</div>'), 400)
+
+    def _fail(msg):
+        return _aw_html(_AW_LOGIN_PAGE.replace("__CSS__", _AW_CSS).replace("__ERR__", f'<div class="err">{msg}</div>'), 401)
+
+    if _aw_rate_blocked("ip:" + ip) or _aw_rate_blocked("u:" + username):
+        return _aw_html(_AW_LOGIN_PAGE.replace("__CSS__", _AW_CSS).replace(
+            "__ERR__", '<div class="err">Sai quá nhiều lần. Vui lòng thử lại sau 10 phút.</div>'), 429)
+
+    row = await asyncio.to_thread(query, "SELECT pw_hash, active FROM admin_web_users WHERE username=%s", (username,))
+    # luôn chạy 1 lần băm để thời gian phản hồi không lộ việc tài khoản có tồn tại hay không
+    stored = row[0][0] if row else _aw_hash_password("dummy", b"\x00" * 16)
+    ok = await asyncio.to_thread(_aw_verify_password, password, stored)
+    if not (row and row[0][1] and ok):
+        _aw_rate_fail("ip:" + ip)
+        _aw_rate_fail("u:" + username)
+        await asyncio.to_thread(_aw_log, username or "?", "LOGIN_FAIL", "", ip)
+        return _fail("Sai tên đăng nhập hoặc mật khẩu.")
+
+    token = _secrets.token_urlsafe(32)
+    now = time.time()
+    _ADMIN_SESSIONS[token] = {"user": username, "csrf": _secrets.token_urlsafe(24), "created": now, "last": now, "ip": ip}
+    await asyncio.to_thread(query, "UPDATE admin_web_users SET last_login=%s WHERE username=%s",
+                            (get_vietnam_datetime_db(), username))
+    await asyncio.to_thread(_aw_log, username, "LOGIN", "", ip)
+    resp = web.HTTPFound("/admin")
+    secure = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+    resp.set_cookie("xl_adm", token, httponly=True, secure=secure, samesite="Strict",
+                    max_age=ADMIN_WEB_SESSION_TTL, path="/admin")
+    raise resp
+
+
+async def aw_home(request):
+    tok, s = _aw_session(request)
+    if not s:
+        raise web.HTTPFound("/admin/login")
+    return _aw_html(_AW_APP_PAGE.replace("__CSS__", _AW_CSS))
+
+
+async def aw_js(request):
+    return web.Response(text=_AW_JS, content_type="application/javascript", charset="utf-8", headers=_AW_SEC_HEADERS)
+
+
+def _aw_auth(request, need_csrf=False):
+    tok, s = _aw_session(request)
+    if not s:
+        raise web.HTTPUnauthorized(text='{"err":"unauth"}', content_type="application/json")
+    if need_csrf and not hmac.compare_digest(request.headers.get("X-CSRF", ""), s["csrf"]):
+        raise web.HTTPForbidden(text='{"err":"CSRF không hợp lệ"}', content_type="application/json")
+    return tok, s
+
+
+async def aw_api_me(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request)
+    return _aw_json({"user": s["user"], "csrf": s["csrf"]})
+
+
+async def aw_api_logout(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    _ADMIN_SESSIONS.pop(tok, None)
+    await asyncio.to_thread(_aw_log, s["user"], "LOGOUT", "", _aw_ip(request))
+    return _aw_json({"ok": True})
+
+
+def _aw_stats_sync():
+    today = "% - " + get_vietnam_date()
+    def one(q, a=()):
+        r = query(q, a)
+        return r[0] if r else (0,)
+    users = one("SELECT COUNT(*) FROM users")[0]
+    bal = one("SELECT COALESCE(SUM(balance),0) FROM users")[0]
+    dep_t = one("SELECT COALESCE(SUM(amount),0) FROM deposit_history WHERE status='success'")[0]
+    wd_t = one("SELECT COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='success'")[0]
+    dep_d = one("SELECT COALESCE(SUM(amount),0) FROM deposit_history WHERE status='success' AND time LIKE %s", (today,))[0]
+    wd_d = one("SELECT COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='success' AND time LIKE %s", (today,))[0]
+    pend = one("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM withdraw_history WHERE status='pending'")
+    bet_d = 0
+    try:
+        bet_d = one("SELECT COALESCE(SUM(bet),0) FROM bet_daily WHERE day=%s", (datetime.now(VIETNAM_TZ).date(),))[0]
+    except Exception:
+        bet_d = 0
+    return {"users": int(users), "balance": int(bal), "dep_total": int(dep_t), "wd_total": int(wd_t),
+            "dep_today": int(dep_d), "wd_today": int(wd_d), "wd_pending_n": int(pend[0]), "wd_pending_sum": int(pend[1]),
+            "bet_today": int(bet_d or 0)}
+
+
+async def aw_api_stats(request):
+    await asyncio.to_thread(_aw_auth, request)
+    return _aw_json(await asyncio.to_thread(_aw_stats_sync))
+
+
+_AW_WD_SQL = ("SELECT w.id, w.user_id, w.amount, w.status, w.time, w.request_code, w.admin_note, "
+              "COALESCE(w.method,''), COALESCE(w.bank,''), COALESCE(w.stk,''), COALESCE(w.acc_name,''), w.memo, "
+              "u.bank, u.stk, u.name FROM withdraw_history w LEFT JOIN users u ON u.user_id=w.user_id ")
+
+
+def _aw_wd_row(r):
+    (wid, uid_, amount, status, time_, code, note, method, bank, stk, acc_name, memo, u_bank, u_stk, u_name) = r
+    legacy = not (stk or bank)
+    if legacy:
+        bank, stk, acc_name, method = (u_bank or ""), (u_stk or ""), (u_name or ""), (method or "BANKING")
+    return {"id": wid, "user_id": uid_, "amount": int(amount or 0), "status": status, "time": time_, "code": code,
+            "note": note, "method": (method or "BANKING").upper(), "bank": bank, "stk": stk, "acc_name": acc_name,
+            "memo": memo, "legacy": legacy}
+
+
+def _aw_withdraws_sync(status, uid):
+    cond, args = [], []
+    if status == "pending":
+        cond.append("w.status='pending'")
+    if uid:
+        cond.append("w.user_id=%s")
+        args.append(uid)
+    where = ("WHERE " + " AND ".join(cond) + " ") if cond else ""
+    rows = query(_AW_WD_SQL + where + "ORDER BY w.id DESC LIMIT 50", tuple(args)) or []
+    return [_aw_wd_row(r) for r in rows]
+
+
+async def aw_api_withdraws(request):
+    await asyncio.to_thread(_aw_auth, request)
+    status = "pending" if request.query.get("status") != "all" else "all"
+    uid_s = request.query.get("uid", "").strip()
+    uid = int(uid_s) if uid_s.isdigit() else None
+    return _aw_json({"rows": await asyncio.to_thread(_aw_withdraws_sync, status, uid)})
+
+
+async def aw_api_wqr(request):
+    await asyncio.to_thread(_aw_auth, request)
+    wid = request.match_info.get("wid", "")
+    if not wid.isdigit():
+        raise web.HTTPNotFound()
+    rows = await asyncio.to_thread(query, _AW_WD_SQL + "WHERE w.id=%s", (int(wid),))
+    if not rows:
+        raise web.HTTPNotFound()
+    w = _aw_wd_row(rows[0])
+    qr_fid = (await asyncio.to_thread(query, "SELECT qr_file_id FROM withdraw_history WHERE id=%s", (int(wid),)) or [[None]])[0][0]
+    try:
+        if w["method"] == "BANKING" and w["stk"]:
+            key = re.sub(r"[^A-Z0-9]", "", str(w["bank"]).upper())
+            code_b = _BANK_CODE_ALIASES.get(key, key)
+            qr_bank = _BANK_BIN.get(code_b) or code_b
+            buf = await asyncio.to_thread(make_local_qr, w["amount"], w["memo"] or str(w["code"] or ""), qr_bank, w["stk"])
+            return web.Response(body=buf.getvalue(), content_type="image/png", headers=_AW_SEC_HEADERS)
+        if qr_fid:
+            f = await application.bot.get_file(qr_fid)
+            data = bytes(await f.download_as_bytearray())
+            return web.Response(body=data, content_type="image/jpeg", headers=_AW_SEC_HEADERS)
+    except Exception as e:
+        print(f"aw_api_wqr lỗi #{wid}: {e}")
+    raise web.HTTPNotFound()
+
+
+async def aw_api_withdraw_act(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    wid_s, act = request.match_info.get("wid", ""), request.match_info.get("act", "")
+    if not wid_s.isdigit() or act not in ("approve", "reject"):
+        return _aw_json({"err": "Yêu cầu không hợp lệ"}, 400)
+    wid = int(wid_s)
+    note = f"Web: {s['user']}"
+    if act == "approve":
+        r = await asyncio.to_thread(
+            query, "UPDATE withdraw_history SET status='success', admin_id=0, admin_note=%s WHERE id=%s AND status='pending' RETURNING user_id, amount",
+            (note, wid))
+    else:
+        r = await asyncio.to_thread(
+            query, "UPDATE withdraw_history SET status='rejected', admin_id=0, admin_note=%s WHERE id=%s AND status='pending' RETURNING user_id, amount",
+            (note + " - Từ chối", wid))
+    if not r:
+        return _aw_json({"err": "Đơn này đã được xử lý rồi hoặc không tồn tại"}, 409)
+    u_id, amt = int(r[0][0]), int(r[0][1])
+    bot = application.bot
+    if act == "approve":
+        try:
+            await send_group_notice(bot, chat_id=LOG_GROUP_ID, text=(
+                f'{ce("📤")} <b>RÚT TIỀN THÀNH CÔNG</b>\n🆔 ID: <code>{mask_user_id(u_id)}</code>\n'
+                f'{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✅")} Trạng thái: Thành công\n⏰ {get_vietnam_datetime_db()}'),
+                parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+        try:
+            await bot.send_message(u_id, f'{ce("✅")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> đã được duyệt!\n'
+                                         f'{ce("💰")} Số dư hiện tại: <code>{fmt_money(await asyncio.to_thread(get_balance, u_id))}đ</code>',
+                                   parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        await asyncio.to_thread(add_money, u_id, amt, "Hoàn tiền rút")
+        try:
+            await bot.send_message(u_id, f'{ce("❌")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> bị từ chối.\n'
+                                         f'{ce("🔄")} Tiền đã được hoàn về số dư của bạn.\n{bal_block(u_id)}',
+                                   parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    await asyncio.to_thread(_aw_log, s["user"], "WITHDRAW_" + act.upper(), f"#{wid} ID {u_id} {amt}đ", _aw_ip(request))
+    return _aw_json({"ok": True})
+
+
+async def aw_api_deposits(request):
+    await asyncio.to_thread(_aw_auth, request)
+    rows = await asyncio.to_thread(query, "SELECT id,user_id,amount,status,time FROM deposit_history ORDER BY id DESC LIMIT 50") or []
+    return _aw_json({"rows": [{"id": r[0], "user_id": r[1], "amount": int(r[2] or 0), "status": r[3], "time": r[4]} for r in rows]})
+
+
+def _aw_users_sync(q):
+    q = q.strip()[:60]
+    like = f"%{q}%"
+    rows = query(
+        "SELECT u.user_id, u.balance, COALESCE(u.total_bet,0), u.bank, u.stk, u.name, "
+        "(SELECT COALESCE(SUM(amount),0) FROM deposit_history d WHERE d.user_id=u.user_id AND d.status='success'), "
+        "(SELECT COALESCE(SUM(amount),0) FROM withdraw_history w WHERE w.user_id=u.user_id AND w.status='success'), "
+        "EXISTS(SELECT 1 FROM banned b WHERE b.user_id=u.user_id) "
+        "FROM users u WHERE CAST(u.user_id AS TEXT)=%s OR COALESCE(u.stk,'') LIKE %s OR COALESCE(u.name,'') ILIKE %s "
+        "ORDER BY u.balance DESC LIMIT 15", (q, like, like)) or []
+    return [{"user_id": r[0], "balance": int(r[1] or 0), "total_bet": int(r[2] or 0), "bank": r[3], "stk": r[4],
+             "name": r[5], "dep": int(r[6] or 0), "wd": int(r[7] or 0), "banned": bool(r[8])} for r in rows]
+
+
+async def aw_api_users(request):
+    await asyncio.to_thread(_aw_auth, request)
+    q = request.query.get("q", "")
+    if not q.strip():
+        return _aw_json({"rows": []})
+    return _aw_json({"rows": await asyncio.to_thread(_aw_users_sync, q)})
+
+
+async def aw_api_user_act(request):
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    uid_s, act = request.match_info.get("uid", ""), request.match_info.get("act", "")
+    if not uid_s.isdigit() or act not in ("add", "sub", "ban", "unban", "resetbank"):
+        return _aw_json({"err": "Yêu cầu không hợp lệ"}, 400)
+    uid = int(uid_s)
+    ip = _aw_ip(request)
+    exists = await asyncio.to_thread(query, "SELECT 1 FROM users WHERE user_id=%s", (uid,))
+    if not exists:
+        return _aw_json({"err": "Không tìm thấy người dùng"}, 404)
+    if act in ("add", "sub"):
+        try:
+            body = await request.json()
+            amt = int(body.get("amount", 0))
+        except Exception:
+            return _aw_json({"err": "Số tiền không hợp lệ"}, 400)
+        if amt <= 0 or amt > 10_000_000_000:
+            return _aw_json({"err": "Số tiền không hợp lệ"}, 400)
+        if act == "add":
+            await asyncio.to_thread(add_money, uid, amt, f"Admin cộng tiền (web {s['user']})")
+            msg = f"Đã cộng {fmt_money(amt)}đ"
+        else:
+            ok = await asyncio.to_thread(sub_money, uid, amt, f"Admin trừ tiền (web {s['user']})")
+            if not ok:
+                return _aw_json({"err": "Số dư không đủ để trừ"}, 400)
+            msg = f"Đã trừ {fmt_money(amt)}đ"
+        await asyncio.to_thread(_aw_log, s["user"], "BALANCE_" + act.upper(), f"ID {uid} {amt}đ", ip)
+        return _aw_json({"ok": True, "msg": msg})
+    if act == "ban":
+        await asyncio.to_thread(query, "INSERT INTO banned(user_id) VALUES(%s) ON CONFLICT (user_id) DO NOTHING", (uid,))
+        msg = "Đã khóa tài khoản"
+    elif act == "unban":
+        await asyncio.to_thread(query, "DELETE FROM banned WHERE user_id=%s", (uid,))
+        msg = "Đã mở khóa"
+    else:
+        await asyncio.to_thread(query, "UPDATE users SET bank=NULL, stk=NULL, name=NULL, bank_linked=0 WHERE user_id=%s", (uid,))
+        await asyncio.to_thread(query, "DELETE FROM user_payout_accounts WHERE user_id=%s", (uid,))
+        msg = "Đã gỡ liên kết ngân hàng"
+    await asyncio.to_thread(_aw_log, s["user"], act.upper(), f"ID {uid}", ip)
+    return _aw_json({"ok": True, "msg": msg})
+
+
+async def aw_api_log(request):
+    await asyncio.to_thread(_aw_auth, request)
+    rows = await asyncio.to_thread(query, "SELECT time, username, action, detail, ip FROM admin_web_log ORDER BY id DESC LIMIT 100") or []
+    return _aw_json({"rows": [{"time": r[0], "username": r[1], "action": r[2], "detail": r[3], "ip": r[4]} for r in rows]})
+
+
+def admin_web_register_routes(app):
+    app.router.add_get("/admin/login", aw_login_page)
+    app.router.add_post("/admin/login", aw_login_post)
+    app.router.add_get("/admin", aw_home)
+    app.router.add_get("/admin/", aw_home)
+    app.router.add_get("/admin/app.js", aw_js)
+    app.router.add_get("/admin/api/me", aw_api_me)
+    app.router.add_post("/admin/api/logout", aw_api_logout)
+    app.router.add_get("/admin/api/stats", aw_api_stats)
+    app.router.add_get("/admin/api/withdraws", aw_api_withdraws)
+    app.router.add_get("/admin/api/wqr/{wid}", aw_api_wqr)
+    app.router.add_post("/admin/api/withdraw/{wid}/{act}", aw_api_withdraw_act)
+    app.router.add_get("/admin/api/deposits", aw_api_deposits)
+    app.router.add_get("/admin/api/users", aw_api_users)
+    app.router.add_post("/admin/api/user/{uid}/{act}", aw_api_user_act)
+    app.router.add_get("/admin/api/log", aw_api_log)
+
+
+# ---------- Lệnh bot quản lý tài khoản web admin (chỉ admin, chỉ chat riêng) ----------
+async def _aw_private_only(update):
+    chat = update.effective_chat
+    if chat is not None and chat.type != "private":
+        await update.effective_message.reply_text("🚫 Lệnh này chứa mật khẩu nên chỉ dùng trong chat riêng với bot.")
+        return False
+    return True
+
+
+def _aw_web_url():
+    base = os.getenv("ADMIN_WEB_URL", "").rstrip("/")
+    return (base + "/admin") if base else "https://<tên-miền-của-bạn>/admin"
+
+
+@admin_only
+async def taoadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/taoadmin <tên_đăng_nhập> [mật_khẩu] - tạo tài khoản web admin (bỏ trống mật khẩu = tự tạo ngẫu nhiên)."""
+    msg = update.effective_message
+    if not await _aw_private_only(update):
+        return
+    args = ctx.args or []
+    if not args:
+        return await msg.reply_text(
+            "Cú pháp: <code>/taoadmin [tên_đăng_nhập] [mật_khẩu]</code>\n"
+            "Tên: 3-20 ký tự gồm chữ thường, số, gạch dưới. Mật khẩu tối thiểu 8 ký tự; bỏ trống để bot tự tạo.",
+            parse_mode=ParseMode.HTML)
+    username = args[0].strip().lower()
+    if not _USERNAME_RE.fullmatch(username):
+        return await msg.reply_text("❌ Tên đăng nhập chỉ gồm chữ thường, số, gạch dưới (3-20 ký tự).")
+    password = args[1] if len(args) > 1 else _aw_gen_password()
+    if len(password) < 8:
+        return await msg.reply_text("❌ Mật khẩu tối thiểu 8 ký tự.")
+    if query("SELECT 1 FROM admin_web_users WHERE username=%s", (username,)):
+        return await msg.reply_text("❌ Tên đăng nhập này đã tồn tại. Dùng /doimkadmin để đổi mật khẩu.")
+    pw_hash = await asyncio.to_thread(_aw_hash_password, password)
+    query("INSERT INTO admin_web_users(username, pw_hash, created_by, created_at, active) VALUES(%s,%s,%s,%s,1)",
+          (username, pw_hash, update.effective_user.id, get_vietnam_datetime_db()))
+    _aw_log(f"bot:{update.effective_user.id}", "CREATE_ADMIN", username)
+    try:
+        await msg.delete()   # xoá tin nhắn lệnh có chứa mật khẩu
+    except Exception:
+        pass
+    await ctx.bot.send_message(
+        update.effective_chat.id,
+        f'✅ <b>ĐÃ TẠO TÀI KHOẢN WEB ADMIN</b>\n\n👤 Tên đăng nhập: <code>{html.escape(username)}</code>\n'
+        f'🔑 Mật khẩu: <code>{html.escape(password)}</code>\n🌐 Link: {html.escape(_aw_web_url())}\n\n'
+        f'⚠️ Lưu mật khẩu ở nơi an toàn rồi xoá tin nhắn này. Mật khẩu không xem lại được.',
+        parse_mode=ParseMode.HTML)
+
+
+@admin_only
+async def doimkadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/doimkadmin <tên> [mật_khẩu_mới]"""
+    msg = update.effective_message
+    if not await _aw_private_only(update):
+        return
+    args = ctx.args or []
+    if not args:
+        return await msg.reply_text("Cú pháp: <code>/doimkadmin [tên_đăng_nhập] [mật_khẩu_mới]</code>", parse_mode=ParseMode.HTML)
+    username = args[0].strip().lower()
+    password = args[1] if len(args) > 1 else _aw_gen_password()
+    if len(password) < 8:
+        return await msg.reply_text("❌ Mật khẩu tối thiểu 8 ký tự.")
+    if not query("SELECT 1 FROM admin_web_users WHERE username=%s", (username,)):
+        return await msg.reply_text("❌ Không có tài khoản này.")
+    pw_hash = await asyncio.to_thread(_aw_hash_password, password)
+    query("UPDATE admin_web_users SET pw_hash=%s, active=1 WHERE username=%s", (pw_hash, username))
+    _aw_kill_sessions(username)
+    _aw_log(f"bot:{update.effective_user.id}", "RESET_PASSWORD", username)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await ctx.bot.send_message(
+        update.effective_chat.id,
+        f'✅ Đã đổi mật khẩu cho <code>{html.escape(username)}</code>\n🔑 Mật khẩu mới: <code>{html.escape(password)}</code>\n'
+        f'(Các phiên đăng nhập cũ đã bị đăng xuất.)', parse_mode=ParseMode.HTML)
+
+
+@admin_only
+async def xoaadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/xoaadmin <tên> - xoá tài khoản web admin và đăng xuất ngay."""
+    msg = update.effective_message
+    args = ctx.args or []
+    if not args:
+        return await msg.reply_text("Cú pháp: <code>/xoaadmin [tên_đăng_nhập]</code>", parse_mode=ParseMode.HTML)
+    username = args[0].strip().lower()
+    r = query("DELETE FROM admin_web_users WHERE username=%s RETURNING username", (username,))
+    if not r:
+        return await msg.reply_text("❌ Không có tài khoản này.")
+    _aw_kill_sessions(username)
+    _aw_log(f"bot:{update.effective_user.id}", "DELETE_ADMIN", username)
+    await msg.reply_text(f"✅ Đã xoá tài khoản web admin <code>{html.escape(username)}</code>.", parse_mode=ParseMode.HTML)
+
+
+@admin_only
+async def dsadminweb_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/dsadminweb - danh sách tài khoản web admin."""
+    rows = query("SELECT username, created_at, last_login FROM admin_web_users ORDER BY created_at") or []
+    if not rows:
+        return await update.effective_message.reply_text("Chưa có tài khoản web admin. Tạo bằng /taoadmin [tên] [mật_khẩu].")
+    text = "🌐 <b>TÀI KHOẢN WEB ADMIN</b>\n\n" + "\n".join(
+        f"• <code>{html.escape(r[0])}</code> · tạo: {html.escape(str(r[1] or '-'))} · đăng nhập gần nhất: {html.escape(str(r[2] or 'chưa')) }"
+        for r in rows) + f"\n\n🌐 {html.escape(_aw_web_url())}"
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 async def start_webhook_server():
     app = web.Application()
     # Nhận webhook ở cả gốc "/" lẫn /sepay_webhook (SePay đang gọi thẳng tên miền, không kèm đường dẫn).
@@ -7843,6 +8524,7 @@ async def start_webhook_server():
     app.router.add_get('/', _health)
     app.router.add_get('/health', _health)
     tx3d_register_routes(app)      # miniapp Tài Xỉu 3D: /app , /api/state , /api/bet
+    admin_web_register_routes(app)  # web admin: /admin (đăng nhập bằng tài khoản tạo qua /taoadmin)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8080"))   # Railway cấp cổng qua biến PORT
@@ -9584,7 +10266,7 @@ def _rp_make_view_cmd(kind, cmd, desc):
 
 lsuser_cmd = _rp_make_view_cmd("his", "lsuser", "biến động số dư đầy đủ")
 lsnap_cmd = _rp_make_view_cmd("nap", "lsnap", "lịch sử nạp")
-lsrut_cmd = _rp_make_view_cmd("rut", "lsrut", "lịch sử rút")
+lsrut_report_cmd = _rp_make_view_cmd("rut", "lsrutky", "lịch sử rút theo kỳ")
 lscuoc_cmd = _rp_make_view_cmd("cuoc", "lscuoc", "lịch sử cược & thắng")
 lscode_cmd = _rp_make_view_cmd("code", "lscode", "code đã nhập")
 lsgift_cmd = _rp_make_view_cmd("gift", "lsgift", "giftcode đã dùng / được cấp")
@@ -10720,7 +11402,6 @@ _ADM_CATS = [
         ("run", "dsrut", "Rút đang chờ duyệt", "dsrut", None, None),
         ("run", "lsnaptatca", "50 lịch sử nạp mới nhất", "lsnaptatca", None, None),
         ("run", "lsruttatca", "50 lịch sử rút mới nhất", "lsruttatca", None, None),
-        ("use", "lsrut", "Lịch sử rút kèm thông tin + QR", "x", "/lsrut [ID] [số lượng]", "/lsrut 123456789 5"),
         ("run", "soduall", "Số dư của tất cả user", "soduall", None, None),
         ("run", "hisall", "50 giao dịch gần nhất toàn hệ thống", "hisall", None, None),
         ("use", "naptien", "Nạp tiền tay cho user", "x", "/naptien [ID] [số tiền]", "/naptien 123456789 100000"),
@@ -10795,7 +11476,12 @@ _ADM_CATS.append((
         ("use", "setname", "Đổi tên bot", "x", "/setname [tên mới]", "/setname XOCLO88"),
         ("use", "kmnapvc", "Tặng khuyến mãi theo vòng cược", "x", "/kmnapvc [ID] [số tiền]", "/kmnapvc 123456789 20000"),
         ("use", "lsnap", "Lịch sử nạp của user", "x", "/lsnap [ID]", "/lsnap 123456789"),
-        ("use", "lsrut", "Lịch sử rút của user", "x", "/lsrut [ID]", "/lsrut 123456789"),
+        ("use", "lsrut", "Lịch sử rút kèm thông tin + QR", "x", "/lsrut [ID]", "/lsrut 123456789"),
+        ("use", "lsrutky", "Báo cáo rút của user theo kỳ", "x", "/lsrutky [ID]", "/lsrutky 123456789"),
+        ("use", "taoadmin", "Tạo tài khoản đăng nhập web admin", "x", "/taoadmin [tên] [mật khẩu]", "/taoadmin quanly1 MatKhau123"),
+        ("use", "doimkadmin", "Đổi mật khẩu web admin", "x", "/doimkadmin [tên] [mật khẩu mới]", "/doimkadmin quanly1"),
+        ("use", "xoaadmin", "Xoá tài khoản web admin", "x", "/xoaadmin [tên]", "/xoaadmin quanly1"),
+        ("run", "dsadminweb", "Danh sách tài khoản web admin", "dsadminweb", None, None),
         ("use", "lscuoc", "Lịch sử cược và thắng của user", "x", "/lscuoc [ID]", "/lscuoc 123456789"),
         ("use", "lscode", "Lịch sử nhập code của user", "x", "/lscode [ID]", "/lscode 123456789"),
         ("use", "lsgift", "Lịch sử dùng giftcode", "x", "/lsgift [ID]", "/lsgift 123456789"),
@@ -10942,7 +11628,7 @@ _ADM_FLOW = {
               _S("confirm", "Xác nhận", lambda v: f'Xoá <b>toàn bộ lịch sử</b> của ID <code>{html.escape(v.get(0) or "")}</code>. Không thể hoàn tác!')],
     "setname": [_TEXT("Tên", "Nhập <b>tên mới</b> hiển thị của bot:")],
     "kmnapvc": [_ID(), _MONEY("Nhập <b>số tiền khuyến mãi</b> (theo vòng cược):")],
-    "lsnap": [_ID()], "lsrut": [_ID()], "lscuoc": [_ID()], "lscode": [_ID()], "lsgift": [_ID()], "lsmua": [_ID()],
+    "lsnap": [_ID()], "lsrut": [_ID()], "lsrutky": [_ID()], "lscuoc": [_ID()], "lscode": [_ID()], "lsgift": [_ID()], "lsmua": [_ID()],
     "checktt": [_ID()],
 }
 # Lệnh dùng trong menu mà không cần nhập thông tin gì: bấm là chạy ngay.
@@ -11243,7 +11929,7 @@ def _adm_runner(key):
         "baotri": baotri_cmd, "baotriht": baotri_he_thong_cmd, "trangthai": trangthai_cmd,
         "tatroom": tatroom_cmd, "moroom": moroom_cmd, "trangthairoom": trangthairoom_cmd,
         "all": all_user, "dsban": dsban_cmd, "topsodu": topsodu_cmd, "topcuoc": topcuoc_cmd,
-        "dsnap": dsnap_cmd, "dsrut": dsrut_cmd, "lsnaptatca": lsnaptatca_cmd, "lsruttatca": lsruttatca_cmd, "lsrut": lsrut_cmd,
+        "dsnap": dsnap_cmd, "dsrut": dsrut_cmd, "lsnaptatca": lsnaptatca_cmd, "lsruttatca": lsruttatca_cmd, "lsrut": lsrut_cmd, "dsadminweb": dsadminweb_cmd, "lsrutky": lsrut_report_cmd,
         "soduall": soduall_cmd, "hisall": history_all_admin, "dskm": dskm_cmd, "kmgio": kmgio_cmd,
         "homnay": homnay_cmd, "taogift": gift_flow_start, "dsgift": dsgift_cmd, "thongke": dashboard_cmd,
         "tong": tong_cmd, "xuatthongke": xuatthongke_cmd, "xuatnapall": xuatnapall_cmd,
@@ -12150,6 +12836,7 @@ application.add_handler(CommandHandler("fulluser", fulluser_cmd))
 application.add_handler(CommandHandler("lsuser", lsuser_cmd))
 application.add_handler(CommandHandler("lsnap", lsnap_cmd))
 application.add_handler(CommandHandler("lsrut", lsrut_cmd))
+application.add_handler(CommandHandler("lsrutky", lsrut_report_cmd))
 application.add_handler(CommandHandler("lscuoc", lscuoc_cmd))
 application.add_handler(CommandHandler("lscode", lscode_cmd))
 application.add_handler(CommandHandler("lsgift", lsgift_cmd))
@@ -12183,7 +12870,10 @@ application.add_handler(CommandHandler("camtn", camtn_cmd))
 application.add_handler(CommandHandler("motn", motn_cmd))
 application.add_handler(CommandHandler("dsban", dsban_cmd))
 application.add_handler(CommandHandler("dsrut", dsrut_cmd))
-application.add_handler(CommandHandler("lsrut", lsrut_cmd))
+application.add_handler(CommandHandler("taoadmin", taoadmin_cmd))
+application.add_handler(CommandHandler("doimkadmin", doimkadmin_cmd))
+application.add_handler(CommandHandler("xoaadmin", xoaadmin_cmd))
+application.add_handler(CommandHandler("dsadminweb", dsadminweb_cmd))
 application.add_handler(CommandHandler("dsnap", dsnap_cmd))
 application.add_handler(CommandHandler("setsd", setsd_cmd))
 async def _early_top_cmd(update, ctx):
