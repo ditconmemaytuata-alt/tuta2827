@@ -9312,9 +9312,72 @@ async def awp_api_export(request):
                         headers={"Content-Disposition": f'attachment; filename="{fname}"', **_AW_SEC_HEADERS})
 
 
+
+
+# ---------- Ép kết quả Tài Xỉu 3D từ Web Admin ----------
+async def awp_api_tx3d_force_state(request):
+    await asyncio.to_thread(_aw_auth, request)
+    forced = TX3D.force
+    current = "Không có"
+    if forced:
+        current = (" ".join(map(str, forced["dice"])) if forced.get("dice")
+                   else ("TÀI" if forced.get("kind") == "tai" else "XỈU"))
+    next_round = TX3D.round_id if TX3D.phase == "bet" else TX3D.round_id + 1
+    return _aw_json({
+        "round": int(next_round),
+        "phase": TX3D.phase,
+        "bets": len(TX3D.bets),
+        "current": current,
+        "pending": bool(forced),
+    })
+
+
+async def awp_api_tx3d_force(request):
+    tok, session = await asyncio.to_thread(_aw_auth, request, True)
+    body = await _awp_body(request)
+    mode = str(body.get("mode", "")).strip().lower()
+
+    if mode in ("off", "cancel", "huy"):
+        TX3D.force = None
+        detail = "Huỷ ép kết quả Tài Xỉu 3D"
+        message = "Đã huỷ ép kết quả Tài Xỉu 3D."
+    elif mode in ("tai", "t"):
+        TX3D.force = {"dice": None, "kind": "tai", "by": session["user"]}
+        detail = "Ép kết quả Tài Xỉu 3D: TÀI"
+        message = "Đã đặt ép TÀI cho phiên kế tiếp."
+    elif mode in ("xiu", "x"):
+        TX3D.force = {"dice": None, "kind": "xiu", "by": session["user"]}
+        detail = "Ép kết quả Tài Xỉu 3D: XỈU"
+        message = "Đã đặt ép XỈU cho phiên kế tiếp."
+    elif mode in ("dice", "exact"):
+        raw = body.get("dice", "")
+        if isinstance(raw, (list, tuple)):
+            digits = [str(x).strip() for x in raw]
+        else:
+            digits = re.findall(r"[1-6]", str(raw))
+            # Không chấp nhận ký tự số ngoài 1..6 hoặc dữ liệu nhập thừa.
+            compact = re.sub(r"[\s,;.-]", "", str(raw))
+            if not re.fullmatch(r"[1-6]{3}", compact):
+                digits = []
+        if len(digits) != 3 or any(x not in ("1", "2", "3", "4", "5", "6") for x in digits):
+            return _aw_json({"err": "Nhập đúng 3 mặt xúc xắc từ 1 đến 6, ví dụ 1 3 4."}, 400)
+        dice = [int(x) for x in digits]
+        TX3D.force = {"dice": dice, "kind": None, "by": session["user"]}
+        detail = "Ép kết quả Tài Xỉu 3D: " + "-".join(map(str, dice))
+        message = "Đã đặt ép kết quả " + "-".join(map(str, dice)) + " cho phiên kế tiếp."
+    else:
+        return _aw_json({"err": "Thao tác không hợp lệ."}, 400)
+
+    next_round = TX3D.round_id if TX3D.phase == "bet" else TX3D.round_id + 1
+    await asyncio.to_thread(_aw_log, session["user"], "TX3D_FORCE", detail + f" · phiên #{next_round}", _aw_ip(request))
+    return _aw_json({"ok": True, "msg": message, "round": int(next_round)})
+
+
 def admin_web_plus_register(app):
     r = app.router
     r.add_get("/admin/api/chart", awp_api_chart)
+    r.add_get("/admin/api/tx3d/force", awp_api_tx3d_force_state)
+    r.add_post("/admin/api/tx3d/force", awp_api_tx3d_force)
     r.add_get("/admin/api/control", awp_api_control)
     r.add_post("/admin/api/control/mt", awp_api_mt)
     r.add_post("/admin/api/control/mtall", awp_api_mtall)
@@ -9382,6 +9445,24 @@ async function vCtl(){
   view.innerHTML=h;
 }
 
+
+async function vTx3d(){
+  var d=await api('tx3d/force');
+  var phase=d.phase==='bet'?'Đang nhận cược':'Đang úp bát / mở kết quả';
+  var h='<div class="item"><b>🎲 ÉP KẾT QUẢ TÀI XỈU 3D</b>'
+    +'<p class="mut" style="margin:6px 0">Phiên áp dụng: <b>#'+esc(d.round)+'</b> · Trạng thái: <b>'+phase+'</b> · Số người đã cược: <b>'+esc(d.bets)+'</b></p>'
+    +'<p class="mut">Đang chờ: <b>'+esc(d.current)+'</b></p>'
+    +'<div class="acts" style="margin-top:10px">'
+    +'<button class="btn" data-x="tx3d" data-mode="tai" data-cf="Xác nhận đặt ép TÀI cho phiên kế tiếp?">🔵 Ép TÀI</button>'
+    +'<button class="btn bad" data-x="tx3d" data-mode="xiu" data-cf="Xác nhận đặt ép XỈU cho phiên kế tiếp?">🔴 Ép XỈU</button></div>'
+    +'<div class="inl" style="margin-top:10px"><input data-k="dice" placeholder="3 mặt xúc xắc, ví dụ 1 3 4" inputmode="numeric">'
+    +'<button class="btn" data-x="tx3d" data-mode="dice" data-cf="Xác nhận ép đúng 3 mặt xúc xắc đã nhập?">Ép 3 mặt</button></div>'
+    +'<div class="acts" style="margin-top:10px"><button class="btn gray" data-x="tx3d" data-mode="off" data-cf="Huỷ kết quả đang chờ?">🚫 Huỷ ép</button>'
+    +'<button class="btn gray" data-x="tx3d-refresh">🔄 Làm mới</button></div>'
+    +'<p class="mut" style="margin-top:10px">Lệnh ép được áp dụng cho phiên kế tiếp theo cơ chế TX3D hiện tại. Mọi thao tác ép / huỷ được ghi vào Nhật ký Web Admin.</p></div>';
+  view.innerHTML=h;
+}
+
 async function vBc(){
   var h='<div class="item"><b>📣 Gửi thông báo tới TẤT CẢ người dùng</b><div style="margin-top:8px"><textarea id="bct" '+TA+' placeholder="Nội dung thông báo"></textarea></div><div class="acts"><button class="btn" data-x="bc">Gửi</button><span id="bcs" class="mut" style="align-self:center"></span></div></div>'
    +'<div class="item"><b>🎯 Thêm vòng cược cho TẤT CẢ người có số dư</b><p class="mut" style="margin:4px 0 8px">Yêu cầu cược thêm = số dư × số vòng (cộng dồn). Không áp dụng cho admin.</p><div class="inl"><input data-k="mult" placeholder="Số vòng, vd 7" value="7"><button class="btn gray" data-x="vcprev">Xem trước</button><button class="btn bad" data-x="vcall">Áp dụng</button></div><p id="vcs" class="mut"></p></div>';
@@ -9418,6 +9499,17 @@ view.addEventListener('click',async function(ev){
   if(g('cf')&&!confirm(g('cf')))return;
   var v=vals(b);b.disabled=true;
   try{
+    if(x==='tx3d-refresh'){return load();}
+    if(x==='tx3d'){
+      var mode=g('mode'), payload={mode:mode};
+      if(mode==='dice'){
+        payload.dice=v.dice||'';
+        if(!String(payload.dice).trim()){throw new Error('Bạn chưa nhập 3 mặt xúc xắc.');}
+      }
+      var result=await post('tx3d/force',payload);
+      toast(result.msg||'Đã cập nhật');
+      return load();
+    }
     if(x==='mt'){await post('control/mt',{key:g('key'),value:+g('v')});toast('Đã cập nhật');return load();}
     if(x==='mtall'){await post('control/mtall',{value:+g('v'),scope:g('scope')});toast('Đã cập nhật');return load();}
     if(x==='room'){await post('control/room',{id:g('id'),act:g('act')});toast('Đã cập nhật');return load();}
@@ -9441,9 +9533,9 @@ view.addEventListener('click',async function(ev){
 def _awp_patch_js(js):
     reps = [
         ("var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['log','Nhật ký']];",
-         "var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['log','Nhật ký']];"),
+         "var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['log','Nhật ký']];"),
         ("({stats:vStats,wd:vWd,dep:vDep,user:vUser,gift:vGift,log:vLog})[cur]()",
-         "({stats:vStats2,wd:vWd,dep:vDep2,user:vUser,gift:vGift2,ctl:vCtl,bc:vBc,exp:vExp,log:vLog})[cur]()"),
+         "({stats:vStats2,wd:vWd,dep:vDep2,user:vUser,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,log:vLog})[cur]()"),
         ("""'<nav id="snav"></nav><div id="sbody"></div>'""",
          """'<div id="uplus"></div><nav id="snav"></nav><div id="sbody"></div>'"""),
         ("document.getElementById('bk').onclick=", "uPlus(id,p);document.getElementById('bk').onclick="),
