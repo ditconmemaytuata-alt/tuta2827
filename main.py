@@ -274,6 +274,7 @@ ICON_ALIAS.update({
     "📅": "🗓", "🎟": "🎁", "🏁": "🚩", "📦": "🛍", "⏸️": "⌛", "⏸": "⌛",
     "🧰": "🛠", "🔎": "🔭", "📋": "🧾", "📄": "📜", "📝": "✏️", "🤖": "💻",
     "🛑": "⛔️", "🎃": "🎉", "⚔️": "🔥", "⚔": "🔥", "⚫️": "🔒", "⚪️": "🏳️",
+    "🏀": "🏅", "⚽": "🏆", "🎳": "🔮",
 })
 
 def _norm_emoji(s: str) -> str:
@@ -1526,7 +1527,7 @@ def set_setting(key, value):
     query("INSERT INTO settings(key, value) VALUES(%s, %s) "
           "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (key, str(value)))
 
-WIN_NOTE_PREFIXES = ("Thắng", "Nổ hũ", "Hoàn tiền Long Hổ", "Hoàn tiền Baccarat")
+WIN_NOTE_PREFIXES = ("Thắng", "Nổ hũ", "Hoàn tiền Long Hổ", "Hoàn tiền Baccarat", "Hoàn tiền Game Telegram")
 
 def record_daily(uid, bet=0, win=0):
     if bet and bet > 0:
@@ -1546,7 +1547,7 @@ def backfill_bet_daily():
     SELECT user_id, d,
            COALESCE(SUM(CASE WHEN amount<0 AND note LIKE 'Cược%' THEN -amount ELSE 0 END),0),
            COALESCE(SUM(CASE WHEN amount>0 AND (note LIKE 'Thắng%' OR note LIKE 'Nổ hũ%'
-                     OR note LIKE 'Hoàn tiền Long Hổ%' OR note LIKE 'Hoàn tiền Baccarat%')
+                     OR note LIKE 'Hoàn tiền Long Hổ%' OR note LIKE 'Hoàn tiền Baccarat%' OR note LIKE 'Hoàn tiền Game Telegram%')
                      THEN amount ELSE 0 END),0)
     FROM (
         SELECT user_id, amount, note,
@@ -6141,14 +6142,6 @@ async def reset_progress(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------- BẢO TRÌ ----------
 MT_ITEMS = {
     'mt_taixiu_room': {'name': 'TÀI XỈU ROOM', 'type': 'game', 'icon': '😵'},
-    'mt_xucxac_don': {'name': 'XÚC XẮC ĐƠN', 'type': 'game', 'icon': '🚫'},
-    'mt_longho': {'name': 'LONG HỔ', 'type': 'game', 'icon': '⚰️'},
-    'mt_minipoker': {'name': 'MINI POKER', 'type': 'game', 'icon': '🔝'},
-    'mt_baccarat': {'name': 'BACCARAT', 'type': 'game', 'icon': '⬆️'},
-    'mt_xocdia4': {'name': 'XÓC ĐĨA 4 VỊ', 'type': 'game', 'icon': '❓'},
-    'mt_taixiumd5': {'name': 'TÀI XỈU MD5', 'type': 'game', 'icon': '👌'},
-    'mt_baucua': {'name': 'BẦU CUA', 'type': 'game', 'icon': '🦌'},
-    'mt_xocdia6': {'name': 'XÓC ĐĨA 6 VỊ', 'type': 'game', 'icon': '⚪'},
     'mt_tx3d': {'name': 'TÀI XỈU 3D', 'type': 'game', 'icon': '🎲'},
     'mt_nap': {'name': 'NẠP TIỀN', 'type': 'feature', 'icon': '💳'},
     'mt_rut': {'name': 'RÚT TIỀN', 'type': 'feature', 'icon': '💸'},
@@ -6172,14 +6165,7 @@ async def baotri_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return "❌" if check_mt(k) else "✅"
     kb = [
         [btn(f"Tài Xỉu Room: {st('mt_taixiu_room')}", ic('mt_taixiu_room'), callback_data="tg_mt_taixiu_room")],
-        [btn(f"Xúc Xắc Đơn: {st('mt_xucxac_don')}", ic('mt_xucxac_don'), callback_data="tg_mt_xucxac_don")],
-        [btn(f"Long Hổ: {st('mt_longho')}", ic('mt_longho'), callback_data="tg_mt_longho")],
-        [btn(f"Mini Poker: {st('mt_minipoker')}", ic('mt_minipoker'), callback_data="tg_mt_minipoker")],
-        [btn(f"Baccarat: {st('mt_baccarat')}", ic('mt_baccarat'), callback_data="tg_mt_baccarat")],
-        [btn(f"Xóc Đĩa 4 Vị: {st('mt_xocdia4')}", ic('mt_xocdia4'), callback_data="tg_mt_xocdia4")],
-        [btn(f"Tài Xỉu MD5: {st('mt_taixiumd5')}", ic('mt_taixiumd5'), callback_data="tg_mt_taixiumd5")],
-        [btn(f"Bầu Cua: {st('mt_baucua')}", ic('mt_baucua'), callback_data="tg_mt_baucua")],
-        [btn(f"Xóc Đĩa 6 Vị: {st('mt_xocdia6')}", ic('mt_xocdia6'), callback_data="tg_mt_xocdia6")],
+        *_tgdice_mt_rows(st, ic),
         [btn(f"Tài Xỉu 3D: {st('mt_tx3d')}", ic('mt_tx3d'), callback_data="tg_mt_tx3d")],
         [btn(f"Nạp Tiền: {st('mt_nap')}", ic('mt_nap'), callback_data="tg_mt_nap"),
          btn(f"Rút Tiền: {st('mt_rut')}", ic('mt_rut'), callback_data="tg_mt_rut")],
@@ -6991,46 +6977,278 @@ async def ep_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                          parse_mode=ParseMode.HTML)
 
 
+# ================= TẮT GAME CŨ (chỉ giữ Tài Xỉu Room + Tài Xỉu 3D + game hoạt ảnh Telegram mới) =================
+def _legacy_off(_fn):
+    async def _w(update, ctx, *a, **k):
+        try:
+            return await update.effective_message.reply_text(
+                f'{ce("🚫")} Game này đã ngừng hoạt động.\nBấm <b>DANH SÁCH GAME</b> để chọn game mới nhé!',
+                parse_mode=ParseMode.HTML)
+        except Exception as _e:
+            print(f"[legacy-game] {_e}")
+    return _w
+
+for _n in ("play_xucxac_don", "play_longho", "play_minipoker", "play_baccarat",
+           "play_xocdia4", "play_taixiumd5", "play_baucua", "play_xocdia6"):
+    if _n in globals():
+        globals()[_n] = _legacy_off(globals()[_n])
+
+# ================= GAME HOẠT ẢNH TELEGRAM (send_dice: 🎯 🏀 ⚽ 🎳 🎰 🎲) =================
+# Kết quả do chính Telegram sinh ngẫu nhiên (dice.value) -> bot không can thiệp được.
+# Mỗi bet: (nhãn, mã, icon, tỷ lệ thưởng, mô tả điều kiện, hàm kiểm tra danh sách điểm)
+def _goals(v):
+    return sum(1 for x in v if x >= 3)
+
+SLOT_SYM = ["BAR", "NHO", "CHANH", "7️⃣"]
+
+def _slot_reels(value):
+    x = int(value) - 1
+    return [x & 3, (x >> 2) & 3, (x >> 4) & 3]
+
+def _slot_eval(value):
+    r = _slot_reels(value)
+    if r[0] == r[1] == r[2]:
+        return (25.0, "JACKPOT 777") if r[0] == 3 else (7.0, f"BA {SLOT_SYM[r[0]]} GIỐNG NHAU")
+    if r.count(3) == 2:
+        return 1.5, "HAI SỐ 7"
+    return 0, "KHÔNG TRÚNG"
+
+TGDICE = {
+    "pt": {
+        "key": "mt_phitieu", "gid": 12, "name": "PHI TIÊU", "note": "Phi Tiêu", "icon": "🎯",
+        "dice": "🎯", "n": 1, "wait": 3.8, "aliases": ("phitieu", "darts"),
+        "intro": "Telegram phóng 1 phi tiêu vào bia: <b>điểm 6 = HỒNG TÂM</b>, <b>điểm 1 = trượt bia</b>.",
+        "bets": [
+            ("HỒNG TÂM", "hong", "🎯", 5.5, "điểm 6", lambda v: v[0] == 6),
+            ("TRƯỢT BIA", "truot", "❌", 5.5, "điểm 1", lambda v: v[0] == 1),
+            ("TRÚNG BIA", "bia", "✅", 1.45, "điểm 2–5", lambda v: 2 <= v[0] <= 5),
+        ],
+        "show": lambda v: f'{ce("🎯")} Điểm phi tiêu: <b>{v[0]}</b> · <b>' + ("HỒNG TÂM" if v[0] == 6 else "TRƯỢT BIA" if v[0] == 1 else "TRÚNG BIA") + '</b>',
+    },
+    "br": {
+        "key": "mt_bongro", "gid": 13, "name": "BÓNG RỔ", "note": "Bóng Rổ", "icon": "🏀",
+        "dice": "🏀", "n": 1, "wait": 4.2, "aliases": ("bongro", "basket"),
+        "intro": "Telegram ném 1 quả bóng rổ: <b>điểm 4–5 = vào rổ</b>, điểm 3 = kẹt vành, điểm 1–2 = trượt.",
+        "bets": [
+            ("VÀO RỔ", "vao", "🔥", 2.35, "điểm 4–5", lambda v: v[0] in (4, 5)),
+            ("TRƯỢT", "truot", "❌", 2.35, "điểm 1–2", lambda v: v[0] in (1, 2)),
+            ("KẸT VÀNH", "ket", "🍀", 4.7, "điểm 3", lambda v: v[0] == 3),
+        ],
+        "show": lambda v: f'{ce("🏀")} Điểm bóng rổ: <b>{v[0]}</b> · <b>' + ("VÀO RỔ" if v[0] in (4, 5) else "KẸT VÀNH" if v[0] == 3 else "TRƯỢT") + '</b>',
+    },
+    "bd": {
+        "key": "mt_bongda", "gid": 14, "name": "BÓNG ĐÁ", "note": "Bóng Đá", "icon": "⚽",
+        "dice": "⚽", "n": 1, "wait": 4.2, "aliases": ("bongda", "football"),
+        "intro": "Telegram sút 1 quả bóng: <b>điểm 3–5 = VÀO LƯỚI</b>, điểm 1–2 = trượt.",
+        "bets": [
+            ("VÀO LƯỚI", "vao", "🏆", 1.55, "điểm 3–5", lambda v: v[0] >= 3),
+            ("TRƯỢT", "truot", "❌", 2.3, "điểm 1–2", lambda v: v[0] <= 2),
+        ],
+        "show": lambda v: f'{ce("⚽")} Điểm bóng đá: <b>{v[0]}</b> · <b>' + ("VÀO LƯỚI" if v[0] >= 3 else "TRƯỢT") + '</b>',
+    },
+    "bl": {
+        "key": "mt_bowling", "gid": 15, "name": "BOWLING", "note": "Bowling", "icon": "🎳",
+        "dice": "🎳", "n": 1, "wait": 4.2, "aliases": ("bowling", "bowl"),
+        "intro": "Telegram lăn 1 quả bowling: <b>điểm 6 = STRIKE</b>, điểm 1 = trượt hết.",
+        "bets": [
+            ("STRIKE", "strike", "🔥", 5.5, "điểm 6", lambda v: v[0] == 6),
+            ("TRƯỢT HẾT", "truot", "❌", 5.5, "điểm 1", lambda v: v[0] == 1),
+            ("ĐỔ NHIỀU", "nhieu", "⬆️", 2.8, "điểm 4–5", lambda v: v[0] in (4, 5)),
+            ("ĐỔ ÍT", "it", "⬇️", 2.8, "điểm 2–3", lambda v: v[0] in (2, 3)),
+        ],
+        "show": lambda v: f'{ce("🎳")} Điểm bowling: <b>{v[0]}</b> · <b>' + ("STRIKE" if v[0] == 6 else "TRƯỢT HẾT" if v[0] == 1 else "ĐỔ NHIỀU" if v[0] in (4, 5) else "ĐỔ ÍT") + '</b>',
+    },
+    "sl": {
+        "key": "mt_slot", "gid": 16, "name": "QUAY HŨ", "note": "Quay Hũ", "icon": "🎰",
+        "dice": "🎰", "n": 1, "wait": 3.4, "aliases": ("slot", "quayhu", "hu"),
+        "intro": "Kéo máy quay hũ 3 cuộn của Telegram — chỉ cần bấm mức cược là quay!",
+        "bets": None,
+        "extra": [
+            f'• {ce("💎")} <b>7️⃣ 7️⃣ 7️⃣ — JACKPOT</b> — <b>x25</b>',
+            f'• {ce("🍀")} <b>3 hình giống nhau</b> (BAR / NHO / CHANH) — <b>x7</b>',
+            f'• {ce("⭐")} <b>Hai số 7</b> — <b>x1.5</b>',
+        ],
+        "show": lambda v: f'{ce("🎰")} Cuộn: <b>' + " · ".join(SLOT_SYM[r] for r in _slot_reels(v[0])) + f'</b>\n{ce("🎯")} Kết quả: <b>{_slot_eval(v[0])[1]}</b>',
+    },
+    "xxd": {
+        "key": "mt_xucxacdoi", "gid": 17, "name": "XÚC XẮC ĐÔI", "note": "Xúc Xắc Đôi", "icon": "🎲",
+        "dice": "🎲", "n": 2, "wait": 3.8, "aliases": ("xucxacdoi", "2dice"),
+        "intro": "Telegram tung <b>2 viên xúc xắc</b>, tính tổng điểm (2–12).",
+        "bets": [
+            ("TÀI", "tai", "⬆️", 2.3, "tổng 8–12", lambda v: sum(v) >= 8),
+            ("XỈU", "xiu", "⬇️", 2.3, "tổng 2–6", lambda v: sum(v) <= 6),
+            ("BẢY", "bay", "7️⃣", 5.5, "tổng đúng 7", lambda v: sum(v) == 7),
+        ],
+        "show": lambda v: f'{ce("🎲")} Xúc xắc: <b>{v[0]}</b> + <b>{v[1]}</b> = <b>{sum(v)}</b>',
+    },
+    "pk": {
+        "key": "mt_dopk", "gid": 18, "name": "ĐỌ XÚC XẮC", "note": "Đọ Xúc Xắc", "icon": "⚔️",
+        "dice": "🎲", "n": 2, "wait": 3.8, "aliases": ("dopk", "pk"),
+        "intro": "Bạn và <b>NHÀ CÁI</b> mỗi bên tung 1 viên xúc xắc — <b>điểm cao hơn thắng</b>!",
+        "bets": None,
+        "extra": [
+            f'• {ce("🏆")} <b>Bạn cao điểm hơn</b> — <b>x1.9</b>',
+            f'• {ce("⚖️")} <b>Hòa điểm</b> — hoàn tiền cược',
+            f'• {ce("🎲")} Viên xúc xắc <b>trên</b> là của bạn, viên <b>dưới</b> là của nhà cái.',
+        ],
+        "show": lambda v: f'{ce("🎲")} BẠN: <b>{v[0]}</b>  {ce("⚔️")}  NHÀ CÁI: <b>{v[1]}</b>',
+    },
+    "ll": {
+        "key": "mt_luanluu", "gid": 19, "name": "LUÂN LƯU", "note": "Luân Lưu", "icon": "⚽",
+        "dice": "⚽", "n": 3, "wait": 4.4, "aliases": ("luanluu", "penalty"),
+        "intro": "Sút <b>3 quả luân lưu</b> liên tiếp — đoán xem bạn ghi được mấy bàn (mỗi quả điểm 3–5 là vào).",
+        "bets": [
+            ("3/3 VÀO", "hat", "🏆", 4.3, "ghi đủ 3 bàn", lambda v: _goals(v) == 3),
+            ("TỪ 2 VÀO", "kha", "✅", 1.45, "ghi ≥ 2 bàn", lambda v: _goals(v) >= 2),
+            ("TỪ 1 TRỞ XUỐNG", "kem", "❌", 2.6, "ghi ≤ 1 bàn", lambda v: _goals(v) <= 1),
+        ],
+        "show": lambda v: f'{ce("⚽")} Điểm 3 quả: <b>{v[0]}</b> · <b>{v[1]}</b> · <b>{v[2]}</b>\n{ce("🎯")} Ghi được: <b>{_goals(v)}/3</b> bàn',
+    },
+}
+
+def _tg_rows(c):
+    if not c.get("bets"):
+        return None
+    btns = [(f"{lb} (x{m:g})", cd, em) for lb, cd, em, m, _r, _p in c["bets"]]
+    return [btns[i:i + 2] for i in range(0, len(btns), 2)]
+
+def _tg_rules(g):
+    c = TGDICE[g]
+    lines = [f'{ce(c["icon"])} <b>{c["name"]}</b> {ce("✨")}',
+             '━━━━━━━━━━━━━━━━━━━━',
+             f'{ce("🎮")} {c["intro"]}', '']
+    if c.get("bets"):
+        lines.append(f'{ce("📊")} <b>CỬA CƯỢC &amp; TỶ LỆ THƯỞNG</b>')
+        for lb, cd, em, m, rng, _p in c["bets"]:
+            lines.append(f'• {ce(em)} <b>{lb}</b> <i>({rng})</i> — <b>x{m:g}</b>')
+    else:
+        lines.append(f'{ce("📊")} <b>BẢNG THƯỞNG</b>')
+        lines.extend(c["extra"])
+    lines.append('')
+    lines.append(f'{ce("💡")} Hoạt ảnh &amp; kết quả do <b>Telegram</b> quyết định ngẫu nhiên, thắng là nhận tiền ngay.')
+    return "\n".join(lines)
+
+def _tg_bet(g, code):
+    for b in TGDICE[g].get("bets") or []:
+        if b[1] == code:
+            return b
+    return None
+
+def _tg_eval(g, code, vals):
+    """Trả về (kết_quả 'win'/'lose'/'push', hệ_số)."""
+    if g == "sl":
+        m, _t = _slot_eval(vals[0])
+        return ("win", m) if m else ("lose", 0)
+    if g == "pk":
+        if vals[0] > vals[1]:
+            return "win", 1.9
+        return ("push", 1) if vals[0] == vals[1] else ("lose", 0)
+    b = _tg_bet(g, code)
+    if b and b[5](vals):
+        return "win", b[3]
+    return "lose", 0
+
+async def play_tgdice(update, ctx, g, code, amount):
+    c = TGDICE[g]
+    msg = update.effective_message
+    uid = update.effective_user.id
+    if is_banned(uid):
+        return await msg.reply_text(f'{ce("🚫")} Bạn đã bị khóa tài khoản!', parse_mode=ParseMode.HTML)
+    if is_game_banned(uid, c["gid"]):
+        return await msg.reply_text(f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!', parse_mode=ParseMode.HTML)
+    if not has_bank_linked(uid):
+        return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
+    if check_mt(c["key"]) and uid not in ADMIN_IDS:
+        return await msg.reply_text(f'{ce("⚙️")} Game {c["name"].title()} đang bảo trì!', parse_mode=ParseMode.HTML)
+    bet = _tg_bet(g, code)
+    if c.get("bets") and not bet:
+        return await msg.reply_text(f'{ce("❌")} Cửa cược không hợp lệ!', parse_mode=ParseMode.HTML)
+    if amount < 1000:
+        return await msg.reply_text(f'{ce("❌")} Số tiền cược tối thiểu là 1.000đ!', parse_mode=ParseMode.HTML)
+    note = f'{c["note"]} {bet[0]}' if bet else c["note"]
+    if not sub_money(uid, amount, f"Cược {note}"):
+        return await msg.reply_text(f'{ce("❌")} Bạn không đủ số dư.', parse_mode=ParseMode.HTML)
+    _bal0 = bal_pre(uid)
+
+    # ---- tung xúc xắc hoạt ảnh Telegram ----
+    vals = []
+    try:
+        head = (f'{ce(c["icon"])} <b>{c["name"]}</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━\n')
+        if bet:
+            head += f'{ce("🎟")} Cửa: <b>{bet[0]}</b> · <b>x{bet[3]:g}</b>\n'
+        head += f'{ce("💵")} Cược: <code>{fmt_money(amount)}đ</code>'
+        await msg.reply_text(head, parse_mode=ParseMode.HTML)
+        for i in range(c["n"]):
+            d = await msg.reply_dice(emoji=c["dice"])
+            vals.append(int(d.dice.value))
+            if i < c["n"] - 1:
+                await asyncio.sleep(0.6)
+        await asyncio.sleep(c["wait"])
+    except Exception as e:
+        print(f"Lỗi play_tgdice {g}: {e}")
+        add_money(uid, amount, f"Hoàn tiền Game Telegram - lỗi {c['note']}")
+        return await msg.reply_text(
+            f'{ce("⚠️")} Có lỗi khi tung, đã hoàn lại tiền cược!\n{bal_pair(_bal0, uid)}', parse_mode=ParseMode.HTML)
+
+    # ---- trả thưởng ----
+    outcome, mult = _tg_eval(g, code, vals)
+    if outcome == "win":
+        win_amt = int(amount * mult)
+        add_money(uid, win_amt, f"Thắng {note}")
+        status = (f'{ce("🎉")} <b>THẮNG!</b> Nhận <code>+{fmt_money(win_amt)}đ</code>\n'
+                  f'{ce("💎")} Lãi: <code>+{fmt_money(win_amt - amount)}đ</code> · <b>x{mult:g}</b>')
+    elif outcome == "push":
+        add_money(uid, amount, f"Hoàn tiền Game Telegram - Hòa {c['note']}")
+        status = f'{ce("⚖️")} <b>HÒA!</b> Hoàn lại <code>{fmt_money(amount)}đ</code>'
+    else:
+        status = f'{ce("❌")} <b>THUA</b> · <code>-{fmt_money(amount)}đ</code>'
+
+    res = (f'{ce(c["icon"])} <b>KẾT QUẢ {c["name"]}</b>\n'
+           f'━━━━━━━━━━━━━━━━━━━━\n'
+           f'{c["show"](vals)}\n')
+    if bet:
+        res += f'{ce("🎟")} Bạn chọn: <b>{bet[0]}</b>\n'
+    res += (f'{ce("💵")} Tiền cược: <code>{fmt_money(amount)}đ</code>\n'
+            f'━━━━━━━━━━━━━━━━━━━━\n'
+            f'{status}\n\n'
+            f'{bal_pair(_bal0, uid)}')
+    kb = InlineKeyboardMarkup([
+        [btn(f"CHƠI LẠI {fmt_money(amount)}đ", "🔄", callback_data=f"gb_{g}_{code}_{amount}")],
+        [btn("ĐỔI CỬA", "🎮", callback_data=f"gm_{g}"), btn("DANH SÁCH", "🏆", callback_data="game_list")],
+    ])
+    try:
+        await msg.reply_text(res, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"Lỗi gửi kết quả {g}: {e}")
+
+# ---- đăng ký bảo trì / khởi tạo cờ cho game mới ----
+for _g, _c in TGDICE.items():
+    MT_ITEMS[_c["key"]] = {'name': _c["name"], 'type': 'game', 'icon': _c["icon"]}
+    if not query("SELECT 1 FROM settings WHERE key=%s", (_c["key"],)):
+        query("INSERT INTO settings(key, value) VALUES(%s, '0') ON CONFLICT (key) DO NOTHING", (_c["key"],))
+
+def _tgdice_mt_rows(st, ic):
+    items = list(TGDICE.values())
+    rows = []
+    for i in range(0, len(items), 2):
+        rows.append([btn(f"{x['name'].title()}: {st(x['key'])}", ic(x['key']), callback_data=f"tg_{x['key']}") for x in items[i:i + 2]])
+    return rows
+
+
 # ================= HỆ THỐNG DANH SÁCH GAME (DẠNG NÚT BẤM) =================
 AMOUNT_BUTTONS = [("1k", 1000), ("5k", 5000), ("10k", 10000), ("20k", 20000), ("50k", 50000),
                   ("100k", 100000), ("200k", 200000), ("500k", 500000), ("1m", 1000000)]
 
 GAMES = {
-    "room": {"name": "TÀI XỈU ROOM", "icon": "🎲", "rows": None},
-    "xx": {"name": "🎲 XÚC XẮC ĐƠN", "icon": "🎲", "rows": [
-        [("CHẴN (x1.95)", "XXC", "🆗"), ("LẺ (x1.95)", "XXL", "❓")],
-        [("TÀI (x1.95)", "XXT", "⬆️"), ("XỈU (x1.95)", "XXX", "⬇️")],
-        [("Mặt 1 (x5)", "D1", "1️⃣"), ("Mặt 2 (x5)", "D2", "2️⃣"), ("Mặt 3 (x5)", "D3", "3️⃣")],
-        [("Mặt 4 (x5)", "D4", "4️⃣"), ("Mặt 5 (x5)", "D5", "5️⃣"), ("Mặt 6 (x5)", "D6", "6️⃣")],
-    ]},
-    "lh": {"name": "🐉 LONG HỔ", "icon": "🐉", "rows": [
-        [("LONG", "long", "🐯"), ("HỔ", "ho", "🐉")],
-    ]},
-    "mp": {"name": "🃏 MINI POKER", "icon": "🃏", "rows": None},
-    "bcr": {"name": "♠️ BACCARAT", "icon": "♠️", "rows": [
-        [("PLAYER (x2)", "player", "👤")],
-        [("BANKER (x2)", "banker", "🏦")],
-        [("TIE (x9)", "tie", "⚖️")],
-    ]},
-    "xd4": {"name": "🥏 XÓC ĐĨA 4 VỊ", "icon": "🥏", "rows": [
-        [("CHẴN", "chan", "🆗"), ("LẺ", "le", "❓")],
-    ]},
-    "md5": {"name": "🔐 TÀI XỈU MD5", "icon": "🔐", "rows": [
-        [("TÀI", "tai", "⬆️"), ("XỈU", "xiu", "⬇️")],
-        [("CHẴN", "chan", "🆗"), ("LẺ", "le", "❓")],
-    ]},
-    "bc": {"name": "🦀 BẦU CUA", "icon": "🦀", "rows": [
-        [("BẦU", "bau", "🍀"), ("CUA", "cua", "🦀"), ("TÔM", "tom", "☄️")],
-        [("CÁ", "ca", "💧"), ("GÀ", "ga", "🐣"), ("NAI", "nai", "🦌")],
-    ]},
-    "xd6": {"name": "🎯 XÓC ĐĨA 6 VỊ", "icon": "🎯", "rows": [
-        [("CHẴN", "chan", "🆗"), ("LẺ", "le", "❓")],
-    ]},
+    "room": {"name": "TÀI XỈU ROOM", "icon": "👑", "rows": None},
     "tx3d": {"name": "TÀI XỈU 3D", "icon": "🎲", "rows": None},
 }
+for _g, _c in TGDICE.items():
+    GAMES[_g] = {"name": _c["name"], "icon": _c["icon"], "rows": _tg_rows(_c)}
 
-# Bố cục 2 cột; giữ nguyên Tài Xỉu Room và Tài Xỉu 3D.
-GAME_ROWS = [["room", "tx3d"], ["xx", "lh"], ["mp", "bcr"], ["xd4", "xd6"], ["md5", "bc"]]
+# Bố cục 2 cột: Tài Xỉu Room + Tài Xỉu 3D ở hàng đầu, sau đó là các game hoạt ảnh Telegram.
+GAME_ROWS = [["room", "tx3d"], ["pt", "br"], ["bd", "bl"], ["sl", "xxd"], ["pk", "ll"]]
 
 GAME_RULES = {
     "room": (
@@ -7060,84 +7278,9 @@ GAME_RULES = {
         f'  - Bộ ba đồng nhất: x150\n\n'
         f'{ce("💡")} <b>Cách chơi:</b> Bấm nút bên dưới để vào phòng, nhắn lệnh VD: <code>T 20000</code> hoặc cược ẩn danh nhắn riêng cho bot.'
     ),
-    "xx": (
-        f'{ce("🎰")} <b>XÚC XẮC ĐƠN (Xúc Xắc Telegram)</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• Dự đoán kết quả của 1 viên xúc xắc do Telegram quay.\n\n'
-        f'{ce("📊")} <b>Các cửa cược & Tỷ lệ trả thưởng:</b>\n'
-        f'• <code>XXC</code> (Chẵn - các mặt 2, 4, 6): x1.95\n'
-        f'• <code>XXL</code> (Lẻ - các mặt 1, 3, 5): x1.95\n'
-        f'• <code>XXT</code> (Tài - các mặt 4, 5, 6): x1.95\n'
-        f'• <code>XXX</code> (Xỉu - các mặt 1, 2, 3): x1.95\n'
-        f'• <code>D1</code> đến <code>D6</code> (Đoán chính xác mặt xúc xắc): x5\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>[Mã_cửa] [số_tiền]</code> VD: <code>XXC 50000</code>'
-    ),
-    "lh": (
-        f'{ce("🐯")} <b>LONG HỔ</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• So sánh điểm số của 2 lá bài chia cho cửa LONG và HỔ.\n'
-        f'• Bên nào có điểm lớn hơn (A nhỏ nhất, K lớn nhất) thì bên đó thắng.\n'
-        f'• Nếu điểm bằng nhau → Hòa (hoàn lại tiền cược).\n\n'
-        f'{ce("💵")} <b>Tỷ lệ trả thưởng:</b> x1.95\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>/lh [long/ho] [số_tiền]</code>'
-    ),
-    "mp": (
-        f'{ce("🃏")} <b>MINI POKER</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• Bot bốc ngẫu nhiên 5 lá bài để phân định thắng thua dựa trên các tay bài Poker.\n\n'
-        f'{ce("📊")} <b>Các tổ hợp & Tỷ lệ trả thưởng:</b>\n'
-        f'• Tứ Quý (4 lá cùng số): x100\n'
-        f'• Bộ Ba (3 lá cùng số): x25\n'
-        f'• Hai Đôi: x10\n'
-        f'• Một Đôi: x2\n'
-        f'• Bài rác (Không có đôi nào): Thua.\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>/mp [số_tiền]</code>'
-    ),
-    "bcr": (
-        f'{ce("🏦")} <b>BACCARAT</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• So sánh điểm giữa cửa PLAYER và BANKER (tính điểm từ 0 đến 9, gần 9 nhất là thắng, có luật rút thêm lá thứ 3 nếu điểm dưới 6).\n'
-        f'• Cửa TIE là cửa Hòa.\n\n'
-        f'{ce("💵")} <b>Tỷ lệ trả thưởng:</b>\n'
-        f'• Player: x2\n'
-        f'• Banker: x2\n'
-        f'• Tie (Hòa): x9\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>/bcr [player/banker/tie] [số_tiền]</code>'
-    ),
-    "xd4": (
-        f'{ce("💿")} <b>XÓC ĐĨA 4 VỊ</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• Xóc ngẫu nhiên 4 đồng xu (mỗi đồng xu có mặt Đỏ hoặc Trắng).\n'
-        f'• Chẵn: Tổng số mặt đỏ là 0, 2 hoặc 4 đỏ.\n'
-        f'• Lẻ: Tổng số mặt đỏ là 1 hoặc 3 đỏ.\n\n'
-        f'{ce("💵")} <b>Tỷ lệ trả thưởng:</b> x1.95\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>/xd4 [chan/le] [số_tiền]</code>'
-    ),
-    "md5": (
-        f'{ce("👌")} <b>TÀI XỈU MD5</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• Sử dụng mã hóa MD5 từ chuỗi ngẫu nhiên của hệ thống để tạo ra kết quả 3 viên xúc xắc.\n'
-        f'• Tổng điểm 11-18 là Tài, 3-10 là Xỉu. Tổng chẵn là Chẵn, lẻ là Lẻ.\n\n'
-        f'{ce("💵")} <b>Tỷ lệ trả thưởng:</b> x1.95\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>/txmd5 [tai/xiu/chan/le] [số_tiền]</code>'
-    ),
-    "bc": (
-        f'{ce("🦌")} <b>BẦU CUA</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• Lắc 3 viên xúc xắc, mỗi viên có 6 mặt: Bầu, Cua, Tôm, Cá, Gà, Nai.\n'
-        f'• Đặt cược vào một linh vật, xuất hiện 1 lần ăn x2, 2 lần ăn x3, 3 lần ăn x4.\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>/bc [bau/cua/tom/ca/ga/nai] [số_tiền]</code>'
-    ),
-    "xd6": (
-        f'{ce("💿")} <b>XÓC ĐĨA 6 VỊ</b>\n\n'
-        f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
-        f'• Xóc ngẫu nhiên 6 đồng xu.\n'
-        f'• Chẵn: Tổng số mặt đỏ là 0, 2, 4 hoặc 6.\n'
-        f'• Lẻ: Tổng số mặt đỏ là 1, 3 hoặc 5.\n\n'
-        f'{ce("💵")} <b>Tỷ lệ trả thưởng:</b> x1.95\n\n'
-        f'{ce("💡")} <b>Nhập tay:</b> <code>/xd6 [chan/le] [số_tiền]</code>'
-    ),
 }
+for _g in TGDICE:
+    GAME_RULES[_g] = _tg_rules(_g)
 
 GAME_RULES["tx3d"] = (
     f'{ce("🎲")} <b>TÀI XỈU 3D (MINIAPP)</b>\n\n'
@@ -7175,9 +7318,15 @@ def tx3d_entry_view(uid, private=True, back=True):
 GAME_LIST_TEXT = (
     f'{ce("🎮")} <b>TRUNG TÂM TRÒ CHƠI</b> {ce("✨")}\n'
     f'━━━━━━━━━━━━━━━━━━━━\n'
-    f'{ce("🎯")} Chọn trò chơi bạn muốn trải nghiệm bên dưới.\n'
-    f'{ce("💡")} Mỗi game có hướng dẫn và mức cược riêng.\n\n'
-    f'{ce("🍀")} Chúc bạn có những phút giây giải trí vui vẻ!'
+    f'{ce("👑")} <b>PHÒNG VIP</b>\n'
+    f'{ce("🎲")} Tài Xỉu Room · Tài Xỉu 3D\n\n'
+    f'{ce("🔥")} <b>GAME HOẠT ẢNH TELEGRAM</b>\n'
+    f'{ce("🎯")} Phi Tiêu · {ce("🏀")} Bóng Rổ · {ce("⚽")} Bóng Đá\n'
+    f'{ce("🎳")} Bowling · {ce("🎰")} Quay Hũ · {ce("🎲")} Xúc Xắc Đôi\n'
+    f'{ce("⚔️")} Đọ Xúc Xắc · {ce("⚽")} Luân Lưu\n'
+    f'━━━━━━━━━━━━━━━━━━━━\n'
+    f'{ce("💡")} Bấm vào game để xem luật và chọn cửa cược.\n'
+    f'{ce("🍀")} Chúc bạn chơi vui, may mắn!'
 )
 
 OLD_MENU_ALIAS = {
@@ -7236,22 +7385,8 @@ async def safe_edit(q, text, kb=None):
             print(f"safe_edit gửi mới lỗi: {e2}")
 
 async def run_game(update, ctx, g, choice, amount):
-    if g == "xx":
-        return await play_xucxac_don(update, ctx, choice, amount)
-    if g == "lh":
-        return await play_longho(update, ctx, choice, amount)
-    if g == "mp":
-        return await play_minipoker(update, ctx, amount)
-    if g == "bcr":
-        return await play_baccarat(update, ctx, choice, amount)
-    if g == "xd4":
-        return await play_xocdia4(update, ctx, choice, amount)
-    if g == "md5":
-        return await play_taixiumd5(update, ctx, choice, amount)
-    if g == "bc":
-        return await play_baucua(update, ctx, choice, amount)
-    if g == "xd6":
-        return await play_xocdia6(update, ctx, choice, amount)
+    if g in TGDICE:
+        return await play_tgdice(update, ctx, g, choice, amount)
 
 async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, d: str):
     q = update.callback_query
@@ -7265,7 +7400,7 @@ async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
         g = d[3:]
         game = GAMES.get(g)
         if not game:
-            return await q.answer("Game không tồn tại!", show_alert=True)
+            return await q.answer("Game này đã ngừng hoạt động, hãy chọn game khác trong danh sách!", show_alert=True)
         await q.answer()
         if g == "room":
             kb = InlineKeyboardMarkup([
@@ -7286,11 +7421,11 @@ async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
                 return await safe_edit(q, f'{ce("⚠️")} Miniapp chưa sẵn sàng, vui lòng thử lại sau hoặc liên hệ admin.{detail}',
                                        InlineKeyboardMarkup([[btn("Quay lại", "🔙", callback_data="game_list")]]))
         if not game.get("rows"):
-            text = GAME_RULES[g] + f'\n\n{ce("⬇️")} <b>Chọn số tiền cược:</b>'
+            text = GAME_RULES[g] + f'\n\n{ce("💰")} Số dư: <code>{fmt_money(get_balance(uid))}đ</code>\n{ce("⬇️")} <b>Chọn số tiền cược:</b>'
             return await safe_edit(q, text, game_amount_kb(g, "x"))
         rows = [[btn(label, em, callback_data=f"gc_{g}_{code}") for label, code, em in row] for row in game["rows"]]
         rows.append([btn("Quay lại", "🔙", callback_data="game_list")])
-        text = GAME_RULES[g] + f'\n\n{ce("⬇️")} <b>Chọn cửa để đặt cược:</b>'
+        text = GAME_RULES[g] + f'\n\n{ce("💰")} Số dư: <code>{fmt_money(get_balance(uid))}đ</code>\n{ce("⬇️")} <b>Chọn cửa để đặt cược:</b>'
         return await safe_edit(q, text, InlineKeyboardMarkup(rows))
 
     if d.startswith("gc_"):
@@ -9693,21 +9828,16 @@ async def start_webhook_server():
 # ============================================================
 ADMIN_GAMES = {
     "room": ("mt_taixiu_room", 1, "Tài Xỉu Room"),
-    "xx": ("mt_xucxac_don", 2, "Xúc Xắc Đơn"),
-    "lh": ("mt_longho", 3, "Long Hổ"),
-    "mp": ("mt_minipoker", 4, "Mini Poker"),
-    "bcr": ("mt_baccarat", 5, "Baccarat"),
-    "xd4": ("mt_xocdia4", 7, "Xóc Đĩa 4 Vị"),
-    "md5": ("mt_taixiumd5", 8, "Tài Xỉu MD5"),
-    "bc": ("mt_baucua", 9, "Bầu Cua"),
-    "xd6": ("mt_xocdia6", 10, "Xóc Đĩa 6 Vị"),
     "tx3d": (TX3D_MT_KEY, TX3D_GAME_ID, "Tài Xỉu 3D"),
 }
+for _a, _c in TGDICE.items():
+    ADMIN_GAMES[_a] = (_c["key"], _c["gid"], _c["name"].title())
 ADMIN_FEATURES = {"nap": ("mt_nap", "Nạp tiền"), "rut": ("mt_rut", "Rút tiền")}
-GAME_ALIAS = {"tx":"room", "taixiu":"room", "xucxac":"xx", "longho":"lh", "minipoker":"mp",
-              "baccarat":"bcr", "xocdia4":"xd4", "txmd5":"md5", "baucua":"bc", "xocdia6":"xd6",
-              "3d":"tx3d", "taixiu3d":"tx3d", "tx3d":"tx3d",
-              "naptien":"nap", "ruttien":"rut"}
+GAME_ALIAS = {"tx": "room", "taixiu": "room", "3d": "tx3d", "taixiu3d": "tx3d", "tx3d": "tx3d",
+              "naptien": "nap", "ruttien": "rut"}
+for _a, _c in TGDICE.items():
+    for _al in _c["aliases"]:
+        GAME_ALIAS[_al] = _a
 
 def _admin_norm(value):
     value = (value or "").strip().lower()
@@ -9726,7 +9856,7 @@ async def admin_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
         "🛠 <b>BẢNG LỆNH QUẢN TRỊ</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         "<b>🧰 Bảo trì</b>\n"
-        "<code>/baotrigame xx lh on</code> — bảo trì nhiều game\n"
+        "<code>/baotrigame pt br on</code> — bảo trì nhiều game\n"
         "<code>/baotrigame all on|off</code> — bảo trì/mở tất cả game + nạp/rút\n"
         "<code>/baotrigame games on|off</code> — tất cả game\n"
         "<code>/baotrigame nap rut on|off</code> — nạp/rút\n"
@@ -9777,7 +9907,7 @@ async def baotrigame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args or []
     msg = update.effective_message
     if len(args) < 2 or args[-1].lower() not in ("on", "off"):
-        return await msg.reply_text("Cú pháp: <code>/baotrigame [game...] on|off</code>\nGame: room xx lh mp bcr xd4 md5 bc xd6 tx3d; tính năng: nap rut; nhóm: games all\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
+        return await msg.reply_text("Cú pháp: <code>/baotrigame [game...] on|off</code>\nGame: room tx3d pt br bd bl sl xxd pk ll; tính năng: nap rut; nhóm: games all\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
     action = args[-1].lower()
     value = "1" if action == "on" else "0"
     keys, names, invalid = [], [], []
@@ -9856,7 +9986,7 @@ async def camgame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         target = int(ctx.args[0]); game = _admin_norm(ctx.args[1]); gid = ADMIN_GAMES[game][1]
     except (IndexError, ValueError, KeyError):
-        return await update.effective_message.reply_text("Cú pháp: <code>/camgame ID room|xx|lh|mp|bcr|xd4|md5|bc|xd6|tx3d</code>", parse_mode=ParseMode.HTML)
+        return await update.effective_message.reply_text("Cú pháp: <code>/camgame ID room|tx3d|pt|br|bd|bl|sl|xxd|pk|ll</code>", parse_mode=ParseMode.HTML)
     query("INSERT INTO banned_games(user_id,game_id) VALUES(%s,%s) ON CONFLICT DO NOTHING", (target,gid))
     await update.effective_message.reply_text(f"Đã cấm user <code>{target}</code> chơi {html.escape(ADMIN_GAMES[game][2])}.", parse_mode=ParseMode.HTML)
 
@@ -12530,7 +12660,7 @@ _ADM_CATS = [
         ("run", "tatroom all", "Tắt TẤT CẢ room", "tatroom|all", None, None),
         ("run", "moroom all", "Bật TẤT CẢ room", "moroom|all", None, None),
         ("run", "trangthairoom", "Xem trạng thái các room", "trangthairoom", None, None),
-        ("use", "baotrigame", "Bảo trì nhiều game / nạp / rút", "x", "/baotrigame [game...] on|off", "/baotrigame xx lh on  ·  /baotrigame all off"),
+        ("use", "baotrigame", "Bảo trì nhiều game / nạp / rút", "x", "/baotrigame [game...] on|off", "/baotrigame pt br on  ·  /baotrigame all off"),
         ("use", "baotriall", "Bảo trì toàn hệ thống", "x", "/baotriall on|off", "/baotriall on"),
         ("use", "baotritc", "Bảo trì toàn bộ (kể cả menu)", "x", "/baotritc on|off", "/baotritc off"),
         ("use", "tatcuoc", "Chỉ khóa/mở cược trong nhóm", "x", "/tatcuoc on|off", "/tatcuoc off"),
@@ -12545,7 +12675,7 @@ _ADM_CATS = [
         ("use", "timuser", "Tìm user theo ID/STK/tên", "x", "/timuser [từ khóa]", "/timuser NGUYEN VAN A"),
         ("use", "ban", "Khóa tài khoản", "x", "/ban [ID]", "/ban 123456789"),
         ("use", "unban", "Mở khóa tài khoản", "x", "/unban [ID]", "/unban 123456789"),
-        ("use", "camgame", "Cấm user chơi 1 game", "x", "/camgame [ID] [game]", "/camgame 123456789 xx"),
+        ("use", "camgame", "Cấm user chơi 1 game", "x", "/camgame [ID] [game]", "/camgame 123456789 pt"),
         ("use", "mogame", "Gỡ cấm game", "x", "/mogame [ID] [game|all]", "/mogame 123456789 all"),
         ("use", "camtn", "Khóa nạp/rút của user", "x", "/camtn [ID] nap|rut", "/camtn 123456789 rut"),
         ("use", "motn", "Mở khóa nạp/rút", "x", "/motn [ID] nap|rut|all", "/motn 123456789 all"),
@@ -12695,7 +12825,7 @@ _ADM_FLOW = {
     # ---- Bảo trì & room ----
     "baotrigame": [
         _S("choice", "Game", "Chọn <b>game / tính năng</b> cần đổi trạng thái bảo trì "
-           "(hoặc gõ nhiều mục cách nhau bằng dấu cách, vd: <code>xx lh nap</code>):",
+           "(hoặc gõ nhiều mục cách nhau bằng dấu cách, vd: <code>pt br nap</code>):",
            choices=_CH_GAMES + [("Nạp tiền", "nap"), ("Rút tiền", "rut"), ("TẤT CẢ", "all")], free=True),
         _S("choice", "Trạng thái", "Chọn trạng thái:", choices=_CH_MT)],
     "baotriall": [_S("choice", "Trạng thái", "Bảo trì <b>toàn hệ thống</b>:", choices=_CH_MT)],
