@@ -6341,7 +6341,7 @@ TX3D_NAME = "TÀI XỈU 3D"
 TX3D_MT_KEY = "mt_tx3d"          # khoá bảo trì trong bảng settings
 TX3D_POT_KEY = "tx3d_pot"        # khoá lưu tiền hũ trong bảng settings
 TX3D_GAME_ID = 11                # id game dùng cho /camgame (banned_games)
-TX3D_BET_SECONDS = 30            # thời gian đặt cược mỗi phiên
+TX3D_BET_SECONDS = 45            # thời gian đặt cược mỗi phiên
 TX3D_COVER_SECONDS = 15          # thời gian úp bát / mở bát trước khi sang phiên mới
 TX3D_MIN_BET = 1000
 TX3D_MAX_BET = 10 ** 12
@@ -6863,6 +6863,25 @@ async def tx3d_api_bet(request):
     return _tx3d_json({"ok": 1, "bal": new_bal})
 
 
+TX3D_MUSIC_FILES = ["cuoi-luan-duoc-khong.mp3", "thuyen-hoa.mp3", "son-thuy-trung-may.mp3", "tuong-tu-nang-ca-si.mp3"]
+
+
+async def tx3d_music_list(request):
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
+    have = [f for f in TX3D_MUSIC_FILES if os.path.isfile(os.path.join(d, f))]
+    return _tx3d_json({"tracks": [f"/music/{f}" for f in have]})
+
+
+async def tx3d_music_file(request):
+    name = request.match_info.get("name", "")
+    if name not in TX3D_MUSIC_FILES:
+        return web.Response(status=404, text="Not found")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music", name)
+    if not os.path.isfile(path):
+        return web.Response(status=404, text="Chưa có file nhạc " + name)
+    return web.FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+
+
 async def tx3d_page(request):
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     if not os.path.exists(path):
@@ -6873,6 +6892,8 @@ async def tx3d_page(request):
 def tx3d_register_routes(app):
     app.router.add_get("/app", tx3d_page)
     app.router.add_get("/app/", tx3d_page)
+    app.router.add_get("/api/music", tx3d_music_list)
+    app.router.add_get("/music/{name}", tx3d_music_file)
     app.router.add_get("/api/state", tx3d_api_state)
     app.router.add_post("/api/bet", tx3d_api_bet)
 
@@ -9342,6 +9363,10 @@ async def awp_api_tx3d_force_state(request):
     for b in list(TX3D.bets.values()):
         tot[b["side"]][0] += int(b["amt"])
         tot[b["side"]][1] += 1
+    players = []
+    for _uid, _b in list(TX3D.bets.items()):
+        players.append({"uid": int(_uid), "name": str(_b.get("name") or ""), "side": _b.get("side"), "amt": int(_b.get("amt") or 0)})
+    players.sort(key=lambda x: -x["amt"])
     cover = TX3D.phase == "cover" and TX3D.dice and TX3D.result
     return _aw_json({
         "round": int(next_round),
@@ -9350,6 +9375,7 @@ async def awp_api_tx3d_force_state(request):
         "left": int(round(max(0.0, TX3D.phase_end - time.time()))),
         "bets": len(TX3D.bets),
         "tot": tot,
+        "players": players,
         "pot": int(TX3D.pot),
         "dice": list(TX3D.dice) if cover else None,
         "jp": bool(TX3D.result.get("jp")) if cover else False,
@@ -9505,6 +9531,7 @@ async function vTx3d(){
   var my=(vTx3d.run=(vTx3d.run||0)+1);
   var d=await api('tx3d/force');
   var h='<div class="item"><b>🎲 TÀI XỈU 3D — TRỰC TIẾP</b><div id="txlive" style="margin-top:8px"></div></div>'
+    +'<div class="item"><b>👥 NGƯỜI ĐẶT CƯỢC TRONG PHIÊN</b><div id="txpl" style="margin-top:8px"></div></div>'
     +'<div class="item"><b>🛠 ÉP KẾT QUẢ</b>'
     +'<p class="mut" style="margin:6px 0">Áp dụng cho phiên <b id="txnext">#'+esc(d.round)+'</b> · Đang chờ ép: <b id="txcur">'+esc(d.current)+'</b></p>'
     +'<div class="acts" style="margin-top:10px">'
@@ -9530,6 +9557,12 @@ async function vTx3d(){
     else{x+='<p class="mut" style="margin:12px 0 0">Kết quả sẽ được chọn khi hết giờ đặt cược.</p>';}
     if(s.hist&&s.hist.length){x+='<div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">'+s.hist.map(function(a){return '<span title="'+a.join('-')+'" style="display:inline-block;min-width:34px;text-align:center;padding:3px 6px;border-radius:8px;border:1px solid '+col(a)+';color:'+col(a)+';font-size:12px">'+(a[0]+a[1]+a[2])+'</span>';}).join('')+'</div><p class="mut" style="margin:4px 0 0;font-size:12px">Cầu 12 phiên gần nhất (mới nhất bên trái)</p>';}
     e.innerHTML=x;
+    var pl=document.getElementById('txpl');
+    if(pl){var P=s.players||[];
+      if(!P.length){pl.innerHTML='<p class="mut" style="margin:0">Chưa có ai đặt cược trong phiên này.</p>';}
+      else{pl.innerHTML='<p class="mut" style="margin:0 0 6px">'+P.length+' người · sắp xếp theo tiền cược</p>'+P.map(function(u,i){var tai=u.side==='tai';
+        return '<div class="row" style="padding:6px 0;border-top:1px solid #ffffff14;align-items:center"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(i+1)+'. <b>'+esc(u.name||'?')+'</b> <span class="mut">('+esc(u.uid)+')</span></span>'
+          +'<b style="color:'+(tai?'#f5b942':'#ff8da0')+';margin:0 10px">'+(tai?'TÀI':'XỈU')+'</b><b>'+money(u.amt)+'</b></div>';}).join('');}}
     var n=document.getElementById('txnext'),c=document.getElementById('txcur');if(n)n.textContent='#'+s.round;if(c)c.textContent=s.current;
   }
   paint(d);
