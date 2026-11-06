@@ -9170,23 +9170,38 @@ async def awp_api_gift_types(request):
 async def awp_api_gift_create(request):
     tok, s = await asyncio.to_thread(_aw_auth, request, True)
     b = await _awp_body(request)
+    ctype = str(b.get("ctype", ""))
+    if ctype not in GIFT_TYPES:
+        return _aw_json({"err": "Loại code không hợp lệ"}, 400)
+
+    def num(key, lo, hi, label, default=None):
+        try:
+            return _awp_int(b.get(key, default), lo, hi)
+        except (ValueError, TypeError):
+            raise ValueError(label)
+
     try:
-        ctype = str(b.get("ctype", ""))
-        if ctype not in GIFT_TYPES:
-            raise ValueError
-        st = {"ctype": ctype, "reward": _awp_int(b.get("reward"), 1000, 10 ** 8),
-              "wager": _awp_int(b.get("wager", 0), 0, 100), "duration": _awp_int(b.get("minutes"), 1, 525600),
-              "qty": _awp_int(b.get("qty", 1), 1, 100), "require_deposit": 0, "required_amount": 0, "bound_user": None}
+        st = {"ctype": ctype,
+              "reward": num("reward", 1000, 10 ** 8, "Giá trị mỗi code phải từ 1.000đ đến 100.000.000đ"),
+              "wager": num("wager", 0, 100, "Vòng cược phải từ 0 đến 100", 0),
+              "duration": num("minutes", 1, 525600, "Hạn dùng phải từ 1 phút đến 365 ngày"),
+              "qty": num("qty", 1, 100, "Số lượng code phải từ 1 đến 100", 1),
+              "require_deposit": 0, "required_amount": 0, "bound_user": None}
         if str(b.get("req_dep", "")).strip():
-            st["required_amount"] = _awp_int(b.get("req_dep"), 1000, 10 ** 10)
+            st["required_amount"] = num("req_dep", 1000, 10 ** 10, "Yêu cầu nạp phải từ 1.000đ trở lên")
             st["require_deposit"] = 1
         if str(b.get("bound", "")).strip():
-            st["bound_user"] = int(str(b.get("bound")).strip())
-    except (ValueError, TypeError):
-        return _aw_json({"err": "Thông tin code không hợp lệ"}, 400)
+            try:
+                st["bound_user"] = int(str(b.get("bound")).strip())
+            except ValueError:
+                raise ValueError("ID người dùng không hợp lệ")
+    except ValueError as e:
+        return _aw_json({"err": str(e) or "Thông tin code không hợp lệ"}, 400)
     codes, expiry = await asyncio.to_thread(_create_gift_codes, st, 0)
-    await asyncio.to_thread(_aw_log, s["user"], "GIFT_CREATE", f"{ctype} x{len(codes)} {st['reward']}đ", _aw_ip(request))
-    return _aw_json({"ok": True, "codes": codes, "expiry": expiry.strftime("%d/%m/%Y %H:%M")})
+    await asyncio.to_thread(_aw_log, s["user"], "GIFT_CREATE",
+                            f"{ctype} x{len(codes)} {st['reward']}đ vòng cược x{st['wager']}", _aw_ip(request))
+    return _aw_json({"ok": True, "codes": codes, "expiry": expiry.strftime("%d/%m/%Y %H:%M"),
+                     "reward": st["reward"], "wager": st["wager"]})
 
 
 async def awp_api_gift_delete(request):
@@ -9323,10 +9338,22 @@ async def awp_api_tx3d_force_state(request):
         current = (" ".join(map(str, forced["dice"])) if forced.get("dice")
                    else ("TÀI" if forced.get("kind") == "tai" else "XỈU"))
     next_round = TX3D.round_id if TX3D.phase == "bet" else TX3D.round_id + 1
+    tot = {"tai": [0, 0], "xiu": [0, 0]}
+    for b in list(TX3D.bets.values()):
+        tot[b["side"]][0] += int(b["amt"])
+        tot[b["side"]][1] += 1
+    cover = TX3D.phase == "cover" and TX3D.dice and TX3D.result
     return _aw_json({
         "round": int(next_round),
+        "round_now": int(TX3D.round_id),
         "phase": TX3D.phase,
+        "left": int(round(max(0.0, TX3D.phase_end - time.time()))),
         "bets": len(TX3D.bets),
+        "tot": tot,
+        "pot": int(TX3D.pot),
+        "dice": list(TX3D.dice) if cover else None,
+        "jp": bool(TX3D.result.get("jp")) if cover else False,
+        "hist": [list(h) for h in TX3D.hist[:12]],
         "current": current,
         "pending": bool(forced),
     })
@@ -9423,13 +9450,41 @@ async function vDep2(){
   view.innerHTML=h;var s=document.getElementById('df');s.value=f;s.onchange=function(){vDep2.f=s.value;load();};
 }
 
+function gform(){var o={};document.querySelectorAll('#gform [data-k]').forEach(function(e){o[e.getAttribute('data-k')]=e.value;});return o;}
+function pmoney(s){s=String(s==null?'':s).toLowerCase().replace(/[.,đ\s]/g,'');var m=1;if(s.slice(-1)==='k'){m=1000;s=s.slice(0,-1);}else if(s.slice(-1)==='m'){m=1000000;s=s.slice(0,-1);}return Math.round((parseFloat(s)||0)*m);}
+function fmin(m){m=Math.round(m||0);if(m<=0)return '—';var d=Math.floor(m/1440),h=Math.floor(m%1440/60),p=m%60,o=[];if(d)o.push(d+' ngày');if(h)o.push(h+' giờ');if(p)o.push(p+' phút');return o.join(' ');}
+function gsum(){
+  var e=document.getElementById('gsum');if(!e)return;
+  var v=gform(),q=parseInt(v.qty,10)||0,r=pmoney(v.reward),w=parseInt(v.wager,10)||0,m=(parseFloat(v.mins)||0)*parseInt(v.unit,10);
+  var t='Tạo <b>'+q+'</b> code × <b>'+money(r)+'</b> = tổng <b>'+money(q*r)+'</b><br>';
+  t+=w>0?'Vòng cược <b>x'+w+'</b>: người nhập cần cược (số dư sau khi nhận code × '+w+') mới được rút.':'Không yêu cầu vòng cược.';
+  t+='<br>Hạn dùng: <b>'+fmin(m)+'</b>';
+  if(v.bound&&v.bound.trim())t+=' · chỉ ID <b>'+esc(v.bound.trim())+'</b>';
+  if(v.req_dep&&v.req_dep.trim())t+=' · yêu cầu nạp trong ngày <b>'+money(pmoney(v.req_dep))+'</b>';
+  e.innerHTML=t;
+}
 async function vGift2(){
   await vGift();
   var t=await api('gift/types');
-  var h='<div class="item"><b>🎁 Tạo giftcode</b><div class="inl" style="margin-top:8px"><select data-k="ctype">'+t.types.map(function(x){return '<option value="'+esc(x.type)+'">'+esc(x.name)+'</option>';}).join('')+'</select><input data-k="qty" placeholder="Số lượng" value="1" inputmode="numeric"><input data-k="reward" placeholder="Giá trị mỗi code (vd 20k)"><input data-k="wager" placeholder="Vòng cược" value="1" inputmode="numeric"></div>'
-   +'<div class="inl" style="margin-top:8px"><input data-k="mins" placeholder="Hạn dùng" value="1" inputmode="numeric"><select data-k="unit"><option value="1440">ngày</option><option value="60">giờ</option><option value="1">phút</option></select><input data-k="bound" placeholder="Chỉ ID này dùng được (tuỳ chọn)"><input data-k="req_dep" placeholder="Yêu cầu nạp trong ngày (tuỳ chọn)"><button class="btn ok" data-x="gcreate">Tạo code</button></div><pre id="gout" class="mut" style="white-space:pre-wrap;user-select:all"></pre></div>'
+  if(!document.getElementById('gfs')){var sy=document.createElement('style');sy.id='gfs';
+    sy.textContent='.gfl{display:grid;grid-template-columns:210px 1fr;gap:6px 14px;align-items:center;margin-top:12px}.gfl label{font-weight:600}.gfl label small{display:block;font-weight:400;color:var(--mut);font-size:12px}.gsum{margin-top:14px;padding:10px 12px;border-radius:10px;background:#0f1117;border:1px dashed var(--line);font-size:13.5px;line-height:1.7}@media(max-width:620px){.gfl{grid-template-columns:1fr}}';
+    document.head.appendChild(sy);}
+  function line(label,hint,ctl){return '<div class="gfl"><label>'+label+(hint?'<small>'+hint+'</small>':'')+'</label><div>'+ctl+'</div></div>';}
+  var h='<div class="item" id="gform"><b style="font-size:17px">🎁 Tạo giftcode</b>'
+   +line('Loại code','Chọn nhóm code cần tạo','<select data-k="ctype">'+t.types.map(function(x){return '<option value="'+esc(x.type)+'">'+esc(x.name)+'</option>';}).join('')+'</select>')
+   +line('Số lượng code','Từ 1 đến 100 code mỗi lần','<input data-k="qty" value="1" inputmode="numeric" placeholder="1">')
+   +line('Giá trị mỗi code (đ)','Ví dụ 20000 hoặc 20k (tối thiểu 1.000đ)','<input data-k="reward" placeholder="20k">')
+   +line('Vòng cược (x)','Số vòng phải cược trước khi rút. Nhập 0 = không yêu cầu','<input data-k="wager" value="1" inputmode="numeric" placeholder="1">')
+   +line('Hạn dùng','Tính từ lúc tạo code','<div class="inl"><input data-k="mins" value="1" inputmode="numeric" placeholder="1"><select data-k="unit" style="max-width:140px"><option value="1440">ngày</option><option value="60">giờ</option><option value="1">phút</option></select></div>')
+   +line('Chỉ ID này được dùng','Để trống = ai cũng nhập được','<input data-k="bound" placeholder="Tuỳ chọn" inputmode="numeric">')
+   +line('Yêu cầu nạp trong ngày (đ)','Để trống = không yêu cầu nạp','<input data-k="req_dep" placeholder="Tuỳ chọn, ví dụ 50k">')
+   +'<div class="gsum" id="gsum"></div>'
+   +'<div class="acts"><button class="btn ok" data-x="gcreate">Tạo code</button></div>'
+   +'<pre id="gout" class="mut" style="white-space:pre-wrap;user-select:all;margin:10px 0 0"></pre>'
+   +'<div class="acts" id="gcp" style="display:none"><button class="btn gray" data-x="gcopy">Sao chép tất cả code</button></div></div>'
    +'<div class="item"><b>🗑 Xoá giftcode</b><div class="inl" style="margin-top:8px"><input data-k="code" placeholder="Mã code"><button class="btn bad" data-x="gdel">Xoá</button></div></div>';
-  view.insertAdjacentHTML('beforeend',h);
+  view.insertAdjacentHTML('afterbegin',h);
+  var gf=document.getElementById('gform');gf.addEventListener('input',gsum);gf.addEventListener('change',gsum);gsum();
 }
 
 async function vCtl(){
@@ -9447,11 +9502,11 @@ async function vCtl(){
 
 
 async function vTx3d(){
+  var my=(vTx3d.run=(vTx3d.run||0)+1);
   var d=await api('tx3d/force');
-  var phase=d.phase==='bet'?'Đang nhận cược':'Đang úp bát / mở kết quả';
-  var h='<div class="item"><b>🎲 ÉP KẾT QUẢ TÀI XỈU 3D</b>'
-    +'<p class="mut" style="margin:6px 0">Phiên áp dụng: <b>#'+esc(d.round)+'</b> · Trạng thái: <b>'+phase+'</b> · Số người đã cược: <b>'+esc(d.bets)+'</b></p>'
-    +'<p class="mut">Đang chờ: <b>'+esc(d.current)+'</b></p>'
+  var h='<div class="item"><b>🎲 TÀI XỈU 3D — TRỰC TIẾP</b><div id="txlive" style="margin-top:8px"></div></div>'
+    +'<div class="item"><b>🛠 ÉP KẾT QUẢ</b>'
+    +'<p class="mut" style="margin:6px 0">Áp dụng cho phiên <b id="txnext">#'+esc(d.round)+'</b> · Đang chờ ép: <b id="txcur">'+esc(d.current)+'</b></p>'
     +'<div class="acts" style="margin-top:10px">'
     +'<button class="btn" data-x="tx3d" data-mode="tai" data-cf="Xác nhận đặt ép TÀI cho phiên kế tiếp?">🔵 Ép TÀI</button>'
     +'<button class="btn bad" data-x="tx3d" data-mode="xiu" data-cf="Xác nhận đặt ép XỈU cho phiên kế tiếp?">🔴 Ép XỈU</button></div>'
@@ -9459,8 +9514,32 @@ async function vTx3d(){
     +'<button class="btn" data-x="tx3d" data-mode="dice" data-cf="Xác nhận ép đúng 3 mặt xúc xắc đã nhập?">Ép 3 mặt</button></div>'
     +'<div class="acts" style="margin-top:10px"><button class="btn gray" data-x="tx3d" data-mode="off" data-cf="Huỷ kết quả đang chờ?">🚫 Huỷ ép</button>'
     +'<button class="btn gray" data-x="tx3d-refresh">🔄 Làm mới</button></div>'
-    +'<p class="mut" style="margin-top:10px">Lệnh ép được áp dụng cho phiên kế tiếp theo cơ chế TX3D hiện tại. Mọi thao tác ép / huỷ được ghi vào Nhật ký Web Admin.</p></div>';
+    +'<p class="mut" style="margin-top:10px">Giống lệnh <b>/ep</b> trong bot: ép Tài/Xỉu không bao giờ ra Bão; ép 1-1-1 hoặc 6-6-6 sẽ nổ hũ. Phiên bị ép vẫn trả thưởng và ghi vào cầu như bình thường. Mọi thao tác ghi vào Nhật ký.</p></div>';
   view.innerHTML=h;
+  var F=['⚀','⚁','⚂','⚃','⚄','⚅'];
+  function faces(a){return a.map(function(x){return F[x-1]||'?';}).join(' ');}
+  function nm(a){var s=a[0]+a[1]+a[2];return (a[0]==a[1]&&a[1]==a[2]&&a[0]>1&&a[0]<6)?'BÃO':(s>=11?'TÀI':'XỈU');}
+  function col(a){var n=nm(a);return n==='TÀI'?'#f5b942':n==='XỈU'?'#ff8da0':'#6fd3ff';}
+  function paint(s){
+    var e=document.getElementById('txlive');if(!e)return;
+    var ph=s.phase==='bet'?'Đang nhận cược':'Đang úp bát / mở kết quả';
+    var x='<div class="row"><span>Phiên <b>#'+esc(s.round_now)+'</b></span><span>'+ph+'</span><span>Còn <b>'+esc(s.left)+'s</b></span><span>Hũ <b>'+money(s.pot)+'</b></span></div>';
+    x+='<div class="grid" style="margin-top:10px"><div class="card"><div class="k">TÀI · '+esc(s.tot.tai[1])+' người</div><div class="v" style="color:#f5b942">'+money(s.tot.tai[0])+'</div></div>'
+      +'<div class="card"><div class="k">XỈU · '+esc(s.tot.xiu[1])+' người</div><div class="v" style="color:#ff8da0">'+money(s.tot.xiu[0])+'</div></div></div>';
+    if(s.dice){x+='<p style="margin:12px 0 0;font-size:15px">Kết quả phiên này: <span style="font-size:30px;vertical-align:middle">'+faces(s.dice)+'</span> <b>'+(s.dice[0]+s.dice[1]+s.dice[2])+'</b> · <b style="color:'+col(s.dice)+'">'+nm(s.dice)+'</b>'+(s.jp?' · <b style="color:#ffd05a">NỔ HŨ</b>':'')+'</p>';}
+    else{x+='<p class="mut" style="margin:12px 0 0">Kết quả sẽ được chọn khi hết giờ đặt cược.</p>';}
+    if(s.hist&&s.hist.length){x+='<div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">'+s.hist.map(function(a){return '<span title="'+a.join('-')+'" style="display:inline-block;min-width:34px;text-align:center;padding:3px 6px;border-radius:8px;border:1px solid '+col(a)+';color:'+col(a)+';font-size:12px">'+(a[0]+a[1]+a[2])+'</span>';}).join('')+'</div><p class="mut" style="margin:4px 0 0;font-size:12px">Cầu 12 phiên gần nhất (mới nhất bên trái)</p>';}
+    e.innerHTML=x;
+    var n=document.getElementById('txnext'),c=document.getElementById('txcur');if(n)n.textContent='#'+s.round;if(c)c.textContent=s.current;
+  }
+  paint(d);
+  (function loop(){
+    setTimeout(async function(){
+      if(my!==vTx3d.run||cur!=='tx3d'||!document.getElementById('txlive'))return;
+      try{paint(await api('tx3d/force'));}catch(e){}
+      loop();
+    },2000);
+  })();
 }
 
 async function vBc(){
@@ -9517,7 +9596,12 @@ view.addEventListener('click',async function(ev){
     if(x==='dep'){if(!confirm((g('act')==='approve'?'DUYỆT':'TỪ CHỐI')+' đơn nạp #'+g('id')+'?')){b.disabled=false;return;}await post('deposit/'+g('id')+'/'+g('act'));toast('Đã xử lý');return load();}
     if(x==='naptien'){if(!confirm('Nạp '+v.amount+' cho ID '+v.uid+'?')){b.disabled=false;return;}var r2=await post('naptien',{uid:v.uid,amount:v.amount});toast(r2.msg);return load();}
     if(x==='u'){var body=Object.assign({},v,g('body')?JSON.parse(g('body')):{});var r3=await post('u2/'+encodeURIComponent(g('id'))+'/'+g('act'),body);toast(r3.msg||'Xong');return openUser(g('id'));}
-    if(x==='gcreate'){var r4=await post('gift/create',{ctype:v.ctype,qty:v.qty,reward:v.reward,wager:v.wager,minutes:(parseFloat(v.mins)||0)*parseInt(v.unit,10),bound:v.bound,req_dep:v.req_dep});document.getElementById('gout').textContent='Hạn đến '+r4.expiry+'\n'+r4.codes.join('\n');toast('Đã tạo '+r4.codes.length+' code');b.disabled=false;return;}
+    if(x==='gcreate'){var gv=gform();if(!String(gv.reward||'').trim())throw new Error('Nhập giá trị mỗi code.');
+      var r4=await post('gift/create',{ctype:gv.ctype,qty:gv.qty,reward:gv.reward,wager:gv.wager,minutes:(parseFloat(gv.mins)||0)*parseInt(gv.unit,10),bound:gv.bound,req_dep:gv.req_dep});
+      var go=document.getElementById('gout');go.setAttribute('data-codes',r4.codes.join('\n'));
+      go.textContent='Đã tạo '+r4.codes.length+' code · '+money(r4.reward)+' · vòng cược x'+r4.wager+'\nHạn đến '+r4.expiry+'\n\n'+r4.codes.join('\n');
+      document.getElementById('gcp').style.display='flex';toast('Đã tạo '+r4.codes.length+' code');b.disabled=false;return;}
+    if(x==='gcopy'){var cd=(document.getElementById('gout').getAttribute('data-codes')||'');try{await navigator.clipboard.writeText(cd);toast('Đã sao chép '+cd.split('\n').length+' code');}catch(e2){toast('Trình duyệt không cho sao chép, hãy bôi đen và copy tay');}b.disabled=false;return;}
     if(x==='gdel'){var r5=await post('gift/delete',{code:v.code});toast(r5.msg);b.disabled=false;return;}
     if(x==='bc'){var t=document.getElementById('bct').value;if(!t.trim()||!confirm('Gửi thông báo cho TẤT CẢ người dùng?')){b.disabled=false;return;}
       var r6=await post('broadcast',{text:t});var st=document.getElementById('bcs');st.textContent='Đang gửi tới '+r6.total+' người…';
