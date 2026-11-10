@@ -33,8 +33,8 @@ SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằn
 
 ADMIN_IDS = [5633649201, 7884394252]
 BOT_USERNAME = "xoclo88dtbot"
-SESSION_HISTORY_GROUP_ID = -1003663678808
-SESSION_HISTORY_URL = "https://t.me/lspxoclo88"
+SESSION_HISTORY_GROUP_ID = -1004464587619
+SESSION_HISTORY_URL = "https://t.me/lsphienxoclo88"
 ROOM_LINK = "https://t.me/hocviencbm"
 MIN_WITHDRAW = 50000
 MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
@@ -1501,7 +1501,7 @@ def deposit_menu_content(uid):
         [btn("50.000đ", "💵", "dep_50000")],
         [btn("100.000đ", "💵", "dep_100000"), btn("200.000đ", "💵", "dep_200000"), btn("500.000đ", "💵", "dep_500000")],
         [btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000"), btn("5.000.000đ", "💰", "dep_5000000")],
-        [btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000"), btn("50.000.000đ", "💎", "dep_50000000")],
+        [btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000")],
         [btn("Hỗ Trợ", "🔔", "dep_support")]
     ])
     
@@ -1816,14 +1816,21 @@ VIP_LEVEL_REWARDS = {
 }
 
 def vip_reward_screen(uid):
+    """Màn hình VIP gọn, đồng nhất trạng thái từng mốc và dễ đọc trên Telegram."""
     info = vip_info(uid)
     points, lvl = info["points"], info["lvl"]
     icon, name = VIP_LEVELS[lvl][1], VIP_LEVELS[lvl][2]
+
     lines = [
-        f'{ce("👑")} <b>NHẬN THƯỞNG VIP</b>', '',
-        f'{ce("🏅")} <b>Cấp hiện tại:</b> {ce(icon)} ({html.escape(name)})',
-        f'{ce("💎")} <b>Điểm VIP:</b> <code>{fmt_money(points)}</code>', ''
+        f'{ce("👑")} <b>NHẬN THƯỞNG VIP</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        f'{ce("🏅")} <b>Cấp hiện tại:</b> {ce(icon)} <b>{html.escape(name)}</b> · VIP {lvl}',
+        f'{ce("💎")} <b>Điểm VIP:</b> <code>{fmt_money(points)}</code>',
+        '',
+        f'{ce("🎁")} <b>DANH SÁCH PHẦN THƯỞNG</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
     ]
+
     claimable = []
     for level in range(1, 10):
         threshold = VIP_LEVELS[level][3]
@@ -1832,20 +1839,32 @@ def vip_reward_screen(uid):
             "SELECT 1 FROM vip_level_reward_claims WHERE user_id=%s AND vip_level=%s",
             (uid, level)
         ))
-        if points >= threshold:
-            if claimed:
-                lines.append(f'{ce("✅")} <b>VIP {level}</b> · Thưởng {fmt_money(reward)} · Đã nhận')
-            else:
-                lines.append(f'{ce("🎁")} <b>VIP {level}</b> · Thưởng <b>{fmt_money(reward)}</b> · Có thể nhận')
-                claimable.append(level)
+
+        if points >= threshold and claimed:
+            status = f'{ce("✅")} <b>ĐÃ NHẬN</b>'
+        elif points >= threshold:
+            status = f'{ce("🎉")} <b>CÓ THỂ NHẬN</b>'
+            claimable.append(level)
         else:
-            lines.append(
-                f'{ce("🔒")} <b>VIP {level}</b> · Thưởng <b>{fmt_money(reward)}</b> · '
-                f'Cần thêm <b>{fmt_money(threshold - points)}</b> điểm để đạt mốc'
-            )
-    lines.extend(['', f'{ce("💡")} Khi đạt mốc VIP mới, nút <b>Nhận thưởng VIP</b> sẽ xuất hiện bên dưới.'])
-    kb = InlineKeyboardMarkup([[btn("NHẬN THƯỞNG VIP", "🎁", callback_data="ev_vip_claim_all")]]) if claimable else None
-    return "\\n".join(lines), kb
+            status = f'{ce("🔒")} Còn <b>{fmt_money(threshold - points)}</b> điểm'
+
+        lines.append(
+            f'{ce("🏅")} <b>VIP {level}</b>  ·  Thưởng: <b>{fmt_money(reward)}đ</b>\n'
+            f'    {status}'
+        )
+
+    lines.extend([
+        '━━━━━━━━━━━━━━━━━━━━',
+        f'{ce("💡")} Đạt mốc VIP mới để mở khóa phần thưởng tương ứng.',
+    ])
+
+    kb = (
+        InlineKeyboardMarkup([[
+            btn("NHẬN TẤT CẢ THƯỞNG VIP", "🎁", callback_data="ev_vip_claim_all")
+        ]])
+        if claimable else None
+    )
+    return "\n".join(lines), kb
 
 async def claim_vip_level_rewards(update, ctx):
     q = update.callback_query
@@ -3537,12 +3556,10 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                     f'{result_icons}\n'
                     f'{ce("💯")} Tổng điểm: <b>{total}</b>'
                 )
+                # Nhóm lịch sử chỉ đăng nội dung kết quả, không gắn nút lịch sử phiên.
                 await bot.send_message(
                     SESSION_HISTORY_GROUP_ID, history_post,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([[
-                        btn("LỊCH SỬ PHIÊN", "📊", url=SESSION_HISTORY_URL)
-                    ]])
+                    parse_mode=ParseMode.HTML
                 )
             except Exception as history_error:
                 print(f"[session-history] không gửi được phiên #{session_id}: {history_error}")
