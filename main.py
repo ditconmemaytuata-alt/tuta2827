@@ -764,6 +764,15 @@ CREATE TABLE IF NOT EXISTS rewards (
 )
 """)
 query("""
+CREATE TABLE IF NOT EXISTS vip_level_reward_claims (
+    user_id BIGINT NOT NULL,
+    vip_level INTEGER NOT NULL,
+    reward_amount BIGINT NOT NULL,
+    claimed_at TEXT,
+    PRIMARY KEY (user_id, vip_level)
+)
+""")
+query("""
 CREATE TABLE IF NOT EXISTS giftcodes (
     code TEXT PRIMARY KEY,
     ctype TEXT,
@@ -1488,7 +1497,8 @@ async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content="
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
     kb = InlineKeyboardMarkup([
-        [btn("30.000đ", "💵", "dep_30000"), btn("50.000đ", "💵", "dep_50000")],
+        [btn("10.000đ", "💵", "dep_10000"), btn("20.000đ", "💵", "dep_20000"), btn("30.000đ", "💵", "dep_30000")],
+        [btn("50.000đ", "💵", "dep_50000")],
         [btn("100.000đ", "💵", "dep_100000"), btn("200.000đ", "💵", "dep_200000"), btn("500.000đ", "💵", "dep_500000")],
         [btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000"), btn("5.000.000đ", "💰", "dep_5000000")],
         [btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000"), btn("50.000.000đ", "💎", "dep_50000000")],
@@ -1497,7 +1507,7 @@ def deposit_menu_content(uid):
     
     caption = (
         f'{ce("💵")} <b>CHỌN MỆNH GIÁ NẠP TIỀN</b>\n\n'
-        f'{ce("💎")} Nạp tối thiểu: <b>30.000 đ</b>\n'
+        f'{ce("💎")} Nạp tối thiểu: <b>10.000 đ</b>\n'
         f'{ce("💎")} Nạp tối đa: <b>100.000.000 đ</b>\n\n'
         f'Bấm vào mệnh giá bên dưới để nạp tiền qua <b>Chuyển khoản Ngân hàng</b>.\n\n'
         f'{ce("📌")} <b>CÁCH LẤY THÔNG TIN NẠP:</b>\n\n'
@@ -1508,7 +1518,7 @@ def deposit_menu_content(uid):
         f'{ce("✔️")} Chuyển đúng <b>SỐ TIỀN</b> và <b>NỘI DUNG</b> được cung cấp.\n'
         f'{ce("✔️")} Mỗi lần nạp cần lấy thông tin <b>MỚI</b>.\n'
         f'{ce("❌")} Không dùng thông tin cũ cho giao dịch sau.\n'
-        f'{ce("💰")} Nạp tối thiểu: <b>30.000 đ</b>'
+        f'{ce("💰")} Nạp tối thiểu: <b>10.000 đ</b>'
     )
     qr_url, _, _ = get_deposit_info(uid, 0)
     return qr_url, caption, kb
@@ -1799,6 +1809,77 @@ def vip_info(uid):
     redeemable = max(0, points - spent) if lvl >= 1 else 0
     return {"points": points, "lvl": lvl, "spent": spent,
             "redeemable": redeemable, "rate": VIP_LEVELS[lvl][4]}
+
+VIP_LEVEL_REWARDS = {
+    1: 10000, 2: 30000, 3: 100000, 4: 500000, 5: 1000000,
+    6: 3000000, 7: 5000000, 8: 10000000, 9: 30000000,
+}
+
+def vip_reward_screen(uid):
+    info = vip_info(uid)
+    points, lvl = info["points"], info["lvl"]
+    icon, name = VIP_LEVELS[lvl][1], VIP_LEVELS[lvl][2]
+    lines = [
+        f'{ce("👑")} <b>NHẬN THƯỞNG VIP</b>', '',
+        f'{ce("🏅")} <b>Cấp hiện tại:</b> {ce(icon)} ({html.escape(name)})',
+        f'{ce("💎")} <b>Điểm VIP:</b> <code>{fmt_money(points)}</code>', ''
+    ]
+    claimable = []
+    for level in range(1, 10):
+        threshold = VIP_LEVELS[level][3]
+        reward = VIP_LEVEL_REWARDS[level]
+        claimed = bool(query(
+            "SELECT 1 FROM vip_level_reward_claims WHERE user_id=%s AND vip_level=%s",
+            (uid, level)
+        ))
+        if points >= threshold:
+            if claimed:
+                lines.append(f'{ce("✅")} <b>VIP {level}</b> · Thưởng {fmt_money(reward)} · Đã nhận')
+            else:
+                lines.append(f'{ce("🎁")} <b>VIP {level}</b> · Thưởng <b>{fmt_money(reward)}</b> · Có thể nhận')
+                claimable.append(level)
+        else:
+            lines.append(
+                f'{ce("🔒")} <b>VIP {level}</b> · Thưởng <b>{fmt_money(reward)}</b> · '
+                f'Cần thêm <b>{fmt_money(threshold - points)}</b> điểm để đạt mốc'
+            )
+    lines.extend(['', f'{ce("💡")} Khi đạt mốc VIP mới, nút <b>Nhận thưởng VIP</b> sẽ xuất hiện bên dưới.'])
+    kb = InlineKeyboardMarkup([[btn("NHẬN THƯỞNG VIP", "🎁", callback_data="ev_vip_claim_all")]]) if claimable else None
+    return "\\n".join(lines), kb
+
+async def claim_vip_level_rewards(update, ctx):
+    q = update.callback_query
+    uid = q.from_user.id
+    info = vip_info(uid)
+    claimed_now, total_reward = [], 0
+    for level in range(1, info["lvl"] + 1):
+        reward = VIP_LEVEL_REWARDS[level]
+        inserted = query(
+            "INSERT INTO vip_level_reward_claims (user_id, vip_level, reward_amount, claimed_at) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (user_id, vip_level) DO NOTHING RETURNING vip_level",
+            (uid, level, reward, get_vietnam_datetime_db())
+        )
+        if inserted:
+            add_money(uid, reward, f"Nhận thưởng lên VIP {level} +{reward:,}đ")
+            claimed_now.append((level, reward))
+            total_reward += reward
+    if not claimed_now:
+        return await q.answer("Bạn chưa có mốc VIP mới để nhận thưởng!", show_alert=True)
+    await q.answer("Nhận thưởng VIP thành công!")
+    details = "\\n".join(
+        f'{ce("🏅")} VIP {level}: <code>+{fmt_money(amount)}đ</code>'
+        for level, amount in claimed_now
+    )
+    await q.message.reply_text(
+        f'{ce("🎉")} <b>NHẬN THƯỞNG VIP THÀNH CÔNG!</b>\\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\\n{details}\\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\\n'
+        f'{ce("💰")} Tổng nhận: <code>+{fmt_money(total_reward)}đ</code>\\n'
+        f'{bal_block(uid)}',
+        parse_mode=ParseMode.HTML
+    )
+    screen, kb = vip_reward_screen(uid)
+    await q.message.reply_text(screen, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 def vip_screen(uid):
     info = vip_info(uid)
@@ -3359,7 +3440,12 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                     for w in winners:
                         share = int(jackpot_amount * (w["amount"] / total_bet_tai))
                         add_money(w["user_id"], share, f"Nổ hũ Jackpot (3 con 6) +{share:,}đ")
-                        jackpot_winners.append(f'{ce("👥")} <code>{w["user_id"]}</code>: <code>+{fmt_money(share)}đ</code>')
+                        _winner_rows = query("SELECT name FROM users WHERE user_id=%s", (w["user_id"],)) or []
+                        _winner_name = html.escape(str(_winner_rows[0][0] or f'ID {w["user_id"]}')) if _winner_rows else f'ID {w["user_id"]}'
+                        jackpot_winners.append(
+                            f'{ce("👤")} <a href="tg://user?id={int(w["user_id"])}">{_winner_name}</a> '
+                            f'(<code>{w["user_id"]}</code>): <code>+{fmt_money(share)}đ</code>'
+                        )
                     update_jackpot(100000)
                     jackpot_amount = 100000
             elif count_1 >= 3:
@@ -3369,7 +3455,12 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                     for w in winners:
                         share = int(jackpot_amount * (w["amount"] / total_bet_xiu))
                         add_money(w["user_id"], share, f"Nổ hũ Jackpot (3 con 1) +{share:,}đ")
-                        jackpot_winners.append(f'{ce("👥")} <code>{w["user_id"]}</code>: <code>+{fmt_money(share)}đ</code>')
+                        _winner_rows = query("SELECT name FROM users WHERE user_id=%s", (w["user_id"],)) or []
+                        _winner_name = html.escape(str(_winner_rows[0][0] or f'ID {w["user_id"]}')) if _winner_rows else f'ID {w["user_id"]}'
+                        jackpot_winners.append(
+                            f'{ce("👤")} <a href="tg://user?id={int(w["user_id"])}">{_winner_name}</a> '
+                            f'(<code>{w["user_id"]}</code>): <code>+{fmt_money(share)}đ</code>'
+                        )
                     update_jackpot(100000)
                     jackpot_amount = 100000
 
@@ -3418,12 +3509,24 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             except Exception as e:
                 print(f"Lỗi mở khóa chat: {e}")
 
-            await bot.send_message(
+            _result_post = await bot.send_message(
                 chat_id, final_msg, parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([[
                     btn("LỊCH SỬ PHIÊN", "📊", url=SESSION_HISTORY_URL)
                 ]])
             )
+            if jackpot_winners:
+                try:
+                    await bot.pin_chat_message(
+                        chat_id=chat_id,
+                        message_id=_result_post.message_id,
+                        disable_notification=True
+                    )
+                except Exception as _pin_error:
+                    print(
+                        f"[jackpot] Không ghim được tin nổ hũ ở nhóm {chat_id}. "
+                        f"Kiểm tra quyền ghim tin của bot: {_pin_error}"
+                    )
             # Gửi kết quả từng phiên sang nhóm lưu lịch sử.
             try:
                 # Định dạng lịch sử gọn giống mẫu kênh: một dòng số phiên,
@@ -4379,7 +4482,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'Hệ thống trò chơi minh bạch — uy tín hàng đầu.\n'
         f'━━━━━━━━━━━━━━━━━━━━━\n'
         f'{ce("💰")} <b>MIN RÚT TIỀN:</b> <code>50,000đ</code>\n'
-        f'{ce("💵")} <b>MIN NẠP TIỀN:</b> <code>30,000đ</code>\n\n'
+        f'{ce("💵")} <b>MIN NẠP TIỀN:</b> <code>10,000đ</code>\n\n'
         f'{ce("⚖️")} <b>CAM KẾT MINH BẠCH:</b>\n'
         f'• <b>100%</b> Kết quả hoàn toàn ngẫu nhiên.\n'
         f'• {ce("🔥")} <b>KHÔNG</b> can thiệp kết quả dưới mọi hình thức.\n'
@@ -4835,8 +4938,8 @@ async def nap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             amount = int(arg)
 
-        if amount < 30000:
-            return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là 30,000đ!', parse_mode=ParseMode.HTML)
+        if amount < 10000:
+            return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là 10,000đ!', parse_mode=ParseMode.HTML)
         if amount > 100000000:
             return await msg_obj.reply_text(f'{ce("❌")} Số tiền nạp tối đa là 100.000.000đ!', parse_mode=ParseMode.HTML)
 
@@ -5444,8 +5547,8 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(ctx.args[0])
         amount = int(ctx.args[1])
-        if amount < 30000:
-            await update.effective_message.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là <code>30,000đ</code>!', parse_mode=ParseMode.HTML)
+        if amount < 10000:
+            await update.effective_message.reply_text(f'{ce("❌")} Số tiền nạp tối thiểu là <code>10,000đ</code>!', parse_mode=ParseMode.HTML)
             return
         now_str = get_vietnam_datetime_db()
         get_user(target_id)
@@ -5496,7 +5599,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
     except (IndexError, ValueError):
         await update.effective_message.reply_text(
-            f'{ce("❌")} Cú pháp: <code>/naptien [ID] [Số tiền]</code>\n{ce("📌")} Min nạp: <code>30,000đ</code>',
+            f'{ce("❌")} Cú pháp: <code>/naptien [ID] [Số tiền]</code>\n{ce("📌")} Min nạp: <code>10,000đ</code>',
             parse_mode=ParseMode.HTML)
 
 @admin_only
@@ -7606,13 +7709,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await q.message.reply_text(f'{ce("🎖")} <b>TOP THẮNG/THUA</b>\n\nHiện chưa có dữ liệu!', parse_mode=ParseMode.HTML)
 
     if d.startswith("ev_"):
-        if not d.startswith("ev_nhan_") or d == "ev_nhan_vip":
+        if (not d.startswith("ev_nhan_") or d == "ev_nhan_vip") and d != "ev_vip_claim_all":
             await q.answer()
         if d in ("ev_hc_ngay", "ev_hc_tuan", "ev_ht_ngay", "ev_ht_tuan"):
             ev_text, ev_kb = event_screen(uid, d[3:])
             return await q.message.reply_text(ev_text, reply_markup=ev_kb, parse_mode=ParseMode.HTML)
         if d == "ev_nhan_vip":
-            return await q.message.reply_text(f'{ce("👑")} <b>NHẬN THƯỞNG VIP</b>\n\nCấp hiện tại: Đồng\nĐiểm VIP: 0\n\nMốc VIP 1: Thưởng 10.000 - Cần thêm 10 điểm\n...\n\nKhi đạt mốc VIP mới, nút Nhận thưởng VIP sẽ xuất hiện!', parse_mode=ParseMode.HTML)
+            vip_text, vip_kb = vip_reward_screen(uid)
+            return await q.message.reply_text(vip_text, reply_markup=vip_kb, parse_mode=ParseMode.HTML)
+        if d == "ev_vip_claim_all":
+            return await claim_vip_level_rewards(update, ctx)
         if d == "ev_tuong_tac":
             return await q.message.reply_text(f'{ce("🎁")} <b>TƯƠNG TÁC NHÓM +50K</b>\n\nTương tác đủ 200 tin nhắn trong nhóm để nhận 50.000đ!', parse_mode=ParseMode.HTML)
         if d == "ev_moi_de_tu":
@@ -7642,8 +7748,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await q.answer()
             amount = int(d.split("_")[1])
-            if amount < 30000 or amount > 100000000:
-                return await q.message.reply_text("Số tiền nạp phải từ 30.000đ đến 100.000.000đ.")
+            if amount < 10000 or amount > 100000000:
+                return await q.message.reply_text("Số tiền nạp phải từ 10.000đ đến 100.000.000đ.")
             # Chống spam lệnh nạp: đang có lệnh còn hiệu lực thì phải chờ; quá 5 mã chưa nạp => khóa ẩn.
             _gate, _info = nap_order_gate(uid)
             if _gate == "banned":
@@ -9166,9 +9272,9 @@ async def awp_api_naptien(request):
     b = await _awp_body(request)
     try:
         uid = int(str(b.get("uid", "")).strip())
-        amount = _awp_int(b.get("amount"), 30000, 10 ** 10)
+        amount = _awp_int(b.get("amount"), 10000, 10 ** 10)
     except (ValueError, TypeError):
-        return _aw_json({"err": "ID hoặc số tiền không hợp lệ (tối thiểu 30.000đ)"}, 400)
+        return _aw_json({"err": "ID hoặc số tiền không hợp lệ (tối thiểu 10.000đ)"}, 400)
     if not await asyncio.to_thread(query, "SELECT 1 FROM users WHERE user_id=%s", (uid,)):
         return _aw_json({"err": "Không tìm thấy người dùng"}, 404)
     await asyncio.to_thread(
