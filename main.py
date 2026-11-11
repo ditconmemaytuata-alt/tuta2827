@@ -2368,7 +2368,8 @@ GIFT_TYPES = {
     "NAP":     {"name": "Code Nạp",      "icon": "💳", "fmt": "XOCLO88-1234567-ABCDEFG"},
     "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "XOCLO88-TRIAN-xxxxxxx"},
     "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
-    "INTERACT": {"name": "Code Tương Tác", "icon": "💬", "fmt": "XOCLO88-INTERACT-xxxxxxx"},
+    "INTERACT": {"name": "Code Tương Tác / CHECKTT", "icon": "💬", "fmt": "XOCLO88-INTERACT-xxxxxxx"},
+    "TICHLUY": {"name": "Code TOP / Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
 }
 GIFT_BUY_EXPIRE_DAYS = 30
 _DIGITS = "0123456789"
@@ -5196,6 +5197,20 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid, txt = update.effective_user.id, update.effective_message.text
     if not txt or is_banned(uid):
         return
+
+    # Chặn ở đầu luồng xử lý tin nhắn để không thể đi vòng qua trạng thái
+    # nhập liệu đang chờ (pending_inputs), lệnh /code hay gửi mã trực tiếp.
+    if query("SELECT 1 FROM admin_code_bans WHERE user_id=%s", (uid,)):
+        code_like = (
+            txt.strip().upper().startswith("XOCLO88-")
+            or re.match(r"^/code(?:@\\w+)?(?:\\s|$)", txt.strip(), re.I)
+            or re.match(r"^/nhapcode(?:@\\w+)?(?:\\s|$)", txt.strip(), re.I)
+        )
+        if code_like:
+            await update.effective_message.reply_text(
+                "🚫 Tài khoản của bạn hiện không được phép nhập code/giftcode. Vui lòng liên hệ hỗ trợ."
+            )
+            return
 
     if uid in pending_inputs:
         handled = await handle_pending_input(update, ctx)
@@ -8568,8 +8583,16 @@ async function openUser(id){
    +(p.bonus?'<div class="row" style="margin-top:8px"><span>Khuyến mãi: <b>'+money(p.bonus.amount)+'</b></span><span>Vòng cược: <b>'+money(p.bonus.current)+' / '+money(p.bonus.required)+'</b></span></div>':'')
    +(p.payouts.length?'<div style="margin-top:8px" class="mut">Tài khoản nhận tiền đã liên kết:</div>'+p.payouts.map(function(a){return '<div class="row" style="margin-top:4px"><span>'+esc(a.method)+(a.default?' (mặc định)':'')+'</span><span>'+esc(a.bank||'')+'</span><span><b>'+esc(a.number)+'</b></span><span>'+esc(a.name)+'</span></div>';}).join(''):'')
    +'</div><div class="grid">'+cards.map(function(c){return card(c[0],c[1]);}).join('')+'</div>'
-   +'<div class="item"><div class="inl"><input data-amt="'+esc(id)+'" placeholder="Số tiền (vd 50000)" inputmode="numeric"><button class="btn ok" data-u="add" data-id="'+esc(id)+'">+ Cộng</button><button class="btn bad" data-u="sub" data-id="'+esc(id)+'">− Trừ</button></div>'
-   +'<div class="acts"><button class="btn gray" data-u="'+(p.banned?'unban':'ban')+'" data-id="'+esc(id)+'">'+(p.banned?'Mở khóa':'Khóa tài khoản')+'</button><button class="btn gray" data-u="resetbank" data-id="'+esc(id)+'">Gỡ liên kết ngân hàng</button><button class="btn '+(p.code_blocked?'ok':'bad')+'" data-u="codeban" data-id="'+esc(id)+'">'+(p.code_blocked?'Cho phép nhập giftcode':'Cấm nhập giftcode')+'</button></div><div class="acts"><button class="btn gray" data-u="resetdep" data-id="'+esc(id)+'">Đặt tổng nạp về 0</button><button class="btn gray" data-u="resetwd" data-id="'+esc(id)+'">Đặt tổng rút về 0</button></div></div>'
+   +'<div class="item"><div class="row"><b>🎁 Giftcode tài khoản chưa sử dụng</b><span class="tag '+(p.pending_giftcodes&&p.pending_giftcodes.length?'pending':'success')+'">'+((p.pending_giftcodes||[]).length)+' mã</span></div>'
+   +((p.pending_giftcodes||[]).length?'<div style="display:grid;gap:8px;margin-top:10px">'+p.pending_giftcodes.map(function(g){return '<div style="padding:10px;border:1px solid var(--line);border-radius:10px"><div class="row"><b>'+esc(g.type)+'</b><span class="tag '+(g.expired?'rejected':'pending')+'">'+(g.expired?'Đã hết hạn · chưa nhập':'Chưa nhập')+'</span></div><div style="margin-top:5px"><code>'+esc(g.code)+'</code></div><div class="mut" style="margin-top:4px">Giá trị: <b>'+money(g.reward)+'</b> · Hạn: '+esc(g.expiry||'Không giới hạn')+'</div></div>';}).join('')+'</div>':'<p class="mut" style="margin:8px 0 0">Tài khoản hiện không còn giftcode được cấp riêng nào chưa sử dụng.</p>')+'</div>'
+   +'<div class="item"><b>💰 Điều chỉnh số dư</b><div class="inl" style="margin-top:8px"><input data-amt="'+esc(id)+'" placeholder="Số tiền (vd 50000)" inputmode="numeric"><button class="btn ok" data-u="add" data-id="'+esc(id)+'">＋ Cộng tiền</button><button class="btn bad" data-u="sub" data-id="'+esc(id)+'">－ Trừ tiền</button></div>'
+   +'<div style="margin-top:14px"><b>🛡️ Quyền tài khoản</b><div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px">'
+   +'<button class="btn gray" data-u="'+(p.banned?'unban':'ban')+'" data-id="'+esc(id)+'">'+(p.banned?'🔓 Mở khóa tài khoản':'🔒 Khóa tài khoản')+'</button>'
+   +'<button class="btn gray" data-u="resetbank" data-id="'+esc(id)+'">🏦 Gỡ liên kết ngân hàng</button>'
+   +'<button class="btn '+(p.code_blocked?'ok':'bad')+'" data-u="codeban" data-id="'+esc(id)+'">'+(p.code_blocked?'✅ Cho phép nhập code':'🚫 Cấm nhập code')+'</button>'
+   +'</div></div><div style="margin-top:14px"><b>📊 Điều chỉnh thống kê</b><div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px">'
+   +'<button class="btn gray" data-u="resetdep" data-id="'+esc(id)+'">↺ Đặt tổng nạp về 0</button><button class="btn gray" data-u="resetwd" data-id="'+esc(id)+'">↺ Đặt tổng rút về 0</button>'
+   +'</div></div></div>'
    +'<nav id="snav"></nav><div id="sbody"></div>';
   view.innerHTML=h;
   document.getElementById('bk').onclick=function(){curUser=null;vUser();};
@@ -9105,10 +9128,36 @@ def _aw_user_full_sync(uid):
     # Dùng query thay vì one() để tránh tuple (0,) bị thiếu phần tử thứ hai.
     reset = query("SELECT dep_offset,wd_offset FROM admin_user_stat_resets WHERE user_id=%s", (uid,))
     code_blocked = bool(query("SELECT 1 FROM admin_code_bans WHERE user_id=%s", (uid,)))
+    # Chỉ liệt kê code đã cấp riêng cho user; không đưa code dùng chung của
+    # người khác vào hồ sơ. Bao gồm CHECKTT/INTERACT và TOP/TICHLUY.
+    pending_gifts_raw = query(
+        "SELECT code, ctype, reward, expiry FROM giftcodes "
+        "WHERE bound_user=%s AND COALESCE(used,0)=0 "
+        "ORDER BY created_at DESC, code DESC",
+        (uid,)
+    ) or []
+    _now = get_vietnam_time()
+    pending_gifts = []
+    for _g in pending_gifts_raw:
+        _exp = _g[3]
+        _expired = False
+        if _exp:
+            try:
+                _expired = (_now > _exp) if getattr(_exp, "tzinfo", None) else (_now.replace(tzinfo=None) > _exp)
+            except Exception:
+                _expired = False
+        pending_gifts.append({
+            "code": str(_g[0]),
+            "type": GIFT_TYPES.get(_g[1], {}).get("name", str(_g[1] or "Giftcode")),
+            "reward": int(_g[2] or 0),
+            "expiry": _aw_jsafe(_exp),
+            "expired": bool(_expired),
+        })
     dep_offset = int(reset[0][0] or 0) if reset else 0
     wd_offset = int(reset[0][1] or 0) if reset else 0
     return {
         "code_blocked": code_blocked,
+        "pending_giftcodes": pending_gifts,
         "balance": p["balance"], "refs": int(p["refs"] or 0), "refed": int(p["refed"] or 0),
         "bank": p["bank"], "stk": p["stk"], "name": p["name"], "bank_linked": bool(p["bank_linked"]),
         "last_checkin": p["last_checkin"], "last_withdraw": p["last_withdraw"], "first_time": p["first_time"],
