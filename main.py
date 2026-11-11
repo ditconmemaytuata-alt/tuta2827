@@ -21,6 +21,7 @@ import pytz
 from telegram import (Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, WebAppInfo, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ApplicationHandlerStop
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter
 import aiohttp
 from aiohttp import web
 
@@ -5733,28 +5734,121 @@ async def history_all_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
 
+# Gửi thông báo hàng loạt có giới hạn tốc độ, dùng chung cho lệnh bot và web admin.
+_BROADCAST_LOCK = asyncio.Lock()
+_BROADCAST_DELAY = 0.10  # khoảng 10 tin/giây, chừa tài nguyên cho lệnh/game khác
+_BROADCAST_BATCH = 20
+_BROADCAST_BATCH_PAUSE = 0.50
+
+
+async def _broadcast_send_one(bot, uid, message):
+    """Gửi một tin; nếu Telegram giới hạn tốc độ thì tự chờ và thử lại."""
+    for attempt in range(6):
+        try:
+            await bot.send_message(
+                chat_id=int(uid), text=message, parse_mode=ParseMode.HTML,
+                connect_timeout=10, read_timeout=20, write_timeout=20,
+                pool_timeout=10
+            )
+            return True
+        except RetryAfter as exc:
+            wait_for = getattr(exc, "retry_after", 1)
+            try:
+                wait_for = float(wait_for.total_seconds() if hasattr(wait_for, "total_seconds") else wait_for)
+            except (TypeError, ValueError):
+                wait_for = 1
+            await asyncio.sleep(max(1.0, wait_for) + 0.3)
+        except Exception as exc:
+            # Lỗi mạng tạm thời: thử lại tối đa 2 lần; user chặn bot thì bỏ qua.
+            name = type(exc).__name__.lower()
+            if attempt < 2 and any(x in name for x in ("timeout", "network", "connect")):
+                await asyncio.sleep(1.0 + attempt)
+                continue
+            return False
+    return False
+
+
+async def _broadcast_all(bot, users, message, progress_callback=None):
+    """Worker tuần tự, giới hạn tốc độ và nhường event loop giữa các lần gửi."""
+    sent = failed = 0
+    async with _BROADCAST_LOCK:
+        total = len(users)
+        for index, row in enumerate(users, 1):
+            uid = row[0] if isinstance(row, (tuple, list)) else row
+            if await _broadcast_send_one(bot, uid, message):
+                sent += 1
+            else:
+                failed += 1
+
+            if index % _BROADCAST_BATCH == 0:
+                if progress_callback:
+                    await progress_callback(sent, failed, total)
+                await asyncio.sleep(_BROADCAST_BATCH_PAUSE)
+            else:
+                await asyncio.sleep(_BROADCAST_DELAY)
+
+        if progress_callback:
+            await progress_callback(sent, failed, total)
+    return sent, failed
+
+
 @admin_only
 async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
-        return await update.effective_message.reply_text(f'{ce("❌")} Cú pháp: <code>/send [nội dung]</code>', parse_mode=ParseMode.HTML)
+        return await update.effective_message.reply_text(
+            f'{ce("❌")} Cú pháp: <code>/send [nội dung]</code>',
+            parse_mode=ParseMode.HTML
+        )
+
     msg_to_send = " ".join(ctx.args)
-    users = query("SELECT user_id FROM users") or []
-    sent, failed = 0, 0
-    status_msg = await update.effective_message.reply_text(f'{ce("🚀")} Đang gửi tới {len(users)} người...', parse_mode=ParseMode.HTML)
-    for user in users:
+    users = await asyncio.to_thread(query, "SELECT user_id FROM users") or []
+    status_msg = await update.effective_message.reply_text(
+        f'{ce("🚀")} Đã xếp hàng gửi tới {len(users)} người. Bot vẫn tiếp tục xử lý lệnh bình thường…',
+        parse_mode=ParseMode.HTML
+    )
+    if _BROADCAST_LOCK.locked():
+        return await status_msg.edit_text(
+            f'{ce("⏳")} Đang có đợt thông báo khác chạy. Vui lòng đợi đợt đó hoàn tất.',
+            parse_mode=ParseMode.HTML
+        )
+
+    message = f'{ce("🔔")} <b>THÔNG BÁO MỚI</b>\\n\\n{html.escape(msg_to_send)}'
+    last_update = 0
+
+    async def update_progress(sent, failed, total):
+        nonlocal last_update
+        processed = sent + failed
+        if processed == total or processed - last_update >= 100:
+            last_update = processed
+            try:
+                await status_msg.edit_text(
+                    f'{ce("📣")} <b>ĐANG GỬI THÔNG BÁO</b>\\n'
+                    f'Đã xử lý: <code>{processed}/{total}</code>\\n'
+                    f'Thành công: <code>{sent}</code> · Lỗi: <code>{failed}</code>',
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+    async def worker():
         try:
-            await ctx.bot.send_message(chat_id=user[0],
-                text=f'{ce("🔔")} <b>THÔNG BÁO MỚI</b>\n\n{html.escape(msg_to_send)}',
-                parse_mode=ParseMode.HTML)
-            sent += 1
-            if sent % 20 == 0:
-                await asyncio.sleep(1)
-        except: failed += 1
-    await status_msg.edit_text(
-        f'{ce("✅")} <b>HOÀN THÀNH</b>\n\n'
-        f'{ce("📊")} Thành công: <code>{sent}</code>\n'
-        f'{ce("❌")} Thất bại: <code>{failed}</code>',
-        parse_mode=ParseMode.HTML)
+            sent, failed = await _broadcast_all(ctx.bot, users, message, update_progress)
+            await status_msg.edit_text(
+                f'{ce("✅")} <b>HOÀN THÀNH THÔNG BÁO</b>\\n\\n'
+                f'{ce("👥")} Tổng: <code>{len(users)}</code>\\n'
+                f'{ce("📊")} Thành công: <code>{sent}</code>\\n'
+                f'{ce("❌")} Thất bại: <code>{failed}</code>',
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as exc:
+            print(f"[broadcast] worker error: {exc}")
+
+    task = asyncio.create_task(worker())
+    # Lưu task để không bị thu hồi và dễ theo dõi khi bot đang chạy.
+    if "_BROADCAST_TASKS" not in globals():
+        globals()["_BROADCAST_TASKS"] = set()
+    _BROADCAST_TASKS.add(task)
+    task.add_done_callback(_BROADCAST_TASKS.discard)
 
 @admin_only
 async def reply_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -9546,11 +9640,14 @@ async def awp_api_gift_delete(request):
 async def _awp_broadcast_task(users, text):
     _AWP_BC.update(running=True, sent=0, failed=0, total=len(users))
     try:
-        for (u,) in users:
-            ok = await _awp_send(int(u), f'{ce("🔔")} <b>THÔNG BÁO MỚI</b>\n\n{html.escape(text)}')
-            _AWP_BC["sent" if ok else "failed"] += 1
-            if (_AWP_BC["sent"] + _AWP_BC["failed"]) % 20 == 0:
-                await asyncio.sleep(1)
+        message = f'{ce("🔔")} <b>THÔNG BÁO MỚI</b>\\n\\n{html.escape(text)}'
+
+        async def update_progress(sent, failed, total):
+            _AWP_BC.update(sent=sent, failed=failed, total=total)
+
+        await _broadcast_all(application.bot, users, message, update_progress)
+    except Exception as exc:
+        print(f"[web-plus] broadcast worker error: {exc}")
     finally:
         _AWP_BC["running"] = False
 
@@ -9561,7 +9658,7 @@ async def awp_api_broadcast(request):
     text = str(b.get("text", "")).strip()[:3500]
     if not text:
         return _aw_json({"err": "Nội dung trống"}, 400)
-    if _AWP_BC["running"]:
+    if _AWP_BC["running"] or _BROADCAST_LOCK.locked():
         return _aw_json({"err": "Đang có đợt gửi khác chạy, vui lòng chờ"}, 409)
     users = await asyncio.to_thread(query, "SELECT user_id FROM users") or []
     t = asyncio.create_task(_awp_broadcast_task(users, text))
