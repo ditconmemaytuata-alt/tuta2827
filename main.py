@@ -801,6 +801,15 @@ query("ALTER TABLE history ADD COLUMN IF NOT EXISTS bal_before BIGINT")
 query("ALTER TABLE history ADD COLUMN IF NOT EXISTS bal_after BIGINT")
 query("CREATE TABLE IF NOT EXISTS banned (user_id BIGINT PRIMARY KEY)")
 query("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+
+def get_setting(key, default=None):
+    res = query("SELECT value FROM settings WHERE key=%s", (key,))
+    return res[0][0] if res else default
+
+def set_setting(key, value):
+    query("INSERT INTO settings(key, value) VALUES(%s, %s) "
+          "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (key, str(value)))
+
 try:
     _session_counter_row = query("SELECT value FROM settings WHERE key='dice_session_counter'")
     if not _session_counter_row:
@@ -1533,14 +1542,6 @@ def format_money(amount):
 # ============================================================
 # ===== TIỆN ÍCH CÀI ĐẶT / THỐNG KÊ CƯỢC THEO NGÀY ======
 # ============================================================
-def get_setting(key, default=None):
-    res = query("SELECT value FROM settings WHERE key=%s", (key,))
-    return res[0][0] if res else default
-
-def set_setting(key, value):
-    query("INSERT INTO settings(key, value) VALUES(%s, %s) "
-          "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (key, str(value)))
-
 WIN_NOTE_PREFIXES = ("Thắng", "Nổ hũ", "Hoàn tiền Long Hổ", "Hoàn tiền Baccarat", "Hoàn tiền Game Telegram")
 
 def record_daily(uid, bet=0, win=0):
