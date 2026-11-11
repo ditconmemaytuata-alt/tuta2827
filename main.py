@@ -8428,7 +8428,7 @@ async function api(path,opt){
   opt=opt||{};opt.headers=Object.assign({'X-CSRF':csrf},opt.headers||{});opt.credentials='same-origin';
   var r=await fetch('/admin/api/'+path,opt);
   if(r.status===401){location.href='/admin/login';throw new Error('unauth');}
-  var j=await r.json();if(j.err){throw new Error(j.err);}return j;
+  var j;try{j=await r.json();}catch(e){throw new Error('Máy chủ lỗi ('+r.status+'), xem log Railway');}if(j.err){throw new Error(j.err);}return j;
 }
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
 var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];
@@ -9080,10 +9080,12 @@ def _aw_user_full_sync(uid):
         vip = str(get_vip_info(p["total_bet"])[0])
     except Exception:
         vip = ""
-    reset = one("SELECT dep_offset,wd_offset FROM admin_user_stat_resets WHERE user_id=%s", (uid,))
+    # query() trả về danh sách các hàng; mỗi hàng chứa đủ dep_offset và wd_offset.
+    # Dùng query thay vì one() để tránh tuple (0,) bị thiếu phần tử thứ hai.
+    reset = query("SELECT dep_offset,wd_offset FROM admin_user_stat_resets WHERE user_id=%s", (uid,))
     code_blocked = bool(query("SELECT 1 FROM admin_code_bans WHERE user_id=%s", (uid,)))
-    dep_offset = int(reset[0] or 0) if reset else 0
-    wd_offset = int(reset[1] or 0) if reset else 0
+    dep_offset = int(reset[0][0] or 0) if reset else 0
+    wd_offset = int(reset[0][1] or 0) if reset else 0
     return {
         "code_blocked": code_blocked,
         "balance": p["balance"], "refs": int(p["refs"] or 0), "refed": int(p["refed"] or 0),
@@ -9107,7 +9109,11 @@ async def aw_api_user_full(request):
     if not uid_s.isdigit():
         return _aw_json({"err": "ID không hợp lệ"}, 400)
     uid = int(uid_s)
-    p = await asyncio.to_thread(_aw_user_full_sync, uid)
+    try:
+        p = await asyncio.to_thread(_aw_user_full_sync, uid)
+    except Exception as e:
+        traceback.print_exc()
+        return _aw_json({"err": f"Lỗi tải hồ sơ: {e}"}, 500)
     if p is None:
         return _aw_json({"err": "Không tìm thấy người dùng"}, 404)
     tg = ""
