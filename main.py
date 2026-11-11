@@ -8253,10 +8253,6 @@ query("""CREATE TABLE IF NOT EXISTS admin_web_log (
 # Phan quyen admin phu; tai khoan cu mac dinh la chu so huu.
 query("ALTER TABLE admin_web_users ADD COLUMN IF NOT EXISTS is_owner INTEGER DEFAULT 1")
 query("ALTER TABLE admin_web_users ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT '{}'")
-# Tài khoản phụ được tạo từ bot ở phiên bản cũ có thể bị DB mặc định đánh dấu owner.
-# created_by có ID Telegram => tài khoản phụ; tài khoản owner gốc thường created_by NULL/0.
-query("UPDATE admin_web_users SET is_owner=0 WHERE created_by IS NOT NULL AND created_by<>0")
-
 query("""CREATE TABLE IF NOT EXISTS admin_code_bans (
     user_id BIGINT PRIMARY KEY, created_by TEXT, created_at TEXT
 )""")
@@ -9378,12 +9374,13 @@ async def taoadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query("SELECT 1 FROM admin_web_users WHERE username=%s", (username,)):
         return await msg.reply_text("❌ Tên đăng nhập này đã tồn tại. Dùng /doimkadmin để đổi mật khẩu.")
     pw_hash = await asyncio.to_thread(_aw_hash_password, password)
-    # Tài khoản tạo từ bot luôn là admin phụ (is_owner=0), không bị DB mặc định
-    # gán nhầm thành chủ sở hữu. Khởi tạo quyền rỗng để chủ sở hữu cấp trong Web.
-    default_permissions = json.dumps({k: False for k in _AW_FEATURES})
+    # /taoadmin đầu tiên tạo tài khoản CHỦ SỞ HỮU Web Admin; các lần sau là admin phụ.
+    owner_exists = bool(query("SELECT 1 FROM admin_web_users WHERE is_owner=1 LIMIT 1"))
+    is_owner = 0 if owner_exists else 1
+    permissions = json.dumps({k: True for k in _AW_FEATURES}) if is_owner else json.dumps({k: False for k in _AW_FEATURES})
     query("INSERT INTO admin_web_users(username,pw_hash,created_by,created_at,active,is_owner,permissions) "
-          "VALUES(%s,%s,%s,%s,1,0,%s)",
-          (username, pw_hash, update.effective_user.id, get_vietnam_datetime_db(), default_permissions))
+          "VALUES(%s,%s,%s,%s,1,%s,%s)",
+          (username, pw_hash, update.effective_user.id, get_vietnam_datetime_db(), is_owner, permissions))
     _aw_log(f"bot:{update.effective_user.id}", "CREATE_ADMIN", username)
     try:
         await msg.delete()   # xoá tin nhắn lệnh có chứa mật khẩu
@@ -10730,7 +10727,7 @@ async def _interaction_top_text(bot, group_id, date_text, limit=10):
         return "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>\n\nChưa có tin nhắn hợp lệ nào được ghi nhận trong nhóm."
     lines = [
         "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>",
-         "📌 Chỉ xếp hạng thành viên đạt từ 200 tin hợp lệ/ngày.",
+        "📌 Chỉ xếp hạng thành viên đạt từ 200 tin hợp lệ/ngày.",
         "",
     ]
     medals = ["🥇", "🥈", "🥉"]
@@ -10869,7 +10866,6 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     new_items = []
     try:
         resent_ok, resent_fail = await _resend_undelivered(ctx.bot, user.id, group_id, today)
-        # Chỉ phát code mốc khi đã đạt tối thiểu 200 tin hợp lệ trong ngày.
         if count >= 200:
             new_items = await _issue_interaction_rewards(ctx.bot, user.id, group_id, count, today, notify_group=False)
     except Exception as e:
