@@ -740,6 +740,8 @@ CREATE TABLE IF NOT EXISTS tich_luy_nap (
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_bet BIGINT DEFAULT 0")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS rate_bonus INTEGER DEFAULT NULL")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_linked INTEGER DEFAULT 0")
+query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_username TEXT")
+query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_full_name TEXT")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS vip_spent BIGINT DEFAULT 0")
 query("""
 CREATE TABLE IF NOT EXISTS bet_daily (
@@ -8429,10 +8431,10 @@ async function api(path,opt){
   var j=await r.json();if(j.err){throw new Error(j.err);}return j;
 }
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
-var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['log','Nhật ký']];
+var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];
 var cur='stats',view=document.getElementById('view'),isOwner=false,allowed={};
 function nav(){var n=document.getElementById('nav');n.innerHTML='';tabs.filter(function(t){return t[0]==='admins'?isOwner:(isOwner||allowed[t[0]]);}).forEach(function(t){var b=document.createElement('button');b.textContent=t[1];if(t[0]===cur)b.className='on';b.onclick=function(){cur=t[0];nav();load();};n.appendChild(b);});}
-function load(){view.innerHTML='<p class="mut">Đang tải…</p>';({stats:vStats,wd:vWd,dep:vDep,user:vUser,gift:vGift,log:vLog})[cur]().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
+function load(){view.innerHTML='<p class="mut">Đang tải…</p>';var pages={stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog,admins:vAdmins};var fn=pages[cur];if(!fn){view.innerHTML='<p class="err">Mục này chưa được cấu hình.</p>';return;}fn().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
 
 async function vStats(){
   var d=await api('stats');var c=[
@@ -8472,7 +8474,8 @@ view.addEventListener('click',async function(ev){
 
 
 async function vPayoutDuplicates(){
-  var d=await api('payout-duplicates');
+  var q=vPayoutDuplicates.q||'';
+  var d=await api('payout-duplicates?q='+encodeURIComponent(q));
   var methodLabel={BANKING:'Ngân hàng',MOMO:'MoMo',ZALOPAY:'ZaloPay'};
   var cards=d.groups.map(function(g){
     var h='<div class="item"><div class="row"><b>👥 '+esc(g.name)+'</b><span class="tag pending">'+esc(g.user_count)+' tài khoản người dùng</span></div>';
@@ -8481,13 +8484,15 @@ async function vPayoutDuplicates(){
     h+=g.accounts.map(function(a){return '<tr><td><a href="#" data-open="'+esc(a.user_id)+'">'+esc(a.user_id)+'</a></td><td>'+esc(methodLabel[a.method]||a.method)+'</td><td>'+esc(a.bank_code||'-')+'</td><td>'+esc(a.account_number||'-')+'</td><td>'+esc(a.account_name||'-')+'</td><td>'+(a.is_default?'Có':'Không')+'</td></tr>';}).join('');
     return h+'</table></div></div>';
   }).join('');
-  view.innerHTML='<div class="grid">'+
+  view.innerHTML='<div class="item"><b>🔎 Tìm tài khoản trùng</b><div class="inl" style="margin-top:8px"><input id="dup-q" value="'+esc(q)+'" placeholder="Nhập ID, tên chủ TK, STK hoặc SĐT"><button class="btn" id="dup-search">Tìm kiếm</button></div></div><div class="grid">'+
     '<div class="card"><div class="k">Nhóm tên trùng</div><div class="v">'+esc(d.group_count)+'</div></div>'+
     '<div class="card"><div class="k">Người dùng liên quan</div><div class="v">'+esc(d.matched_users)+'</div></div>'+
     '<div class="card"><div class="k">Bản ghi liên kết</div><div class="v">'+esc(d.matched_accounts)+'</div></div></div>'+
     '<div class="row" style="margin:12px 0"><span class="mut">Chỉ hiển thị tên chủ tài khoản xuất hiện ở từ 2 User ID khác nhau. Tên được chuẩn hoá dấu và khoảng trắng khi so sánh.</span><button class="btn gray" id="dup-refresh">Làm mới</button></div>'+
     (cards||'<div class="item mut">Chưa phát hiện tên chủ tài khoản rút tiền nào trùng giữa các người dùng.</div>');
   document.getElementById('dup-refresh').onclick=function(){vPayoutDuplicates().catch(function(e){toast(e.message);});};
+  document.getElementById('dup-search').onclick=function(){vPayoutDuplicates.q=document.getElementById('dup-q').value.trim();vPayoutDuplicates().catch(function(e){toast(e.message);});};
+  document.getElementById('dup-q').onkeydown=function(e){if(e.key==='Enter')document.getElementById('dup-search').click();};
 }
 
 async function vDep(){
@@ -8512,11 +8517,12 @@ function card(k,v){return '<div class="card"><div class="k">'+esc(k)+'</div><div
 
 async function vUser(){
   if(curUser){return openUser(curUser);}
-  view.innerHTML='<div class="inl"><input id="uq" placeholder="ID / STK / tên (bỏ trống = top số dư)"><button class="btn" id="ug">Tìm</button></div><div id="ur"></div>';
+  view.innerHTML='<div class="inl"><input id="uq" placeholder="ID / @username / tên Telegram / STK / SĐT / tên chủ TK rút"><button class="btn" id="ug">Tìm</button></div><div id="ur"></div>';
   var run=async function(){var q=document.getElementById('uq').value.trim();var d=await api('users?q='+encodeURIComponent(q));
     var out=document.getElementById('ur');
     out.innerHTML=d.rows.length?d.rows.map(function(u){return '<div class="item"><div class="row"><span>ID: <b>'+esc(u.user_id)+'</b></span><span>Số dư: <b>'+money(u.balance)+'</b></span><span>Cược: <b>'+money(u.total_bet)+'</b></span><span>Nạp: <b>'+money(u.dep)+'</b></span><span>Rút: <b>'+money(u.wd)+'</b></span>'+(u.banned?'<span class="tag rejected">ĐÃ KHÓA</span>':'')+'</div>'
       +'<div class="row" style="margin-top:6px"><span>Ngân hàng: <b>'+esc(u.bank||'Chưa liên kết')+'</b></span><span>STK: <b>'+esc(u.stk||'-')+'</b></span><span>Chủ TK: <b>'+esc(u.name||'-')+'</b></span></div>'
+      +(u.payouts&&u.payouts.length?'<div class="mut" style="margin-top:6px">Tài khoản rút liên kết: '+u.payouts.map(function(a){return esc(a.method)+' · '+esc(a.number||'-')+' · '+esc(a.name||'-');}).join(' | ')+'</div>':'')
       +'<div class="acts"><button class="btn" data-d="'+esc(u.user_id)+'">Xem đầy đủ thông tin</button></div></div>';}).join(''):'<p class="mut">Không tìm thấy.</p>';};
   document.getElementById('ug').onclick=run;document.getElementById('uq').onkeydown=function(e){if(e.key==='Enter')run();};
   run();
@@ -8699,12 +8705,17 @@ def _aw_auth(request, need_csrf=False):
         raise web.HTTPForbidden(text='{"err":"CSRF không hợp lệ"}', content_type="application/json")
     if not s.get("owner"):
         path = request.path
-        feature = ("stats" if "/stats" in path else
+        feature = ("stats" if "/stats" in path or "/chart" in path else
                    "wd" if "/withdraw" in path or "/wqr/" in path else
-                   "dep" if "/deposits" in path else
-                   "user" if "/users" in path or "/user/" in path else
+                   "dep" if "/deposits" in path or "/deposit/" in path or "/naptien" in path else
+                   "user" if "/users" in path or "/user/" in path or "/u2/" in path else
                    "dupe" if "/payout-duplicates" in path else
-                   "gift" if "/gifts" in path else
+                   "gift" if "/gifts" in path or "/gift/" in path else
+                   "tx3d" if "/tx3d/" in path else
+                   "ctl" if "/control" in path else
+                   "bc" if "/broadcast" in path or "/vcall" in path else
+                   "exp" if "/export/" in path else
+                   "reset" if "/reset/" in path else
                    "log" if "/log" in path else
                    "admins" if "/admins" in path else None)
         if feature and not s.get("permissions", {}).get(feature, False):
@@ -8921,7 +8932,10 @@ def _aw_jsafe(v):
 
 
 def _aw_users_sync(q):
-    q = (q or "").strip()[:60]
+    """Tìm user theo ID, tên tài khoản Telegram (nếu có), STK/SĐT hoặc tên chủ TK rút."""
+    q = (q or "").strip()[:80]
+    q_plain = q[1:] if q.startswith("@") else q
+    like = f"%{q_plain}%"
     base = ("SELECT u.user_id, u.balance, COALESCE(u.total_bet,0), u.bank, u.stk, u.name, "
             "GREATEST(0,(SELECT COALESCE(SUM(amount),0) FROM deposit_history d WHERE d.user_id=u.user_id AND d.status='success')-"
             "COALESCE((SELECT dep_offset FROM admin_user_stat_resets z WHERE z.user_id=u.user_id),0)), "
@@ -8929,17 +8943,29 @@ def _aw_users_sync(q):
             "COALESCE((SELECT wd_offset FROM admin_user_stat_resets z WHERE z.user_id=u.user_id),0)), "
             "EXISTS(SELECT 1 FROM banned b WHERE b.user_id=u.user_id) FROM users u ")
     if q:
-        like = f"%{q}%"
-        rows = query(base + "WHERE CAST(u.user_id AS TEXT)=%s OR COALESCE(u.stk,'') LIKE %s OR COALESCE(u.name,'') ILIKE %s "
-                            "ORDER BY u.balance DESC LIMIT 20", (q, like, like)) or []
+        where = ("WHERE CAST(u.user_id AS TEXT)=%s "
+                 "OR COALESCE(u.stk,'') ILIKE %s OR COALESCE(u.name,'') ILIKE %s "
+                 "OR COALESCE(u.tg_username,'') ILIKE %s OR COALESCE(u.tg_full_name,'') ILIKE %s "
+                 "OR EXISTS (SELECT 1 FROM user_payout_accounts p WHERE p.user_id=u.user_id AND "
+                 "(COALESCE(p.account_name,'') ILIKE %s OR COALESCE(p.account_number,'') ILIKE %s "
+                 "OR COALESCE(p.bank_code,'') ILIKE %s OR COALESCE(p.method,'') ILIKE %s)) "
+                 "ORDER BY u.balance DESC LIMIT 50")
+        rows = query(base + where, (q_plain, like, like, like, like, like, like, like, like)) or []
     else:
         rows = query(base + "ORDER BY u.balance DESC LIMIT 20") or []
-    return [{"user_id": r[0], "balance": int(r[1] or 0), "total_bet": int(r[2] or 0), "bank": r[3], "stk": r[4],
-             "name": r[5], "dep": int(r[6] or 0), "wd": int(r[7] or 0), "banned": bool(r[8])} for r in rows]
+    out = []
+    for r in rows:
+        uid = int(r[0])
+        linked = query("SELECT method,bank_code,account_number,account_name FROM user_payout_accounts WHERE user_id=%s ORDER BY is_default DESC,id DESC", (uid,)) or []
+        out.append({"user_id": uid, "balance": int(r[1] or 0), "total_bet": int(r[2] or 0),
+                    "bank": r[3], "stk": r[4], "name": r[5], "dep": int(r[6] or 0),
+                    "wd": int(r[7] or 0), "banned": bool(r[8]),
+                    "payouts": [{"method": a[0], "bank": a[1], "number": a[2], "name": a[3]} for a in linked]})
+    return out
 
 
 
-def _aw_payout_duplicates_sync():
+def _aw_payout_duplicates_sync(search=""):
     import unicodedata
     """Nhóm các tài khoản rút tiền có cùng tên chủ tài khoản, chuẩn hoá dấu/khoảng trắng."""
     rows = query(
@@ -8967,10 +8993,20 @@ def _aw_payout_duplicates_sync():
             "account_number": number or "", "account_name": str(name or ""),
             "is_default": bool(is_default), "created_at": str(created or "")
         })
+    search = str(search or "").strip().lstrip("@").casefold()
     result = []
     for item in groups.values():
         if len(item["users"]) < 2:
             continue
+        if search:
+            haystack = [item["name"].casefold()] + [str(uid) for uid in item["users"]]
+            for acc in item["accounts"]:
+                haystack.extend([str(acc.get("account_number") or "").casefold(),
+                                 str(acc.get("bank_code") or "").casefold(),
+                                 str(acc.get("method") or "").casefold(),
+                                 str(acc.get("account_name") or "").casefold()])
+            if not any(search in v for v in haystack):
+                continue
         methods = item["methods"]
         result.append({
             "name": item["name"],
@@ -8991,13 +9027,34 @@ def _aw_payout_duplicates_sync():
 
 async def aw_api_payout_duplicates(request):
     await asyncio.to_thread(_aw_auth, request)
-    data = await asyncio.to_thread(_aw_payout_duplicates_sync)
+    data = await asyncio.to_thread(_aw_payout_duplicates_sync, request.query.get("q", ""))
     return _aw_json(data)
+
+
+async def _aw_capture_telegram_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lưu username/tên Telegram khi user tương tác để web admin tìm được bằng @username."""
+    try:
+        user = update.effective_user
+        if not user:
+            return
+        get_user(int(user.id))
+        full_name = (user.full_name or "").strip()[:160]
+        username = (user.username or "").strip().lstrip("@")[:64]
+        await asyncio.to_thread(query,
+            "UPDATE users SET tg_username=%s,tg_full_name=%s WHERE user_id=%s",
+            (username, full_name, int(user.id)))
+    except Exception as exc:
+        print(f"[web-admin] Không lưu được hồ sơ Telegram: {exc}")
 
 
 async def aw_api_users(request):
     await asyncio.to_thread(_aw_auth, request)
-    return _aw_json({"rows": await asyncio.to_thread(_aw_users_sync, request.query.get("q", ""))})
+    try:
+        rows = await asyncio.to_thread(_aw_users_sync, request.query.get("q", ""))
+        return _aw_json({"rows": rows})
+    except Exception as exc:
+        print(f"[web-admin] Lỗi tìm người dùng: {exc}")
+        return _aw_json({"err": "Không thể tải danh sách người dùng. Kiểm tra cấu trúc database và log máy chủ."}, 500)
 
 
 def _aw_user_full_sync(uid):
@@ -9163,7 +9220,7 @@ async def aw_api_gifts(request):
 
 
 
-_AW_FEATURES = {"stats":"Tổng quan","wd":"Rút tiền","dep":"Nạp tiền","user":"Người dùng","dupe":"Trùng tên rút tiền","gift":"Giftcode","log":"Nhật ký"}
+_AW_FEATURES = {"stats":"Tổng quan","wd":"Rút tiền","dep":"Nạp tiền","user":"Người dùng","dupe":"Trùng tên rút tiền","gift":"Giftcode","tx3d":"Ép TX3D","ctl":"Điều khiển","bc":"Thông báo","exp":"Xuất file","reset":"Reset","log":"Nhật ký"}
 
 async def aw_api_admins(request):
     tok, sess = await asyncio.to_thread(_aw_auth, request, True)
@@ -10372,8 +10429,8 @@ view.addEventListener('click',async function(ev){
 
 def _awp_patch_js(js):
     reps = [
-        ("var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['gift','Giftcode'],['log','Nhật ký']];",
-         "var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký']];"),
+        ("var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];",
+         "var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];"),
         ("({stats:vStats,wd:vWd,dep:vDep,user:vUser,gift:vGift,log:vLog})[cur]()",
          "({stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog})[cur]()"),
         ("""'<nav id="snav"></nav><div id="sbody"></div>'""",
@@ -14643,6 +14700,8 @@ application.add_handler(CommandHandler("doidiemvip", doi_diem_vip_cmd))
 application.add_handler(CommandHandler("lschoi", ls_choi_cmd))
 application.add_handler(CommandHandler("lschtx", ls_room_tx_cmd))
 
+application.add_handler(MessageHandler(filters.ALL, _aw_capture_telegram_profile), group=-100)
+application.add_handler(CallbackQueryHandler(_aw_capture_telegram_profile), group=-100)
 application.add_handler(CommandHandler("naptien", naptien_admin))
 application.add_handler(CommandHandler("add", add))
 application.add_handler(CommandHandler("sub", sub))
