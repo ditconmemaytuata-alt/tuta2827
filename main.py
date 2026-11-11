@@ -9374,13 +9374,8 @@ async def taoadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query("SELECT 1 FROM admin_web_users WHERE username=%s", (username,)):
         return await msg.reply_text("❌ Tên đăng nhập này đã tồn tại. Dùng /doimkadmin để đổi mật khẩu.")
     pw_hash = await asyncio.to_thread(_aw_hash_password, password)
-    # /taoadmin đầu tiên tạo tài khoản CHỦ SỞ HỮU Web Admin; các lần sau là admin phụ.
-    owner_exists = bool(query("SELECT 1 FROM admin_web_users WHERE is_owner=1 LIMIT 1"))
-    is_owner = 0 if owner_exists else 1
-    permissions = json.dumps({k: True for k in _AW_FEATURES}) if is_owner else json.dumps({k: False for k in _AW_FEATURES})
-    query("INSERT INTO admin_web_users(username,pw_hash,created_by,created_at,active,is_owner,permissions) "
-          "VALUES(%s,%s,%s,%s,1,%s,%s)",
-          (username, pw_hash, update.effective_user.id, get_vietnam_datetime_db(), is_owner, permissions))
+    query("INSERT INTO admin_web_users(username, pw_hash, created_by, created_at, active) VALUES(%s,%s,%s,%s,1)",
+          (username, pw_hash, update.effective_user.id, get_vietnam_datetime_db()))
     _aw_log(f"bot:{update.effective_user.id}", "CREATE_ADMIN", username)
     try:
         await msg.delete()   # xoá tin nhắn lệnh có chứa mật khẩu
@@ -10720,14 +10715,14 @@ async def setsd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def _interaction_top_text(bot, group_id, date_text, limit=10):
     rows = query(
         "SELECT user_id, interaction_count FROM daily_top_interactions "
-        "WHERE group_id=%s AND date=%s AND interaction_count>=200 ORDER BY interaction_count DESC, user_id ASC LIMIT %s",
+        "WHERE group_id=%s AND date=%s ORDER BY interaction_count DESC, user_id ASC LIMIT %s",
         (group_id, date_text, limit)
     ) or []
     if not rows:
         return "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>\n\nChưa có tin nhắn hợp lệ nào được ghi nhận trong nhóm."
     lines = [
         "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>",
-        "📌 Chỉ xếp hạng thành viên đạt từ 200 tin hợp lệ/ngày.",
+        "📌 Tính theo tin nhắn hợp lệ trong nhóm hiện tại.",
         "",
     ]
     medals = ["🥇", "🥈", "🥉"]
@@ -10824,10 +10819,7 @@ def _interaction_reward_table(count, claimed):
     rows = []
     for m, reward in INTERACTION_MILESTONES:
         if count >= m:
-            if count < 200:
-                tag = "đạt mốc; cần đủ 200 tin/ngày mới nhận code"
-            else:
-                tag = "đã nhận code" if m in claimed else "đạt mốc, gõ /checktt để nhận"
+            tag = "đã nhận code" if m in claimed else "đạt mốc, gõ /checktt để nhận"
             rows.append(f"✅ <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>{tag}</i>")
         else:
             rows.append(f"🔒 <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>còn {fmt_money(m-count)} tin</i>")
@@ -10866,7 +10858,7 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     new_items = []
     try:
         resent_ok, resent_fail = await _resend_undelivered(ctx.bot, user.id, group_id, today)
-        if count >= 200:
+        if count > 0:
             new_items = await _issue_interaction_rewards(ctx.bot, user.id, group_id, count, today, notify_group=False)
     except Exception as e:
         print(f"Lỗi phát code /checktt cho {user.id}: {e}")
@@ -10883,9 +10875,7 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                          (user.id, group_id, today)) or []
     claimed = {int(r[0]) for r in claimed_rows}
     next_milestone = next(((m, reward) for m, reward in INTERACTION_MILESTONES if count < m), None)
-    if count < 200:
-        progress = f"🔒 Cần tối thiểu 200 tin hợp lệ/ngày để nhận giftcode. Bạn còn <b>{200-count}</b> tin."
-    elif next_milestone:
+    if next_milestone:
         m, reward = next_milestone
         progress = f"🎯 Mốc tiếp theo: <b>{fmt_money(m)}</b> tin — còn <b>{fmt_money(m-count)}</b> tin để nhận <b>{fmt_money(reward)}đ</b>."
     else:
@@ -10950,7 +10940,7 @@ async def settle_interaction_top_loop(bot):
                     continue
                 rows = query(
                     "SELECT user_id, interaction_count FROM daily_top_interactions "
-                    "WHERE group_id=%s AND date=%s AND interaction_count>=200 ORDER BY interaction_count DESC, user_id ASC LIMIT 10",
+                    "WHERE group_id=%s AND date=%s ORDER BY interaction_count DESC, user_id ASC LIMIT 10",
                     (group_id, date_text)
                 ) or []
                 public_lines = [f"🏆 <b>TOP TƯƠNG TÁC NGÀY {date_text}</b>"]
