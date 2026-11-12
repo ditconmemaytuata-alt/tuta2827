@@ -8175,6 +8175,129 @@ async def run_game(update, ctx, g, choice, amount):
     if g in TGDICE:
         return await play_tgdice(update, ctx, g, choice, amount)
 
+
+# ================= SOLO: MENU CHƠI VỚI BOT / TẠO PHÒNG =================
+SOLO_BOT_PENDING = {}
+
+def _solo_entry_keyboard(game):
+    label = "Kéo Búa Bao" if game == "kbb" else "Xúc Xắc"
+    return InlineKeyboardMarkup([
+        [btn("🤖 CHƠI NHANH VỚI BOT", "🤖", callback_data=f"solo:bot:{game}")],
+        [btn("🟩 TẠO PHÒNG SOLO", "🎮", callback_data=f"solo:room:{game}")],
+        [btn("Quay lại", "🔙", callback_data="game_list")]
+    ])
+
+def _solo_entry_text(game, uid):
+    if game == "kbb":
+        return (
+            f'{ce("✊")} <b>SOLO KÉO BÚA BAO</b>\\n\\n'
+            f'{ce("🤖")} <b>CHƠI NHANH VỚI BOT</b>\\n'
+            'Nhập <code>/kbb [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
+            'Bot sẽ hiện 3 nút để bạn chọn ✂️ Kéo, 🪨 Búa hoặc 📄 Bao.\\n\\n'
+            f'{ce("🟩")} <b>TẠO PHÒNG SOLO</b>\\n'
+            'Nhập <code>/solokbb [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
+            'Sau khi tạo, bot gửi mã phòng để mời người khác tham gia.'
+        )
+    return (
+        f'{ce("🎲")} <b>SOLO XÚC XẮC</b>\\n\\n'
+        f'{ce("🤖")} <b>CHƠI NHANH VỚI BOT</b>\\n'
+        'Nhập <code>/xucxacbot [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
+        'Bot tung xúc xắc, so điểm với bạn; điểm cao hơn thắng. Hòa hoàn tiền.\\n\\n'
+        f'{ce("🟩")} <b>TẠO PHÒNG SOLO</b>\\n'
+        'Nhập <code>/solo [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
+        'Sau khi tạo, bot gửi mã phòng để mời người khác tham gia.'
+    )
+
+async def _solo_bot_kbb_cmd(update, ctx):
+    msg, uid = update.effective_message, update.effective_user.id
+    args = ctx.args or []
+    if len(args) != 1:
+        return await msg.reply_text("Cú pháp: /kbb [số tiền] (2.000–1.000.000đ)")
+    try:
+        amount = int(args[0].replace(",", "").replace(".", ""))
+    except ValueError:
+        return await msg.reply_text("Số tiền không hợp lệ.")
+    if not SOLO_MIN <= amount <= SOLO_MAX:
+        return await msg.reply_text("Mức cược từ 2.000đ đến 1.000.000đ.")
+    if not has_bank_linked(uid):
+        return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
+    if not sub_money(uid, amount, "Cược Kéo Búa Bao với BOT"):
+        return await msg.reply_text("Số dư không đủ.")
+    token = f"{uid}-{time.time_ns()}"
+    SOLO_BOT_PENDING[token] = amount
+    kb = InlineKeyboardMarkup([[
+        btn("KÉO", "✂️", callback_data=f"kb_bot:{token}:keo"),
+        btn("BÚA", "🪨", callback_data=f"kb_bot:{token}:bua"),
+        btn("BAO", "📄", callback_data=f"kb_bot:{token}:bao"),
+    ]])
+    await msg.reply_text(
+        f'{ce("🤖")} <b>CHƠI KÉO BÚA BAO VỚI BOT</b>\\n'
+        f'Cược: <code>{fmt_money(amount)}đ</code> · Thắng x1.95 · Hòa hoàn tiền\\n'
+        'Hãy chọn nước đi:', parse_mode=ParseMode.HTML, reply_markup=kb)
+
+async def _solo_bot_dice_cmd(update, ctx):
+    msg, uid = update.effective_message, update.effective_user.id
+    args = ctx.args or []
+    if len(args) != 1:
+        return await msg.reply_text("Cú pháp: /xucxacbot [số tiền] (2.000–1.000.000đ)")
+    try:
+        amount = int(args[0].replace(",", "").replace(".", ""))
+    except ValueError:
+        return await msg.reply_text("Số tiền không hợp lệ.")
+    if not SOLO_MIN <= amount <= SOLO_MAX:
+        return await msg.reply_text("Mức cược từ 2.000đ đến 1.000.000đ.")
+    if not has_bank_linked(uid):
+        return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
+    if not sub_money(uid, amount, "Cược Solo Xúc Xắc với BOT"):
+        return await msg.reply_text("Số dư không đủ.")
+    try:
+        await msg.reply_text(f'{ce("🤖")} <b>SOLO XÚC XẮC VỚI BOT</b> · Cược <code>{fmt_money(amount)}đ</code>', parse_mode=ParseMode.HTML)
+        player = await ctx.bot.send_dice(chat_id=msg.chat_id, emoji="🎲")
+        await asyncio.sleep(1)
+        botdice = await ctx.bot.send_dice(chat_id=msg.chat_id, emoji="🎲")
+        a, b = player.dice.value, botdice.dice.value
+        if a == b:
+            add_money(uid, amount, "Hoàn cược hòa Solo Xúc Xắc BOT")
+            result = "🤝 HÒA — đã hoàn tiền cược."
+        elif a > b:
+            prize = int(amount * 1.95)
+            add_money(uid, prize, "Thắng Solo Xúc Xắc BOT")
+            result = f"🏆 BẠN THẮNG — nhận {fmt_money(prize)}đ."
+        else:
+            result = "❌ BOT THẮNG — bạn thua cược."
+        await msg.reply_text(f'Kết quả của bạn: <b>{a}</b>\\nKết quả BOT: <b>{b}</b>\\n{result}', parse_mode=ParseMode.HTML)
+    except Exception:
+        add_money(uid, amount, "Hoàn cược lỗi Solo Xúc Xắc BOT")
+        raise
+
+async def _solo_bot_callback(update, ctx, data):
+    q = update.callback_query
+    parts = data.split(":")
+    if len(parts) != 3:
+        return await q.answer("Lựa chọn không hợp lệ.", show_alert=True)
+    token, choice = parts[1], parts[2]
+    amount = SOLO_BOT_PENDING.get(token)
+    uid = q.from_user.id
+    if amount is None or token.split("-", 1)[0] != str(uid):
+        return await q.answer("Lượt chơi đã hết hạn hoặc không thuộc về bạn.", show_alert=True)
+    if choice not in KBB_CHOICES:
+        return await q.answer("Lựa chọn không hợp lệ.", show_alert=True)
+    SOLO_BOT_PENDING.pop(token, None)
+    bot_choice = random.choice(list(KBB_CHOICES))
+    if choice == bot_choice:
+        add_money(uid, amount, "Hoàn cược hòa Kéo Búa Bao BOT")
+        result = "🤝 HÒA — đã hoàn tiền cược."
+    elif KBB_BEATS[choice] == bot_choice:
+        prize = int(amount * 1.95)
+        add_money(uid, prize, "Thắng Kéo Búa Bao BOT")
+        result = f"🏆 BẠN THẮNG — nhận {fmt_money(prize)}đ."
+    else:
+        result = "❌ BOT THẮNG — bạn thua cược."
+    await q.answer("Đã ghi nhận lựa chọn.")
+    return await q.edit_message_text(
+        f'Bạn chọn: <b>{KBB_CHOICES[choice]}</b>\\nBOT chọn: <b>{KBB_CHOICES[bot_choice]}</b>\\n{result}',
+        parse_mode=ParseMode.HTML)
+
 async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, d: str):
     q = update.callback_query
     uid = q.from_user.id
@@ -8195,7 +8318,10 @@ async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
                 [btn("Quay lại", "🔙", callback_data="game_list")]
             ])
             return await safe_edit(q, GAME_RULES["room"], kb)
-        if g in ("xuctele", "baucua", "soloxd", "solokbb"):
+        if g in ("soloxd", "solokbb"):
+            solo_game = "dice" if g == "soloxd" else "kbb"
+            return await safe_edit(q, _solo_entry_text(solo_game, uid), _solo_entry_keyboard(solo_game))
+        if g in ("xuctele", "baucua"):
             return await safe_edit(
                 q, GAME_RULES[g] + f'\n\n{ce("💰")} Số dư: <code>{fmt_money(get_balance(uid))}đ</code>',
                 InlineKeyboardMarkup([[btn("Quay lại", "🔙", callback_data="game_list")]])
@@ -8266,6 +8392,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d.startswith("pvp:"):
         return await _solo_callback(update, ctx, d)
+    if d.startswith("solo:"):
+        parts = d.split(":")
+        if len(parts) == 3:
+            _, mode, game = parts
+            if mode == "bot":
+                await q.answer()
+                if game == "kbb":
+                    return await q.message.reply_text(
+                        "🤖 <b>CHƠI NHANH VỚI BOT</b>\nNhập <code>/kbb [số tiền]</code> để chơi.",
+                        parse_mode=ParseMode.HTML)
+                return await q.message.reply_text(
+                    "🤖 <b>CHƠI NHANH VỚI BOT</b>\nNhập <code>/xucxacbot [số tiền]</code> để chơi.",
+                    parse_mode=ParseMode.HTML)
+            if mode == "room":
+                await q.answer()
+                command = "/solokbb" if game == "kbb" else "/solo"
+                return await q.message.reply_text(
+                    f'🟩 <b>TẠO PHÒNG SOLO</b>\nNhập <code>{command} [số tiền]</code> để tạo phòng. Bot sẽ gửi mã phòng để mời người khác.',
+                    parse_mode=ParseMode.HTML)
+        return await q.answer("Lựa chọn không hợp lệ.", show_alert=True)
+    if d.startswith("kb_bot:"):
+        return await _solo_bot_callback(update, ctx, d)
 
     if d == "none":
         return await q.answer()
@@ -15509,6 +15657,8 @@ application.add_handler(CommandHandler("solo", solo_cmd))
 application.add_handler(CommandHandler("huy", solo_cancel_cmd))
 application.add_handler(CommandHandler("huykbb", solo_kbb_cancel_cmd))
 application.add_handler(CommandHandler("solokbb", solokbb_cmd))
+application.add_handler(CommandHandler("kbb", _solo_bot_kbb_cmd))
+application.add_handler(CommandHandler("xucxacbot", _solo_bot_dice_cmd))
 application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.PHOTO, payout_link_photo), group=-2)
 application.add_handler(MessageHandler(filters.TEXT, payout_link_text), group=-2)
