@@ -613,6 +613,7 @@ CREATE TABLE IF NOT EXISTS user_payout_accounts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """)
+query("ALTER TABLE user_payout_accounts ALTER COLUMN qr_file_id DROP NOT NULL")
 query("CREATE INDEX IF NOT EXISTS idx_user_payout_accounts_user ON user_payout_accounts(user_id)")
 
 query("""
@@ -4709,9 +4710,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     _menu_rows = [
-        [kbtn_id("DANH SÁCH GAME", "5231005931550030290"), kbtn_id("TÀI KHOẢN", "6269196846657182682")],
-        [kbtn_id("NẠP TIỀN", "5440833702642857683"), kbtn_id("RÚT TIỀN", "5472250091332993630")],
-        [kbtn_id("GIỚI THIỆU", "5433758796289685818"), kbtn_id("ĐUA TOP", "5469744063815102906")],
+        [kbtn_id("DANH SÁCH GAME", "5469744063815102906"), kbtn_id("TÀI KHOẢN", "5433758796289685818")],
+        [kbtn_id("NẠP TIỀN", "5231005931550030290"), kbtn_id("RÚT TIỀN", "5472250091332993630")],
+        [kbtn_id("GIỚI THIỆU", "5440833702642857683"), kbtn_id("ĐUA TOP", "6192771593001767805")],
         [kbtn_id("EVENT", "5375203677487248777")]
     ]
     if uid in ADMIN_IDS:
@@ -4884,9 +4885,40 @@ async def payout_link_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("Tên không hợp lệ, vui lòng nhập lại.")
             raise ApplicationHandlerStop
         state["account_name"] = value.upper()
+
+        # Banking: lưu ngay sau khi nhập tên, không yêu cầu ảnh QR.
+        if state.get("method") == "BANKING":
+            uid = update.effective_user.id
+            bank = state.get("bank_code")
+            number = state["account_number"]
+            name = state["account_name"]
+            query("UPDATE user_payout_accounts SET is_default=FALSE WHERE user_id=%s", (uid,))
+            saved_account = query(
+                """INSERT INTO user_payout_accounts
+                   (user_id, method, bank_code, account_number, account_name, qr_file_id, is_default)
+                   VALUES (%s,'BANKING',%s,%s,%s,NULL,TRUE) RETURNING id""",
+                (uid, bank, number, name)
+            )
+            if not saved_account:
+                await msg.reply_text("❌ Chưa lưu được tài khoản. Vui lòng thử lại hoặc liên hệ Admin.")
+                raise ApplicationHandlerStop
+            query("UPDATE users SET bank=%s, stk=%s, name=%s, bank_linked=1 WHERE user_id=%s",
+                  (bank, number, name, uid))
+            ctx.user_data.pop("payout_link", None)
+            await msg.reply_text(
+                f'{ce("✅")} <b>LIÊN KẾT TÀI KHOẢN THÀNH CÔNG</b>\\n\\n'
+                f'{ce("🏦")} Ngân hàng: <b>{html.escape(str(bank))}</b>\\n'
+                f'{ce("🔢")} Số tài khoản: <code>{html.escape(number)}</code>\\n'
+                f'{ce("👤")} Chủ tài khoản: <b>{html.escape(name)}</b>\\n'
+                f'{ce("ℹ️")} Không cần gửi ảnh QR đối với Banking.',
+                parse_mode=ParseMode.HTML
+            )
+            raise ApplicationHandlerStop
+
+        # MoMo/ZaloPay vẫn yêu cầu ảnh QR.
         state["stage"] = "qr"
         await msg.reply_text(
-            f'{ce("🖼")} <b>BƯỚC CUỐI: GỬI ẢNH QR</b>\n\n'
+            f'{ce("🖼")} <b>BƯỚC CUỐI: GỬI ẢNH QR</b>\\n\\n'
             'Gửi ảnh QR nhận tiền của đúng tài khoản vừa nhập (gửi dạng ẢNH, không gửi đường link). '
             'Bot sẽ lưu ảnh và gửi cho Admin cùng yêu cầu rút tiền.',
             parse_mode=ParseMode.HTML
@@ -4937,7 +4969,7 @@ async def taikhoan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if not rows:
         return await update.effective_message.reply_text(
-            "Bạn chưa có tài khoản đã lưu. Dùng /lienket để thêm tài khoản kèm QR."
+            "Bạn chưa có tài khoản đã lưu. Dùng /lienket để thêm tài khoản nhận tiền."
         )
     lines = [f'{ce("💳")} <b>TÀI KHOẢN NHẬN TIỀN ĐÃ LƯU</b>\n']
     buttons = []
