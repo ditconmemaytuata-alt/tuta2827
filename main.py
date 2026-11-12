@@ -4477,6 +4477,43 @@ def _fan_profile_check(chat, has_photo, uid):
     bio_ok = need_link.casefold() in bio.casefold()
     return display_name, name_ok, bool(has_photo), bio_ok, need_link
 
+def _fan_guide_text(uid, chat, has_photo):
+    display, name_ok, photo_ok, bio_ok, ref_link = _fan_profile_check(chat, has_photo, uid)
+    base_name = (display or "Tên của bạn").replace("Fan Xoclo88", "").strip() or "Tên của bạn"
+    ok_all = name_ok and photo_ok and bio_ok
+    head = ("✅ <b>BẠN ĐÃ ĐỦ ĐIỀU KIỆN, GỬI /baodanh ĐỂ ĐIỂM DANH!</b>" if ok_all
+            else "❌ <b>BẠN CHƯA ĐẶT TÊN / ẢNH / TIỂU SỬ ĐÚNG YÊU CẦU ĐỂ NHẬN 30.000</b>")
+    return (
+        f"{head}\n\n"
+        f"👤 Tên hiện tại: <b>{html.escape(display or '(chưa đặt)')}</b>\n"
+        f"{'✅' if name_ok else '❌'} Tên {'đã' if name_ok else 'không'} chứa Fan Xoclo88\n"
+        f"{'✅' if photo_ok else '❌'} Ảnh đại diện {'đã đúng yêu cầu' if photo_ok else 'chưa được đặt'}\n"
+        f"{'✅' if bio_ok else '❌'} Tiểu sử {'đã' if bio_ok else 'không'} chứa link giới thiệu của XOCLO88\n\n"
+        "✏️ Yêu cầu tên phải chứa cụm:\n<b>Fan Xoclo88</b>\n\n"
+        f"✏️ Ví dụ tên hợp lệ:\n<code>{html.escape(base_name)} Fan Xoclo88</code>\n\n"
+        "✏️ Set tiểu sử Telegram chứa link giới thiệu:\n"
+        f"⭐ <code>{html.escape(ref_link)}</code>\n\n"
+        "📅 Cần điểm danh đủ 7 ngày liên tiếp để nhận 30.000đ.\n"
+        "📝 Sau khi đổi xong → gửi lại /baodanh để điểm danh!"
+    )
+
+async def _fan_send_guide(ctx, uid, msg):
+    try:
+        chat = await ctx.bot.get_chat(uid)
+        photos = await ctx.bot.get_user_profile_photos(uid, limit=1)
+        has_photo = bool(photos and photos.total_count > 0)
+    except Exception:
+        return await msg.reply_text("Bot chưa kiểm tra được hồ sơ Telegram. Bạn hãy thử lại sau.")
+    text = _fan_guide_text(uid, chat, has_photo)
+    path = FAN_PROMO_IMAGE if os.path.isabs(FAN_PROMO_IMAGE) else os.path.join(os.path.dirname(os.path.abspath(__file__)), FAN_PROMO_IMAGE)
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                return await msg.reply_photo(photo=f, caption=text[:1024], parse_mode=ParseMode.HTML)
+        except Exception as e:
+            print("fan guide photo error:", e)
+    return await msg.reply_text(text, parse_mode=ParseMode.HTML)
+
 async def fan_baodanh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     msg = update.effective_message
@@ -4489,6 +4526,10 @@ async def fan_baodanh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Hãy vào Tài khoản → Fan cứng +30k và bấm tham gia trước, "
             "sau đó gửi /baodanh mỗi ngày nhé."
         )
+    _today0 = get_vietnam_time().date()
+    if query("SELECT 1 FROM fan_checkins WHERE user_id=%s AND checkin_date=%s", (uid, _today0)):
+        _st = _fan_streak(uid)
+        return await msg.reply_text(f"✅ Bạn đã báo danh hôm nay rồi.\n📅 Chuỗi điểm danh: {_st}/7 ngày. Hãy quay lại vào ngày mai nhé!")
     try:
         chat = await ctx.bot.get_chat(uid)
         photos = await ctx.bot.get_user_profile_photos(uid, limit=1)
@@ -4614,8 +4655,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [kbtn_id("DANH SÁCH GAME", "5409048419211682843"), kbtn_id("TÀI KHOẢN", "6318677150534734288")],
         [kbtn_id("NẠP TIỀN", "6309898817202295364"), kbtn_id("RÚT TIỀN", "5445353829304387411")],
         [kbtn_id("GIỚI THIỆU", "5278467510604160626"), kbtn_id("ĐUA TOP", "5332455502917949981")],
-        [kbtn_id("EVENT", "5188344996356448758")],
-        [kbtn("FAN +30K", "🌸")]
+        [kbtn_id("EVENT", "5188344996356448758")]
     ]
     if uid in ADMIN_IDS:
         _menu_rows.append([kbtn("ADMIN", "🛠")])   # nút chỉ hiện với admin
@@ -8607,28 +8647,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d == "acc_fan_cung":
         await q.answer()
-        joined = query("SELECT 1 FROM fan_enrollments WHERE user_id=%s", (uid,))
-        if not joined:
-            query(
-                "INSERT INTO fan_enrollments(user_id) VALUES(%s) ON CONFLICT(user_id) DO NOTHING",
-                (uid,)
-            )
-            # Không cho lịch sử điểm danh trước khi bấm tham gia được tính vào chương trình.
+        if not query("SELECT 1 FROM fan_enrollments WHERE user_id=%s", (uid,)):
+            query("INSERT INTO fan_enrollments(user_id) VALUES(%s) ON CONFLICT(user_id) DO NOTHING", (uid,))
+            # Không cho lịch sử điểm danh trước khi tham gia được tính vào chương trình.
             query("DELETE FROM fan_checkins WHERE user_id=%s", (uid,))
-            return await q.message.reply_text(
-                "🌸 <b>BẠN ĐÃ THAM GIA FAN +30K!</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "📅 Hãy gửi lệnh <code>/baodanh</code> mỗi ngày để ghi nhận điểm danh.\n"
-                "🔥 Cần đủ 7 ngày liên tiếp để gửi yêu cầu Admin duyệt thưởng 30.000đ.\n"
-                "⚠️ Nếu bỏ lỡ 1 ngày, chuỗi sẽ reset về ngày 1.\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "👉 Bắt đầu ngay: <code>/baodanh</code>",
-                parse_mode=ParseMode.HTML
-            )
-        return await q.message.reply_text(
-            "🌸 Bạn đã tham gia Fan +30K rồi. Hãy gửi <code>/baodanh</code> để điểm danh hôm nay.",
-            parse_mode=ParseMode.HTML
-        )
+        return await _fan_send_guide(ctx, uid, q.message)
 
     if d == "acc_tich_luy":
         await q.answer()
