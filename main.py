@@ -4717,6 +4717,12 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await update.effective_message.reply_text(
                 'Không thể hiển thị menu nạp tiền lúc này. Vui lòng thử lại sau.'
             )
+    if ctx.args and ctx.args[0].lower().startswith("solo_"):
+        # Bấm nút "VÀO PHÒNG SOLO" trong nhóm -> vào thẳng phòng, hai bên đấu trong bot chính.
+        _err = await _solo_join_private(ctx, update.effective_user, ctx.args[0][5:])
+        if not _err:
+            return
+        await update.effective_message.reply_text(_err, parse_mode=ParseMode.HTML)
     if ctx.args and ctx.args[0].lower() == "tx3d":
         _t, _k = tx3d_entry_view(uid, private=True, back=False)
         return await update.effective_message.reply_text(_t, reply_markup=_k, parse_mode=ParseMode.HTML)
@@ -7813,7 +7819,7 @@ def _solo_mask_id(uid):
 
 def _solo_kb(room_id):
     return InlineKeyboardMarkup([
-        [btn("VÀO PHÒNG SOLO", "🎮", callback_data=f"pvp:join:{room_id}")],
+        [btn("VÀO PHÒNG SOLO", "🎮", url=f"https://t.me/{BOT_USERNAME}?start=solo_{room_id}")],
         [btn("HỦY PHÒNG", "❌", callback_data=f"pvp:cancel:{room_id}")]
     ])
 
@@ -7859,13 +7865,14 @@ async def _solo_create(update, ctx, game):
         f'{ce("👤")} Người tạo: <b>{html.escape(user.full_name or "Người chơi")}</b>\n'
         f'{ce("🆔")} ID: <code>{_solo_mask_id(user.id)}</code>\n'
         f'{ce("🏆")} Tỷ lệ trả thưởng: <b>x1.95</b>\n\n'
-        f'{ce("👇")} Bấm nút bên dưới để vào thách đấu!'
+        f'{ce("👇")} Bấm nút bên dưới: bot sẽ mở chat riêng và hai bên đấu trực tiếp trong bot!'
     )
     targets = SOLO_GROUP_IDS or ([msg.chat_id] if msg.chat.type != "private" else [])
     posted = 0
     for gid in targets:
         try:
             notice = await ctx.bot.send_message(gid, text, parse_mode=ParseMode.HTML, reply_markup=_solo_kb(room_id))
+            SOLO_ROOMS.get(room_id, {}).setdefault("notices", []).append((gid, notice.message_id))
             try:
                 await ctx.bot.pin_chat_message(gid, notice.message_id, disable_notification=True)
             except Exception as e:
@@ -7886,87 +7893,258 @@ async def _solo_create(update, ctx, game):
         parse_mode=ParseMode.HTML)
 
 
-async def _solo_join_by_code(update, ctx, room_id, expected_game):
-    msg, user = update.effective_message, update.effective_user
+def _solo_title(game):
+    return "SOLO XÚC XẮC" if game == "dice" else "SOLO KÉO BÚA BAO"
+
+
+async def _solo_notice_update(bot, room, text, unpin=False):
+    """Cập nhật (bỏ nút) thông báo phòng đã đăng trong nhóm; unpin khi trận xong/hủy."""
+    for gid, mid in list(room.get("notices") or []):
+        try:
+            await bot.edit_message_text(text, chat_id=gid, message_id=mid, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            print(f"[solo] không sửa được thông báo nhóm {gid}: {e}")
+        if unpin:
+            try:
+                await bot.unpin_chat_message(chat_id=gid, message_id=mid)
+            except Exception:
+                pass
+
+
+def _solo_refund_both(room_id, room, why):
+    amount = room["amount"]
+    for u in (room["owner"], room.get("opponent")):
+        if u:
+            add_money(u, amount, f"Hoàn cược {why} Solo #{room_id}")
+
+
+async def _solo_abort(ctx, room_id, room, sent, reason_user):
+    """Không mở được trận trong chat riêng: hoàn cược hai bên, đóng phòng."""
+    async with SOLO_ROOM_LOCK:
+        SOLO_ROOMS.pop(room_id, None)
+    _solo_refund_both(room_id, room, "lỗi mở trận")
+    for chat_id, mid in sent:
+        try:
+            await ctx.bot.edit_message_text(
+                f'{ce("🚫")} <b>PHÒNG SOLO ĐÃ HỦY</b>\nĐã hoàn cược cho cả hai bên.',
+                chat_id=chat_id, message_id=mid, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    await _solo_notice_update(ctx.bot, room, f'{ce("🚫")} <b>PHÒNG SOLO ĐÃ HỦY</b>', unpin=True)
+    return reason_user
+
+
+async def _solo_join_private(ctx, user, room_id):
+    """Người thứ hai vào phòng (từ nút trong nhóm -> mở bot). Trả về None nếu OK, hoặc nội dung lỗi (HTML)."""
     room_id = str(room_id).strip()
+    uid = user.id
     async with SOLO_ROOM_LOCK:
         room = SOLO_ROOMS.get(room_id)
         if not room or room.get("status") != "open":
-            return await msg.reply_text("Phòng không tồn tại hoặc đã đóng.")
-        if room.get("game") != expected_game:
-            return await msg.reply_text("Mã phòng không thuộc trò chơi này.")
-        if user.id == room["owner"]:
-            return await msg.reply_text("Bạn không thể tự vào phòng của mình.")
-        if is_banned(user.id) and user.id not in ADMIN_IDS:
-            return await msg.reply_text("Tài khoản đã bị khóa.")
-        _blk = _ext_game_block(user.id, "soloxd" if expected_game == "dice" else "solokbb")
+            return "Phòng không tồn tại hoặc đã đóng."
+        game = room["game"]
+        if uid == room["owner"]:
+            return "Bạn không thể tự vào phòng của mình."
+        if is_banned(uid) and uid not in ADMIN_IDS:
+            return "Tài khoản đã bị khóa."
+        _blk = _ext_game_block(uid, "soloxd" if game == "dice" else "solokbb")
         if _blk:
-            return await msg.reply_text(_blk, parse_mode=ParseMode.HTML)
-        if not has_bank_linked(user.id):
-            return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
+            return _blk
+        if not has_bank_linked(uid):
+            return BANK_LINK_REQUIRED_MSG
         amount, owner = room["amount"], room["owner"]
-        if get_balance(user.id) < amount or get_balance(owner) < amount:
-            return await msg.reply_text("Một trong hai người không đủ số dư.")
+        if get_balance(uid) < amount or get_balance(owner) < amount:
+            return "Một trong hai người không đủ số dư."
         if not sub_money(owner, amount, f"Cược phòng Solo #{room_id}"):
-            return await msg.reply_text("Người tạo không còn đủ số dư.")
-        if not sub_money(user.id, amount, f"Cược phòng Solo #{room_id}"):
+            return "Người tạo không còn đủ số dư."
+        if not sub_money(uid, amount, f"Cược phòng Solo #{room_id}"):
             add_money(owner, amount, f"Hoàn cược phòng Solo #{room_id}")
-            return await msg.reply_text("Không thể trừ tiền cược của bạn; đã hoàn tiền người tạo.")
-        room["opponent"] = user.id
-        room["opponent_name"] = html.escape(user.full_name or str(user.id))
-        room["status"] = "choosing" if expected_game == "kbb" else "playing"
-        room_copy = dict(room)
+            return "Không thể trừ tiền cược của bạn; đã hoàn tiền người tạo."
+        room["opponent"] = uid
+        room["opponent_name"] = html.escape(user.full_name or str(uid))
+        room["status"] = "choosing" if game == "kbb" else "playing"
+    return await _solo_begin(ctx, room_id, room)
 
-    chat_id = msg.chat_id
-    if expected_game == "kbb":
+
+async def _solo_begin(ctx, room_id, room):
+    """Gửi bàn đấu vào CHAT RIÊNG của cả hai người chơi."""
+    bot = ctx.bot
+    owner, opp, amount, game = room["owner"], room["opponent"], room["amount"], room["game"]
+    on, pn = room["owner_name"], room["opponent_name"]
+    await _solo_notice_update(
+        bot, room,
+        f'{ce("🎮")} <b>{_solo_title(game)} - ĐANG ĐẤU</b>\n'
+        f'{on} 🆚 <b>{pn}</b>\n{ce("💰")} Mỗi người: <code>{fmt_money(amount)}đ</code>')
+    sent = []
+
+    if game == "kbb":
         pick_kb = InlineKeyboardMarkup([[
             btn("KÉO", "✂️", callback_data=f"pvp:pick:{room_id}:keo"),
             btn("BÚA", "🪨", callback_data=f"pvp:pick:{room_id}:bua"),
             btn("BAO", "📄", callback_data=f"pvp:pick:{room_id}:bao"),
         ]])
-        return await ctx.bot.send_message(
-            chat_id,
-            f'{ce("✊")} <b>SOLO KÉO BÚA BAO - CHỌN NƯỚC ĐI</b>\\n'
-            f'{room_copy["owner_name"]} đấu với <b>{room_copy["opponent_name"]}</b>\\n'
-            f'Mỗi người: <code>{fmt_money(amount)}đ</code>\\n'
-            'Mỗi người chơi bấm chọn một nút bên dưới. Lựa chọn được giữ kín đến khi cả hai đã chọn.',
-            parse_mode=ParseMode.HTML, reply_markup=pick_kb)
+        head = (f'{ce("✊")} <b>SOLO KÉO BÚA BAO - CHỌN NƯỚC ĐI</b>\n'
+                f'{on} 🆚 <b>{pn}</b>\n'
+                f'{ce("💰")} Mỗi người: <code>{fmt_money(amount)}đ</code> · Thắng x1.95\n'
+                f'{ce("⏰")} Bấm 1 nút bên dưới trong 2 phút. Lựa chọn được giữ kín đến khi cả hai đã chọn.')
+        try:
+            m1 = await bot.send_message(owner, head, parse_mode=ParseMode.HTML, reply_markup=pick_kb)
+            sent.append((owner, m1.message_id))
+            m2 = await bot.send_message(opp, head, parse_mode=ParseMode.HTML, reply_markup=pick_kb)
+            sent.append((opp, m2.message_id))
+        except Exception as e:
+            print(f"[solo-kbb] không gửi được bàn đấu {room_id}: {e}")
+            return await _solo_abort(ctx, room_id, room, sent,
+                "Không mở được trận trong chat riêng (cả hai người chơi cần đã bấm /start với bot). Đã hoàn cược.")
+        room["pick_msgs"] = dict(sent)
+        asyncio.create_task(_solo_kbb_timeout(bot, room_id))
+        return None
+
+    # ---- Solo xúc xắc: cả hai cùng xem trận trong bot ----
+    head = (f'{ce("🎲")} <b>SOLO XÚC XẮC BẮT ĐẦU</b>\n'
+            f'{on} 🆚 <b>{pn}</b>\n'
+            f'{ce("💰")} Mỗi người: <code>{fmt_money(amount)}đ</code> · Thắng x1.95\n'
+            f'🎲 Xúc xắc 1: <b>{on}</b> · Xúc xắc 2: <b>{pn}</b>')
+    try:
+        m1 = await bot.send_message(owner, head, parse_mode=ParseMode.HTML)
+        sent.append((owner, m1.message_id))
+        m2 = await bot.send_message(opp, head, parse_mode=ParseMode.HTML)
+        sent.append((opp, m2.message_id))
+    except Exception as e:
+        print(f"[solo-dice] không gửi được bàn đấu {room_id}: {e}")
+        return await _solo_abort(ctx, room_id, room, sent,
+            "Không mở được trận trong chat riêng (cả hai người chơi cần đã bấm /start với bot). Đã hoàn cược.")
 
     settled = False
     try:
-        await ctx.bot.send_message(chat_id,
-            f'{ce("🎲")} <b>SOLO XÚC XẮC BẮT ĐẦU</b>\\n'
-            f'{room_copy["owner_name"]} đấu với <b>{room_copy["opponent_name"]}</b>\\n'
-            f'Mỗi người: <code>{fmt_money(amount)}đ</code>', parse_mode=ParseMode.HTML)
-        one = await ctx.bot.send_dice(chat_id=chat_id, emoji="🎲")
+        one = await bot.send_dice(chat_id=opp, emoji="🎲")
         await asyncio.sleep(1)
-        two = await ctx.bot.send_dice(chat_id=chat_id, emoji="🎲")
+        two = await bot.send_dice(chat_id=opp, emoji="🎲")
+        for d in (one, two):      # cho người tạo xem đúng hai viên xúc xắc đó
+            try:
+                await bot.forward_message(chat_id=owner, from_chat_id=opp, message_id=d.message_id)
+            except Exception as fe:
+                print(f"[solo-dice] không chuyển tiếp xúc xắc cho người tạo: {fe}")
         a, b = one.dice.value, two.dice.value
+        await asyncio.sleep(4)    # chờ hoạt ảnh xúc xắc chạy xong rồi mới báo kết quả
         if a == b:
-            add_money(owner, amount, f"Hoàn cược hòa Solo Xúc Xắc #{room_id}")
-            add_money(user.id, amount, f"Hoàn cược hòa Solo Xúc Xắc #{room_id}")
-            settled = True
-            result = f'{ce("🤝")} <b>HÒA</b> - đã hoàn cược cho cả hai.'
+            winner = None
+            _solo_refund_both(room_id, room, "hòa")
+            summary = f'{ce("🤝")} <b>HÒA</b> - đã hoàn cược cho cả hai.'
         else:
-            winner = owner if a > b else user.id
+            winner = owner if a > b else opp
             prize = int(amount * 1.95)
             add_money(winner, prize, f"Thắng Solo Xúc Xắc #{room_id}")
-            settled = True
-            result = f'{ce("🏆")} Người thắng: <b>{"Người tạo phòng" if winner == owner else "Người tham gia"}</b> · Nhận <code>{fmt_money(prize)}đ</code>'
-        await ctx.bot.send_message(chat_id,
-            f'{ce("🎲")} <b>KẾT QUẢ SOLO XÚC XẮC</b>\\nNgười tạo: <b>{a}</b>\\nNgười tham gia: <b>{b}</b>\\n{result}',
-            parse_mode=ParseMode.HTML)
+            summary = (f'{ce("🏆")} Người thắng: <b>{on if winner == owner else pn}</b> · '
+                       f'Nhận <code>{fmt_money(prize)}đ</code>')
+        settled = True
+        body = (f'{ce("🎲")} <b>KẾT QUẢ SOLO XÚC XẮC</b>\n'
+                f'{on}: <b>{a}</b>\n{pn}: <b>{b}</b>\n{summary}')
+        for pid in (owner, opp):
+            try:
+                if winner is None:
+                    mine = ""
+                elif pid == winner:
+                    mine = f'\n{ce("🎉")} <b>BẠN THẮNG!</b>'
+                else:
+                    mine = f'\n{ce("❌")} <b>BẠN THUA</b>'
+                await bot.send_message(pid, body + mine + f'\n\n{bal_block(pid)}', parse_mode=ParseMode.HTML)
+            except Exception as se:
+                print(f"[solo-dice] không gửi được kết quả cho {pid}: {se}")
+        await _solo_notice_update(bot, room, f'{ce("🎲")} <b>SOLO XÚC XẮC - KẾT THÚC</b>\n'
+                                  f'{on} 🆚 <b>{pn}</b>\n{on}: <b>{a}</b> · {pn}: <b>{b}</b>\n{summary}', unpin=True)
     except Exception as e:
-        print(f"[solo-dice-command] Lỗi trận {room_id}: {e}")
+        print(f"[solo-dice] Lỗi trận {room_id}: {e}")
         if not settled:
-            add_money(owner, amount, f"Hoàn cược lỗi Solo Xúc Xắc #{room_id}")
-            add_money(user.id, amount, f"Hoàn cược lỗi Solo Xúc Xắc #{room_id}")
-        try:
-            await msg.reply_text("Trận đấu gặp lỗi kỹ thuật. Hệ thống đã xử lý hoàn cược nếu chưa thanh toán.")
-        except Exception:
-            pass
+            _solo_refund_both(room_id, room, "lỗi")
+        for pid in (owner, opp):
+            try:
+                await bot.send_message(pid, "Trận đấu gặp lỗi kỹ thuật. Hệ thống đã xử lý hoàn cược nếu chưa thanh toán.")
+            except Exception:
+                pass
+        await _solo_notice_update(bot, room, f'{ce("⚠️")} <b>SOLO XÚC XẮC - LỖI KỸ THUẬT</b>', unpin=True)
     finally:
         SOLO_ROOMS.pop(room_id, None)
+    return None
+
+
+async def _solo_kbb_timeout(bot, room_id, secs=120):
+    """Quá thời gian mà chưa đủ hai lựa chọn: hoàn cược cho cả hai (tránh treo tiền)."""
+    await asyncio.sleep(secs)
+    async with SOLO_ROOM_LOCK:
+        room = SOLO_ROOMS.get(room_id)
+        if not room or room.get("status") != "choosing":
+            return
+        SOLO_ROOMS.pop(room_id, None)
+        room_copy = dict(room)
+    _solo_refund_both(room_id, room_copy, "hết giờ")
+    for pid, mid in (room_copy.get("pick_msgs") or {}).items():
+        try:
+            await bot.edit_message_text(
+                f'{ce("⏰")} <b>HẾT GIỜ CHỌN</b> - phòng solo đã hủy, hoàn cược cho cả hai bên.',
+                chat_id=pid, message_id=mid, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    await _solo_notice_update(bot, room_copy, f'{ce("⏰")} <b>PHÒNG SOLO HẾT GIỜ</b> - đã hoàn cược.', unpin=True)
+
+
+async def _solo_finish_kbb(ctx, room_id, room):
+    bot = ctx.bot
+    owner, opp, amount = room["owner"], room["opponent"], room["amount"]
+    on, pn = room["owner_name"], room["opponent_name"]
+    a, b = room["choices"][owner], room["choices"][opp]
+    settled = False
+    try:
+        if a == b:
+            winner = None
+            _solo_refund_both(room_id, room, "hòa")
+            summary = f'{ce("🤝")} <b>HÒA</b> - đã hoàn cược cho cả hai.'
+        else:
+            winner = owner if KBB_BEATS[a] == b else opp
+            prize = int(amount * 1.95)
+            add_money(winner, prize, f"Thắng Solo Kéo Búa Bao #{room_id}")
+            summary = (f'{ce("🏆")} Người thắng: <b>{on if winner == owner else pn}</b> · '
+                       f'Nhận <code>{fmt_money(prize)}đ</code>')
+        settled = True
+        body = (f'{ce("✊")} <b>KẾT QUẢ SOLO KÉO BÚA BAO</b>\n'
+                f'{on}: <b>{KBB_CHOICES[a]}</b>\n{pn}: <b>{KBB_CHOICES[b]}</b>\n{summary}')
+        for pid in (owner, opp):
+            try:
+                if winner is None:
+                    mine = ""
+                elif pid == winner:
+                    mine = f'\n{ce("🎉")} <b>BẠN THẮNG!</b>'
+                else:
+                    mine = f'\n{ce("❌")} <b>BẠN THUA</b>'
+                await bot.send_message(pid, body + mine + f'\n\n{bal_block(pid)}', parse_mode=ParseMode.HTML)
+            except Exception as se:
+                print(f"[solo-kbb] không gửi được kết quả cho {pid}: {se}")
+        await _solo_notice_update(bot, room, f'{ce("✊")} <b>SOLO KÉO BÚA BAO - KẾT THÚC</b>\n'
+                                  f'{on}: {KBB_CHOICES[a]} · {pn}: {KBB_CHOICES[b]}\n{summary}', unpin=True)
+    except Exception as e:
+        print(f"[solo-kbb] Lỗi xử lý phòng {room_id}: {e}")
+        if not settled:
+            _solo_refund_both(room_id, room, "lỗi")
+        for pid in (owner, opp):
+            try:
+                await bot.send_message(pid, "Trận đấu gặp lỗi kỹ thuật. Hệ thống đã xử lý hoàn cược nếu chưa thanh toán.")
+            except Exception:
+                pass
+    finally:
+        SOLO_ROOMS.pop(room_id, None)
+
+
+async def _solo_join_by_code(update, ctx, room_id, expected_game):
+    msg, user = update.effective_message, update.effective_user
+    room = SOLO_ROOMS.get(str(room_id).strip())
+    if room and room.get("game") != expected_game:
+        return await msg.reply_text("Mã phòng không thuộc trò chơi này.")
+    err = await _solo_join_private(ctx, user, room_id)
+    if err:
+        return await msg.reply_text(err, parse_mode=ParseMode.HTML)
+    if msg.chat.type != "private":
+        await msg.reply_text(f'{ce("✅")} Đã vào phòng! Trận đấu diễn ra trong chat riêng với bot.',
+                             parse_mode=ParseMode.HTML)
 
 
 async def _solo_cancel_by_code(update, ctx, room_id, expected_game):
@@ -7978,6 +8156,7 @@ async def _solo_cancel_by_code(update, ctx, room_id, expected_game):
         if user.id != room["owner"] and user.id not in ADMIN_IDS:
             return await msg.reply_text("Chỉ người tạo phòng mới được hủy.")
         SOLO_ROOMS.pop(str(room_id), None)
+    await _solo_notice_update(ctx.bot, room, f'{ce("🚫")} <b>PHÒNG SOLO ĐÃ HỦY</b>', unpin=True)
     return await msg.reply_text(f'{ce("🚫")} Đã hủy phòng SOLO <code>{room_id}</code>.', parse_mode=ParseMode.HTML)
 
 
@@ -8043,43 +8222,23 @@ async def _solo_callback(update, ctx, data):
                 room_copy = dict(room)
                 room_copy["choices"] = dict(room["choices"])
         await q.answer("Đã ghi nhận lựa chọn.")
-        if not done:
-            return await q.message.reply_text(
-                f'{ce("✅")} Đã ghi nhận lựa chọn của bạn. Đang chờ người chơi còn lại.',
-                parse_mode=ParseMode.HTML)
-        owner, opponent, amount = room_copy["owner"], room_copy["opponent"], room_copy["amount"]
-        a, b = room_copy["choices"][owner], room_copy["choices"][opponent]
-        settled = False
         try:
-            if a == b:
-                add_money(owner, amount, f"Hoàn cược hòa Solo KBB #{room_id}")
-                add_money(opponent, amount, f"Hoàn cược hòa Solo KBB #{room_id}")
-                settled = True
-                result = f'{ce("🤝")} <b>HÒA</b> - đã hoàn cược cho cả hai.'
-            else:
-                winner = owner if KBB_BEATS[a] == b else opponent
-                prize = int(amount * 1.95)
-                add_money(winner, prize, f"Thắng Solo Kéo Búa Bao #{room_id}")
-                settled = True
-                result = f'{ce("🏆")} Người thắng: <b>{"Người tạo phòng" if winner == owner else "Người tham gia"}</b> · Nhận <code>{fmt_money(prize)}đ</code>'
-            await ctx.bot.send_message(
-                q.message.chat_id,
-                f'{ce("✊")} <b>KẾT QUẢ SOLO KÉO BÚA BAO</b>\n'
-                f'Người tạo: <b>{KBB_CHOICES[a]}</b>\n'
-                f'Người tham gia: <b>{KBB_CHOICES[b]}</b>\n{result}',
+            await q.edit_message_text(
+                f'{ce("✅")} Bạn đã chọn <b>{KBB_CHOICES[choice]}</b>.'
+                + ('' if done else f'\n{ce("⏰")} Đang chờ đối thủ chọn...'),
                 parse_mode=ParseMode.HTML)
-        except Exception as e:
-            print(f"[solo-kbb] Lỗi xử lý phòng {room_id}: {e}")
-            if not settled:
-                add_money(owner, amount, f"Hoàn cược lỗi Solo KBB #{room_id}")
-                add_money(opponent, amount, f"Hoàn cược lỗi Solo KBB #{room_id}")
-            try:
-                await ctx.bot.send_message(q.message.chat_id, "Trận đấu gặp lỗi kỹ thuật. Hệ thống đã xử lý hoàn cược nếu chưa thanh toán.")
-            except Exception:
-                pass
-        finally:
-            SOLO_ROOMS.pop(room_id, None)
+        except Exception:
+            pass
+        if done:
+            await _solo_finish_kbb(ctx, room_id, room_copy)
         return
+
+    if action == "join":
+        # Nút cũ (tin nhắn nhóm đăng trước đây): vẫn vào phòng được, trận diễn ra trong bot.
+        err = await _solo_join_private(ctx, q.from_user, room_id)
+        if err:
+            return await q.answer(re.sub(r"<[^>]+>", "", err), show_alert=True)
+        return await q.answer("Đã vào phòng! Trận đấu diễn ra trong chat riêng với bot.", show_alert=True)
 
     async with SOLO_ROOM_LOCK:
         room = SOLO_ROOMS.get(room_id)
@@ -8091,100 +8250,14 @@ async def _solo_callback(update, ctx, data):
             SOLO_ROOMS.pop(room_id, None)
             await q.answer("Đã hủy phòng.")
             try:
-                return await q.edit_message_text(
+                await q.edit_message_text(
                     f'{ce("🚫")} <b>PHÒNG SOLO ĐÃ HỦY</b>', parse_mode=ParseMode.HTML)
             except Exception:
-                return
-        if action != "join":
-            return await q.answer()
-        if uid == room["owner"]:
-            return await q.answer("Bạn không thể tự vào phòng của mình.", show_alert=True)
-        if is_banned(uid) and uid not in ADMIN_IDS:
-            return await q.answer("Tài khoản đã bị khóa.", show_alert=True)
-        if uid not in ADMIN_IDS:
-            _k, _gid, _nm = EXT_GAMES["soloxd" if room["game"] == "dice" else "solokbb"]
-            if is_game_banned(uid, _gid):
-                return await q.answer("Bạn đã bị cấm chơi trò chơi này!", show_alert=True)
-            if check_mt(_k):
-                return await q.answer(f"Game {_nm} đang bảo trì!", show_alert=True)
-        if not has_bank_linked(uid):
-            return await q.answer("Bạn cần liên kết ngân hàng trước khi chơi.", show_alert=True)
-        amount, owner, game = room["amount"], room["owner"], room["game"]
-        if get_balance(uid) < amount or get_balance(owner) < amount:
-            return await q.answer("Một trong hai người không đủ số dư.", show_alert=True)
-        if not sub_money(owner, amount, f"Cược phòng Solo #{room_id}"):
-            return await q.answer("Người tạo không còn đủ số dư.", show_alert=True)
-        if not sub_money(uid, amount, f"Cược phòng Solo #{room_id}"):
-            add_money(owner, amount, f"Hoàn cược phòng Solo #{room_id}")
-            return await q.answer("Không thể trừ tiền cược của bạn; đã hoàn tiền người tạo.", show_alert=True)
-        room["opponent"] = uid
-        room["opponent_name"] = html.escape(q.from_user.full_name or str(uid))
-        room["status"] = "choosing" if game == "kbb" else "playing"
-        room_copy = dict(room)
-
-    await q.answer("Đã vào phòng!")
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    chat_id = q.message.chat_id if q.message else (SOLO_GROUP_IDS[0] if SOLO_GROUP_IDS else None)
-    if chat_id is None:
-        add_money(owner, amount, f"Hoàn cược Solo #{room_id}")
-        add_money(uid, amount, f"Hoàn cược Solo #{room_id}")
-        SOLO_ROOMS.pop(room_id, None)
-        return
-
-    if game == "kbb":
-        pick_kb = InlineKeyboardMarkup([[
-            btn("KÉO", "✂️", callback_data=f"pvp:pick:{room_id}:keo"),
-            btn("BÚA", "🪨", callback_data=f"pvp:pick:{room_id}:bua"),
-            btn("BAO", "📄", callback_data=f"pvp:pick:{room_id}:bao"),
-        ]])
-        await ctx.bot.send_message(
-            chat_id,
-            f'{ce("✊")} <b>SOLO KÉO BÚA BAO - CHỌN NƯỚC ĐI</b>\n'
-            f'{room_copy["owner_name"]} đấu với <b>{room_copy["opponent_name"]}</b>\n'
-            f'{ce("💰")} Mỗi người: <code>{fmt_money(amount)}đ</code>\n'
-            f'Mỗi người chơi bấm chọn một nút bên dưới. Lựa chọn được giữ kín đến khi cả hai đã chọn.',
-            parse_mode=ParseMode.HTML, reply_markup=pick_kb)
-        return
-
-    settled = False
-    try:
-        await ctx.bot.send_message(
-            chat_id,
-            f'{ce("🎲")} <b>SOLO XÚC XẮC BẮT ĐẦU</b>\n'
-            f'{room_copy["owner_name"]} đấu với <b>{room_copy["opponent_name"]}</b>\n'
-            f'Mỗi người: <code>{fmt_money(amount)}đ</code>',
-            parse_mode=ParseMode.HTML)
-        one = await ctx.bot.send_dice(chat_id=chat_id, emoji="🎲")
-        await asyncio.sleep(1)
-        two = await ctx.bot.send_dice(chat_id=chat_id, emoji="🎲")
-        a, b = one.dice.value, two.dice.value
-        if a == b:
-            add_money(owner, amount, f"Hoàn cược hòa Solo Xúc Xắc #{room_id}")
-            add_money(uid, amount, f"Hoàn cược hòa Solo Xúc Xắc #{room_id}")
-            settled = True
-            result = f'{ce("🤝")} <b>HÒA</b> - đã hoàn cược cho cả hai.'
+                pass
+            room_cancel = room
         else:
-            winner = owner if a > b else uid
-            prize = int(amount * 1.95)
-            add_money(winner, prize, f"Thắng Solo Xúc Xắc #{room_id}")
-            settled = True
-            result = f'{ce("🏆")} Người thắng: <b>{"Người tạo phòng" if winner == owner else "Người tham gia"}</b> · Nhận <code>{fmt_money(prize)}đ</code>'
-        output = f'{ce("🎲")} <b>KẾT QUẢ SOLO XÚC XẮC</b>\nNgười tạo: <b>{a}</b>\nNgười tham gia: <b>{b}</b>\n{result}'
-        await ctx.bot.send_message(chat_id, output, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        print(f"[solo-dice] Lỗi trận {room_id}: {e}")
-        if not settled:
-            add_money(owner, amount, f"Hoàn cược lỗi Solo Xúc Xắc #{room_id}")
-            add_money(uid, amount, f"Hoàn cược lỗi Solo Xúc Xắc #{room_id}")
-        try:
-            await ctx.bot.send_message(chat_id, "Trận đấu gặp lỗi kỹ thuật. Hệ thống đã xử lý hoàn cược nếu chưa thanh toán.")
-        except Exception:
-            pass
-    finally:
-        SOLO_ROOMS.pop(room_id, None)
+            return await q.answer()
+    await _solo_notice_update(ctx.bot, room_cancel, f'{ce("🚫")} <b>PHÒNG SOLO ĐÃ HỦY</b>', unpin=True)
 
 
 async def xuctele_cmd(update, ctx):
