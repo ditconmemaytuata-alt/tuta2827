@@ -737,6 +737,27 @@ CREATE TABLE IF NOT EXISTS tich_luy_nap (
 )
 """)
 
+# Chương trình Fan +30K: điểm danh 7 ngày liên tiếp và chờ Admin duyệt
+query("""
+CREATE TABLE IF NOT EXISTS fan_checkins (
+    user_id BIGINT NOT NULL,
+    checkin_date DATE NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(user_id, checkin_date)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS fan_requests (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL UNIQUE,
+    streak_days INTEGER NOT NULL DEFAULT 7,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewed_at TIMESTAMPTZ,
+    reviewed_by TEXT,
+    gift_code TEXT
+)
+""")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_bet BIGINT DEFAULT 0")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS rate_bonus INTEGER DEFAULT NULL")
 query("ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_linked INTEGER DEFAULT 0")
@@ -4420,6 +4441,83 @@ async def ls_room_tx_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================= START & MAIN MENU =================
+
+FAN_PROMO_IMAGE = os.getenv("FAN_PROMO_IMAGE", "fan_xoclo88.jpg")
+FAN_REF_URL = f"https://t.me/{BOT_USERNAME}?start={{uid}}"
+
+def _fan_streak(uid):
+    rows = query("SELECT checkin_date FROM fan_checkins WHERE user_id=%s ORDER BY checkin_date DESC LIMIT 7", (uid,)) or []
+    if not rows:
+        return 0
+    dates = [r[0] for r in rows]
+    today = get_vietnam_time().date()
+    if dates[0] not in (today, today - timedelta(days=1)):
+        return 0
+    streak = 0
+    expected = dates[0]
+    for d in dates:
+        if d == expected:
+            streak += 1
+            expected = expected - timedelta(days=1)
+        else:
+            break
+    return streak
+
+def _fan_profile_check(chat, has_photo, uid):
+    display_name = " ".join(x for x in [getattr(chat, "first_name", ""), getattr(chat, "last_name", "")] if x).strip()
+    bio = getattr(chat, "bio", "") or ""
+    need_link = FAN_REF_URL.format(uid=uid)
+    name_ok = "fan xoclo88" in display_name.casefold()
+    bio_ok = need_link.casefold() in bio.casefold()
+    return display_name, name_ok, bool(has_photo), bio_ok, need_link
+
+async def fan_baodanh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    msg = update.effective_message
+    if update.effective_chat.type != "private":
+        return await msg.reply_text("Vui lòng điểm danh trong chat riêng với bot bằng /baodanh.")
+    try:
+        chat = await ctx.bot.get_chat(uid)
+        photos = await ctx.bot.get_user_profile_photos(uid, limit=1)
+        has_photo = bool(photos and photos.total_count > 0)
+    except Exception as e:
+        return await msg.reply_text("Bot chưa kiểm tra được hồ sơ Telegram. Bạn hãy thử lại sau.")
+    display, name_ok, photo_ok, bio_ok, ref_link = _fan_profile_check(chat, has_photo, uid)
+    report = (
+        "🌸 <b>FAN +30.000Đ · XOCLO88</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{'✅' if name_ok else '❌'} Tên hiển thị phải chứa: <b>Fan Xoclo88</b>\n"
+        f"{'✅' if photo_ok else '❌'} Ảnh đại diện đã được đặt\n"
+        f"{'✅' if bio_ok else '❌'} Tiểu sử có link giới thiệu cá nhân\n\n"
+        f"👤 Tên hiện tại: <code>{html.escape(display or '(chưa đặt)')}</code>\n"
+        f"🔗 Link cần thêm vào tiểu sử:\n<code>{html.escape(ref_link)}</code>\n\n"
+    )
+    if not (name_ok and photo_ok and bio_ok):
+        return await msg.reply_text(report + "Hãy chỉnh đủ 3 điều kiện trên rồi gửi lại /baodanh.", parse_mode=ParseMode.HTML)
+    today = get_vietnam_time().date()
+    already = query("SELECT 1 FROM fan_checkins WHERE user_id=%s AND checkin_date=%s", (uid, today))
+    if not already:
+        query("INSERT INTO fan_checkins(user_id,checkin_date) VALUES(%s,%s) ON CONFLICT DO NOTHING", (uid,today))
+    streak = _fan_streak(uid)
+    req = query("SELECT status,gift_code FROM fan_requests WHERE user_id=%s", (uid,))
+    if req:
+        status, gift = req[0]
+        status_text = "đang chờ Admin duyệt" if status == "pending" else ("đã được duyệt" if status == "approved" else "đã bị từ chối")
+        return await msg.reply_text(report + f"📅 Chuỗi điểm danh: <b>{streak}/7 ngày</b>\n📨 Yêu cầu Fan của bạn {status_text}." + (f"\n🎁 Giftcode: <code>{html.escape(gift)}</code>" if gift else ""), parse_mode=ParseMode.HTML)
+    report += f"📅 Chuỗi điểm danh liên tiếp: <b>{streak}/7 ngày</b>\n"
+    if streak >= 7:
+        ins = query("INSERT INTO fan_requests(user_id,streak_days,status) VALUES(%s,7,'pending') ON CONFLICT(user_id) DO NOTHING RETURNING id", (uid,))
+        if ins:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await ctx.bot.send_message(admin_id, f"🌸 <b>YÊU CẦU DUYỆT FAN +30K</b>\n👤 User ID: <code>{uid}</code>\n📅 Đã điểm danh đủ 7 ngày liên tiếp.\nVào Web Admin → Duyệt Fan để xử lý.", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+        report += "🎉 Đã đủ 7 ngày! Yêu cầu của bạn đã được gửi Admin duyệt. Sau khi duyệt, bot sẽ gửi giftcode x3 vòng cược, hạn dùng 3 ngày."
+    else:
+        report += "➡️ Hãy quay lại gửi /baodanh mỗi ngày để đủ 7 ngày liên tiếp."
+    return await msg.reply_text(report, parse_mode=ParseMode.HTML)
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Menu chính chỉ hiển thị trong chat riêng; /start ở nhóm được bỏ qua.
     chat = update.effective_chat
@@ -4496,7 +4594,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [kbtn_id("DANH SÁCH GAME", "5409048419211682843"), kbtn_id("TÀI KHOẢN", "6318677150534734288")],
         [kbtn_id("NẠP TIỀN", "6309898817202295364"), kbtn_id("RÚT TIỀN", "5445353829304387411")],
         [kbtn_id("GIỚI THIỆU", "5278467510604160626"), kbtn_id("ĐUA TOP", "5332455502917949981")],
-        [kbtn_id("EVENT", "5188344996356448758")]
+        [kbtn_id("EVENT", "5188344996356448758")],
+        [kbtn("FAN +30K", "🌸")]
     ]
     if uid in ADMIN_IDS:
         _menu_rows.append([kbtn("ADMIN", "🛠")])   # nút chỉ hiện với admin
@@ -9158,10 +9257,31 @@ async function api(path,opt){
   var j;try{j=await r.json();}catch(e){throw new Error('Máy chủ lỗi ('+r.status+'), xem log Railway');}if(j.err){throw new Error(j.err);}return j;
 }
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
-var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];
+var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin'],['fan','Duyệt Fan']];
 var cur='stats',view=document.getElementById('view'),isOwner=false,allowed={};
 function nav(){var n=document.getElementById('nav');n.innerHTML='';tabs.filter(function(t){return t[0]==='admins'?isOwner:(isOwner||allowed[t[0]]);}).forEach(function(t){var b=document.createElement('button');b.textContent=t[1];if(t[0]===cur)b.className='on';b.onclick=function(){cur=t[0];nav();load();};n.appendChild(b);});}
-function load(){view.innerHTML='<p class="mut">Đang tải…</p>';var pages={stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog,admins:vAdmins};var fn=pages[cur];if(!fn){view.innerHTML='<p class="err">Mục này chưa được cấu hình.</p>';return;}fn().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
+function load(){view.innerHTML='<p class="mut">Đang tải…</p>';var pages={stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog,admins:vAdmins,fan:vFan};var fn=pages[cur];if(!fn){view.innerHTML='<p class="err">Mục này chưa được cấu hình.</p>';return;}fn().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
+
+
+async function vFan(){
+  var d=await api('fan');
+  var rows=d.rows||[];
+  var h='<h2>🌸 Duyệt Fan +30K</h2><p class="mut">Người dùng điểm danh đủ 7 ngày liên tiếp. Duyệt sẽ tạo giftcode thưởng 30.000đ, x3 vòng cược, hạn 3 ngày.</p>';
+  if(!rows.length){view.innerHTML=h+'<p class="mut">Chưa có yêu cầu nào.</p>';return;}
+  h+=rows.map(function(r){
+    var status=r.status==='pending'?'⏳ Chờ duyệt':(r.status==='approved'?'✅ Đã duyệt':'❌ Từ chối');
+    return '<div class="item"><div class="row"><b>#'+esc(r.id)+' · User '+esc(r.user_id)+'</b><span>'+status+'</span></div>'+
+      '<div class="mut" style="margin:6px 0">Tên: '+esc(r.full_name||'-')+' · @'+esc(r.username||'-')+' · '+esc(r.created_at)+'</div>'+
+      (r.gift_code?'<div>Giftcode: <code>'+esc(r.gift_code)+'</code></div>':'')+
+      (r.status==='pending'?'<div class="acts"><button class="btn ok" data-fan="approve" data-id="'+esc(r.id)+'">✅ Duyệt & gửi code</button><button class="btn bad" data-fan="reject" data-id="'+esc(r.id)+'">❌ Từ chối</button></div>':'')+'</div>';
+  }).join('');
+  view.innerHTML=h;
+  view.querySelectorAll('[data-fan]').forEach(function(b){b.onclick=async function(){
+    if(!confirm(b.dataset.fan==='approve'?'Tạo giftcode 30.000đ x3, hạn 3 ngày và gửi cho người dùng?':'Từ chối yêu cầu Fan này?'))return;
+    try{var x=await post('fan',{id:Number(b.dataset.id),action:b.dataset.fan});toast(x.msg||'Đã xử lý');vFan();}
+    catch(e){toast(e.message);}
+  };});
+}
 
 async function vStats(){
   var d=await api('stats');var c=[
@@ -10017,7 +10137,7 @@ async def aw_api_gifts(request):
 
 
 
-_AW_FEATURES = {"stats":"Tổng quan","wd":"Rút tiền","dep":"Nạp tiền","user":"Người dùng","dupe":"Trùng tên rút tiền","gift":"Giftcode","tx3d":"Ép TX3D","ctl":"Điều khiển","bc":"Thông báo","exp":"Xuất file","reset":"Reset","log":"Nhật ký"}
+_AW_FEATURES = {"stats":"Tổng quan","wd":"Rút tiền","dep":"Nạp tiền","user":"Người dùng","dupe":"Trùng tên rút tiền","gift":"Giftcode","tx3d":"Ép TX3D","ctl":"Điều khiển","bc":"Thông báo","exp":"Xuất file","reset":"Reset","log":"Nhật ký","fan":"Duyệt Fan"}
 
 async def aw_api_admins(request):
     tok, sess = await asyncio.to_thread(_aw_auth, request, True)
@@ -10104,6 +10224,59 @@ async def aw_api_user_reset_stats(request):
     await asyncio.to_thread(_aw_log,sess["user"],"RESET_USER_STATS",f"ID {uid}: {','.join(kinds)}",_aw_ip(request))
     return _aw_json({"ok":True,"msg":"Đã đặt lại số tổng hiển thị; lịch sử giao dịch gốc vẫn được giữ nguyên."})
 
+
+async def aw_api_fan(request):
+    tok, sess = await asyncio.to_thread(_aw_auth, request, True)
+    if request.method == "GET":
+        rows = await asyncio.to_thread(query,
+            """SELECT r.id,r.user_id,r.streak_days,r.status,r.created_at,r.gift_code,
+                      u.tg_username,u.tg_full_name
+               FROM fan_requests r LEFT JOIN users u ON u.user_id=r.user_id
+               ORDER BY CASE WHEN r.status='pending' THEN 0 ELSE 1 END,r.id DESC LIMIT 300""")
+        return _aw_json({"rows":[{"id":int(x[0]),"user_id":int(x[1]),"streak_days":int(x[2] or 0),
+            "status":x[3],"created_at":str(x[4] or ""),"gift_code":x[5],
+            "username":x[6] or "","full_name":x[7] or ""} for x in (rows or [])]})
+    try: body=await request.json()
+    except Exception: return _aw_json({"err":"Dữ liệu không hợp lệ"},400)
+    rid=body.get("id")
+    act=str(body.get("action",""))
+    if not str(rid).isdigit() or act not in ("approve","reject"):
+        return _aw_json({"err":"Yêu cầu không hợp lệ"},400)
+    row=await asyncio.to_thread(query,"SELECT user_id,status FROM fan_requests WHERE id=%s",(int(rid),))
+    if not row or row[0][1]!="pending":
+        return _aw_json({"err":"Yêu cầu không tồn tại hoặc đã được xử lý"},409)
+    uid=int(row[0][0])
+    if act=="reject":
+        await asyncio.to_thread(query,"UPDATE fan_requests SET status='rejected',reviewed_at=NOW(),reviewed_by=%s WHERE id=%s AND status='pending'",(sess["user"],int(rid)))
+        try: await application.bot.send_message(uid,"Yêu cầu Fan +30K của bạn chưa được duyệt. Vui lòng liên hệ Admin để biết thêm chi tiết.")
+        except Exception: pass
+        await asyncio.to_thread(_aw_log,sess["user"],"FAN_REJECT",f"ID {uid}",_aw_ip(request))
+        return _aw_json({"ok":True,"msg":"Đã từ chối yêu cầu"})
+    code="FAN"+''.join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789",k=8))
+    # Thưởng 30.000đ, yêu cầu cược x3; giftcode hết hạn sau 3 ngày.
+    created=await asyncio.to_thread(query,
+        """INSERT INTO giftcodes(code,ctype,reward,wager,expiry,require_deposit,required_amount,
+                  bound_user,used,created_by,created_at)
+           VALUES(%s,'FAN',30000,3,NOW()+INTERVAL '3 days',0,0,%s,0,0,%s)
+           ON CONFLICT(code) DO NOTHING RETURNING code""",
+        (code,uid,get_vietnam_datetime_db()))
+    if not created:
+        return _aw_json({"err":"Không tạo được giftcode, vui lòng thử lại"},500)
+    updated=await asyncio.to_thread(query,
+        "UPDATE fan_requests SET status='approved',reviewed_at=NOW(),reviewed_by=%s,gift_code=%s WHERE id=%s AND status='pending' RETURNING id",
+        (sess["user"],code,int(rid)))
+    if not updated:
+        await asyncio.to_thread(query,"DELETE FROM giftcodes WHERE code=%s AND used=0",(code,))
+        return _aw_json({"err":"Yêu cầu đã được xử lý đồng thời"},409)
+    try:
+        await application.bot.send_message(uid,
+            f"🎉 <b>FAN +30.000Đ ĐÃ ĐƯỢC DUYỆT!</b>\n\n🔑 Giftcode: <code>{code}</code>\n💰 Thưởng: <b>30.000đ</b>\n🎯 Vòng cược: <b>x3</b>\n⏳ Hạn sử dụng: <b>3 ngày</b>\n\nNhập mã bằng lệnh <code>/code {code}</code>.",
+            parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await asyncio.to_thread(_aw_log,sess["user"],"FAN_APPROVE",f"ID {uid} code {code}",_aw_ip(request))
+    return _aw_json({"ok":True,"msg":"Đã duyệt và gửi giftcode cho người dùng","code":code})
+
 def admin_web_register_routes(app):
     app.router.add_get("/admin/login", aw_login_page)
     app.router.add_post("/admin/login", aw_login_post)
@@ -10113,6 +10286,7 @@ def admin_web_register_routes(app):
     app.router.add_get("/admin/api/me", aw_api_me)
     app.router.add_post("/admin/api/logout", aw_api_logout)
     app.router.add_get("/admin/api/stats", aw_api_stats)
+    app.router.add_route("*", "/admin/api/fan", aw_api_fan)
     app.router.add_get("/admin/api/withdraws", aw_api_withdraws)
     app.router.add_get("/admin/api/wqr/{wid}", aw_api_wqr)
     app.router.add_post("/admin/api/withdraw/{wid}/{act}", aw_api_withdraw_act)
@@ -15483,7 +15657,15 @@ async def unban_spam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 application.add_handler(MessageHandler(filters.ALL, spam_guard), group=-100)
 application.add_handler(CallbackQueryHandler(spam_guard), group=-100)
 application.add_handler(CommandHandler("unbanspam", unban_spam_cmd), group=-99)
+async def fan_menu_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if msg and msg.text and msg.text.strip().upper() == "FAN +30K":
+        await fan_baodanh(update, ctx)
+        raise ApplicationHandlerStop
+
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fan_menu_text), group=1)
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("baodanh", fan_baodanh))
 application.add_handler(CommandHandler("lienket", lien_ket))
 application.add_handler(CommandHandler("taikhoan", taikhoan_cmd))
 application.add_handler(CommandHandler("rut", rut))
