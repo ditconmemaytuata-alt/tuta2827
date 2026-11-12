@@ -247,6 +247,13 @@ def btn(text, emoji=None, callback_data=None, url=None):
         text = f"{emoji} {text}"
     return InlineKeyboardButton(text, callback_data=callback_data, url=url)
 
+def btn_id(text, custom_emoji_id, callback_data=None, url=None):
+    """Nút inline dùng custom emoji ID được cung cấp trực tiếp."""
+    return InlineKeyboardButton(
+        text, callback_data=callback_data, url=url,
+        api_kwargs={"icon_custom_emoji_id": str(custom_emoji_id)}
+    )
+
 def kbtn_id(text, custom_emoji_id):
     """Nút bàn phím trả lời với icon emoji premium theo ID cụ thể."""
     return KeyboardButton(text, api_kwargs={"icon_custom_emoji_id": str(custom_emoji_id)})
@@ -4702,10 +4709,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     _menu_rows = [
-        [kbtn_id("DANH SÁCH GAME", "5409048419211682843"), kbtn_id("TÀI KHOẢN", "6318677150534734288")],
-        [kbtn_id("NẠP TIỀN", "6309898817202295364"), kbtn_id("RÚT TIỀN", "5445353829304387411")],
-        [kbtn_id("GIỚI THIỆU", "5278467510604160626"), kbtn_id("ĐUA TOP", "5332455502917949981")],
-        [kbtn_id("EVENT", "5188344996356448758")]
+        [kbtn_id("DANH SÁCH GAME", "5231005931550030290"), kbtn_id("TÀI KHOẢN", "6269196846657182682")],
+        [kbtn_id("NẠP TIỀN", "5440833702642857683"), kbtn_id("RÚT TIỀN", "5472250091332993630")],
+        [kbtn_id("GIỚI THIỆU", "5433758796289685818"), kbtn_id("ĐUA TOP", "5469744063815102906")],
+        [kbtn_id("EVENT", "5375203677487248777")]
     ]
     if uid in ADMIN_IDS:
         _menu_rows.append([kbtn("ADMIN", "🛠")])   # nút chỉ hiện với admin
@@ -4728,9 +4735,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def show_withdraw_methods(message):
     kb = InlineKeyboardMarkup([
-        [btn("BANKING", "💳", callback_data="payout:withdraw:BANKING")],
-        [btn("MOMO", "❤️", callback_data="payout:withdraw:MOMO"),
-         btn("ZALOPAY", "💠", callback_data="payout:withdraw:ZALOPAY")]
+        [btn_id("BANKING", "5332455502917949981", callback_data="payout:withdraw:BANKING")],
+        [btn_id("MOMO", "5197161121106123533", callback_data="payout:withdraw:MOMO"),
+         btn_id("ZALOPAY", "5445353829304387411", callback_data="payout:withdraw:ZALOPAY")]
     ])
     return await message.reply_text(
         f'{ce("💸")} <b>CHỌN PHƯƠNG THỨC RÚT TIỀN</b>\n\n'
@@ -4750,9 +4757,9 @@ async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     ctx.user_data["payout_link"] = {"stage": "method"}
     kb = InlineKeyboardMarkup([
-        [btn("BANKING", "💳", callback_data="payout:method:BANKING")],
-        [btn("MOMO", "❤️", callback_data="payout:method:MOMO"),
-         btn("ZALOPAY", "💠", callback_data="payout:method:ZALOPAY")],
+        [btn_id("BANKING", "5332455502917949981", callback_data="payout:method:BANKING")],
+        [btn_id("MOMO", "5197161121106123533", callback_data="payout:method:MOMO"),
+         btn_id("ZALOPAY", "5445353829304387411", callback_data="payout:method:ZALOPAY")],
         [btn("Hủy", "❌", callback_data="payout:cancel")]
     ])
     return await update.effective_message.reply_text(
@@ -4764,9 +4771,9 @@ async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def lien_ket_from_callback(q, ctx):
     kb = InlineKeyboardMarkup([
-        [btn("BANKING", "💳", callback_data="payout:method:BANKING")],
-        [btn("MOMO", "❤️", callback_data="payout:method:MOMO"),
-         btn("ZALOPAY", "💠", callback_data="payout:method:ZALOPAY")],
+        [btn_id("BANKING", "5332455502917949981", callback_data="payout:method:BANKING")],
+        [btn_id("MOMO", "5197161121106123533", callback_data="payout:method:MOMO"),
+         btn_id("ZALOPAY", "5445353829304387411", callback_data="payout:method:ZALOPAY")],
         [btn("Hủy", "❌", callback_data="payout:cancel")]
     ])
     return await q.message.reply_text(
