@@ -8927,28 +8927,45 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d in ("top_streak_win", "top_streak_loss"):
         await q.answer()
         streak_type = "win" if d.endswith("win") else "loss"
-        column = "max_win" if streak_type == "win" else "max_loss"
+        k = DAY_STREAK_KIND[streak_type]
+        column, at_col = k["col"], k["at"]
         title = "DÂY THẮNG" if streak_type == "win" else "DÂY THUA"
         word = "thắng" if streak_type == "win" else "thua"
-        icon = "🔥" if streak_type == "win" else "🥶"
+        icon = k["icon"]
+        day_key = _today_key()                                   # ngày Việt Nam, tự sang ngày mới lúc 00:00
         date_text = get_vietnam_time().strftime("%d/%m/%Y")
+        room_ids = list(GROUP_IDS)
+        # Dữ liệu thật từ Tài Xỉu Room: mỗi phiên room chốt kết quả là cập nhật bảng daily_streaks (reset theo ngày).
         rows = query(
-            f"SELECT user_id, MAX({column}) FROM user_game_streaks "
-            f"WHERE {column}>0 GROUP BY user_id ORDER BY MAX({column}) DESC,user_id ASC LIMIT 10"
+            f"SELECT user_id, MAX({column}) AS best, MIN({at_col}) FROM daily_streaks "
+            f"WHERE group_id = ANY(%s) AND day=%s AND {column}>=%s "
+            f"GROUP BY user_id ORDER BY best DESC, MIN({at_col}) ASC, user_id ASC LIMIT 10",
+            (room_ids, day_key, DAY_STREAK_MIN)
         ) or []
-        reward_list = [50000, 30000, 20000, 10000] + [5000] * 4
-        lines = [f'{ce(icon)} <b>TOP {title} HÔM NAY {date_text}</b>', ""]
+        lines = [f'{ce(icon)} <b>TOP {title} HÔM NAY {date_text}</b>',
+                 f'<i>Dữ liệu trực tiếp từ Tài Xỉu Room · reset 00:00 mỗi ngày</i>', ""]
         if rows:
-            for rank, (player_id, best) in enumerate(rows, 1):
-                masked_id = "**" + str(player_id)[-4:]
+            for rank, (player_id, best, _t) in enumerate(rows, 1):
                 medal = _top_medal(rank)
-                reward_text = f' | thưởng <b>{reward_list[rank-1] // 1000}K</b>' if rank <= len(reward_list) else ''
-                lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{int(best or 0)} ván {word} liên tiếp</b>{reward_text}')
+                prize = DAY_STREAK_PRIZES.get(rank)
+                reward_text = f' | thưởng <b>{fmt_money(prize)}đ</b>' if prize else ''
+                lines.append(f'{medal} Top {rank}: <code>{mask_user_id(player_id)}</code> | '
+                             f'<b>{int(best or 0)} phiên {word} liên tiếp</b>{reward_text}')
         else:
-            lines.append("Chưa có dữ liệu dây thắng/thua.")
+            lines.append(f"Hôm nay chưa có dây {word} nào từ {DAY_STREAK_MIN} phiên liên tiếp.")
         my_rank = next((i for i, row in enumerate(rows, 1) if int(row[0]) == int(uid)), None)
+        own = query(
+            f"SELECT MAX({column}) FROM daily_streaks WHERE user_id=%s AND group_id = ANY(%s) AND day=%s",
+            (uid, room_ids, day_key)) or []
+        my_best = int(own[0][0] or 0) if own and own[0][0] else 0
         lines.append("")
-        lines.append(f"🎉 Thứ hạng của bạn: Top {my_rank}" if my_rank else "🎉 Thứ hạng của bạn: Chưa vào top")
+        if my_rank:
+            lines.append(f"🎉 Thứ hạng của bạn: Top {my_rank} · dây {word} dài nhất <b>{my_best}</b> phiên")
+        elif my_best:
+            lines.append(f"🎉 Dây {word} dài nhất của bạn hôm nay: <b>{my_best}</b> phiên · chưa vào top")
+        else:
+            lines.append("🎉 Thứ hạng của bạn: Chưa vào top")
+        lines.append(f"<i>Dây hợp lệ từ {DAY_STREAK_MIN} phiên liên tiếp · thưởng Top 3 chốt lúc 00:00, giftcode gửi riêng qua bot.</i>")
         return await q.message.reply_text(
             "\n".join(lines),
             reply_markup=InlineKeyboardMarkup([
