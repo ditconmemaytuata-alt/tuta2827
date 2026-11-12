@@ -5496,9 +5496,12 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if key == "ĐUA TOP":
         kb = InlineKeyboardMarkup([
             [btn("TOP CƯỢC NGÀY", "🏆", callback_data="top_cuoc_ngay")],
-            [btn("TOP DÂY THẮNG / THUA", "🎖", callback_data="top_thang_thua")]
+            [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win")],
+            [btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
         ])
-        return await user_reply.reply_text(f'{ce("🏆")} <b>ĐUA TOP MỖI NGÀY</b>\nChọn bảng xếp hạng để xem thứ hạng và mức thưởng:', reply_markup=kb, parse_mode=ParseMode.HTML)
+        return await user_reply.reply_text(
+            f'{ce("🏆")} <b>ĐUA TOP</b>\\nChọn bảng muốn xem:',
+            reply_markup=kb, parse_mode=ParseMode.HTML)
 
     if key == "EVENT":
         kb = InlineKeyboardMarkup([
@@ -8697,58 +8700,71 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d == "top_cuoc_ngay":
         await q.answer()
         day = get_vietnam_time().date()
-        rewards = [50000, 30000, 20000, 10000] + [5000] * 6
+        date_text = day.strftime("%d/%m/%Y")
         rows = query(
             "SELECT user_id, COALESCE(bet,0) FROM bet_daily WHERE day=%s AND COALESCE(bet,0)>0 ORDER BY bet DESC, user_id ASC LIMIT 10",
             (day,)
         ) or []
-        lines = [f'{ce("🔥")} <b>TOP CƯỢC NGÀY</b> {ce("🔥")}',
-                 f'{ce("⏱")} Trả thưởng lúc <b>00:00 mỗi ngày</b>',
-                 '<i>Xếp hạng theo tổng tiền cược hợp lệ trong ngày.</i>', '']
-        for rank, amount in enumerate(rewards, 1):
-            medal = '🥇' if rank == 1 else '🥈' if rank == 2 else '🥉' if rank == 3 else '🏅'
-            label = f'TOP {rank}' if rank <= 4 else f'TOP {rank}'
-            lines.append(f'{medal} {label}: <b>{fmt_money(amount)}đ</b>')
+        lines = [f'{ce("🔥")} <b>TOP CƯỢC NGÀY {date_text}</b> {ce("🔥")}']
         if rows:
-            table_rows = []
             for rank, (player_id, bet_amount) in enumerate(rows, 1):
-                name = await _telegram_name(ctx.bot, player_id, {}) or f'Thành viên {player_id}'
-                table_rows.append((rank, _tbl_name(name), fmt_money(int(bet_amount or 0)) + 'đ', fmt_money(rewards[rank-1]) + 'đ'))
-            lines.extend(['', '<b>📊 BẢNG XẾP HẠNG HÔM NAY</b>', _tbl_render(('Hạng','Người chơi','Tổng cược','Thưởng'), table_rows, 'llrr')])
+                masked_id = "******" + str(player_id)[-5:]
+                medal = '🥇' if rank == 1 else '🥈' if rank == 2 else '🥉' if rank == 3 else '🏅'
+                lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{fmt_money(int(bet_amount or 0))} k</b>')
         else:
-            lines.extend(['', 'Chưa có dữ liệu xếp hạng hôm nay.'])
-        return await q.message.reply_text('\n'.join(lines), parse_mode=ParseMode.HTML)
+            lines.append("Chưa có dữ liệu cược hôm nay.")
+        my_rank = next((i for i, row in enumerate(rows, 1) if int(row[0]) == int(uid)), None)
+        lines.append(f"🎉 Thứ hạng của bạn: Top {my_rank}" if my_rank else "🎉 Thứ hạng của bạn: Chưa vào top")
+        return await q.message.reply_text(
+            "\\n".join(lines),
+            reply_markup=InlineKeyboardMarkup([
+                [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"),
+                 btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
+            ]),
+            parse_mode=ParseMode.HTML)
+
     if d == "top_thang_thua":
         await q.answer()
-        kb = InlineKeyboardMarkup([
-            [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"), btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
-        ])
         return await q.message.reply_text(
-            f'{ce("🎖")} <b>ĐUA TOP DÂY THẮNG / THUA MỖI NGÀY</b>\n'
-            f'{ce("⏱")} Tự động chốt và trả thưởng lúc <b>00:00 mỗi ngày</b>.\n\n'
-            f'<b>🏆 MỨC THƯỞNG TOP DÂY</b>\n'
-            f'🥇 TOP 1: <b>30.000đ</b>\n🥈 TOP 2: <b>20.000đ</b>\n🥉 TOP 3: <b>10.000đ</b>\n'
-            f'🏅 TOP 4–10: <b>5.000đ</b>\n\n'
-            f'Bấm nút bên dưới để xem bảng dây thắng hoặc dây thua:',
-            reply_markup=kb, parse_mode=ParseMode.HTML)
+            f'{ce("🏆")} <b>ĐUA TOP</b>',
+            reply_markup=InlineKeyboardMarkup([
+                [btn("TOP CƯỢC NGÀY", "🏆", callback_data="top_cuoc_ngay")],
+                [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win")],
+                [btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
+            ]),
+            parse_mode=ParseMode.HTML)
+
     if d in ("top_streak_win", "top_streak_loss"):
         await q.answer()
         streak_type = "win" if d.endswith("win") else "loss"
         column = "max_win" if streak_type == "win" else "max_loss"
-        title = "DÂY THẮNG LIÊN TIẾP" if streak_type == "win" else "DÂY THUA LIÊN TIẾP"
+        title = "DÂY THẮNG" if streak_type == "win" else "DÂY THUA"
         icon = "🔥" if streak_type == "win" else "🥶"
+        date_text = get_vietnam_time().strftime("%d/%m/%Y")
         rows = query(
-            f"SELECT user_id,MAX({column}),'' AS current_type,0 AS current_count FROM user_game_streaks WHERE {column}>0 GROUP BY user_id ORDER BY MAX({column}) DESC,user_id ASC LIMIT 10"
+            f"SELECT user_id, MAX({column}) FROM user_game_streaks "
+            f"WHERE {column}>0 GROUP BY user_id ORDER BY MAX({column}) DESC,user_id ASC LIMIT 10"
         ) or []
-        reward_list = [30000, 20000, 10000] + [5000] * 7
-        table_rows = []
-        for rank, row in enumerate(rows, 1):
-            player_id, best, current_type, current_count = row
-            name = await _telegram_name(ctx.bot, player_id, {}) or f'Thành viên {player_id}'
-            table_rows.append((rank, _tbl_name(name), int(best or 0), fmt_money(reward_list[rank-1]) + 'đ'))
-        text = f'{icon} <b>TOP 10 {title}</b>\n' + ( _tbl_render(('Hạng','Người chơi','Kỷ lục','Thưởng'), table_rows, 'llrr') if table_rows else 'Chưa có dữ liệu chuỗi thắng/thua.')
-        kb = InlineKeyboardMarkup([[btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"), btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]])
-        return await q.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        reward_list = [50000, 30000, 20000, 10000] + [5000] * 4
+        lines = [f'{ce(icon)} <b>TOP {title} HÔM NAY {date_text}</b>']
+        if rows:
+            for rank, (player_id, best) in enumerate(rows, 1):
+                masked_id = "******" + str(player_id)[-5:]
+                medal = '🥇' if rank == 1 else '🥈' if rank == 2 else '🥉' if rank == 3 else '🏅'
+                reward_text = f' | thưởng {fmt_money(reward_list[rank-1])}' if rank <= len(reward_list) else ''
+                lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{int(best or 0)} ván liên tiếp</b>{reward_text}')
+        else:
+            lines.append("Chưa có dữ liệu dây thắng/thua.")
+        my_rank = next((i for i, row in enumerate(rows, 1) if int(row[0]) == int(uid)), None)
+        lines.append(f"🎉 Thứ hạng của bạn: Top {my_rank}" if my_rank else "🎉 Thứ hạng của bạn: Chưa vào top")
+        return await q.message.reply_text(
+            "\\n".join(lines),
+            reply_markup=InlineKeyboardMarkup([
+                [btn("TOP CƯỢC NGÀY", "🏆", callback_data="top_cuoc_ngay")],
+                [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"),
+                 btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
+            ]),
+            parse_mode=ParseMode.HTML)
 
     if d.startswith("ev_"):
         if (not d.startswith("ev_nhan_") or d == "ev_nhan_vip") and d != "ev_vip_claim_all":
