@@ -8487,7 +8487,7 @@ function wdCard(w){
   if(w.note)h+='<div class="row mut" style="margin-top:6px"><span>'+esc(w.note)+'</span></div>';
   if(w.legacy)h+='<div class="mut" style="margin-top:6px;font-size:12.5px">Bản ghi cũ: thông tin lấy từ tài khoản liên kết hiện tại.</div>';
   h+='<div style="margin-top:10px"><img class="qr" alt="QR" loading="lazy" src="/admin/api/wqr/'+encodeURIComponent(w.id)+'"></div>';
-  if(w.status==='pending')h+='<div class="acts"><button class="btn ok" data-a="approve" data-id="'+esc(w.id)+'">✅ Duyệt</button><button class="btn bad" data-a="reject" data-id="'+esc(w.id)+'">❌ Từ chối (hoàn tiền)</button></div>';
+  if(w.status==='pending')h+='<div class="acts"><button class="btn ok" data-a="approve" data-id="'+esc(w.id)+'">✅ Duyệt</button><button class="btn bad" data-a="reject" data-id="'+esc(w.id)+'">❌ Từ chối (hoàn tiền)</button><button class="btn bad" data-a="reject_no_refund" data-id="'+esc(w.id)+'">🚫 Từ chối (không hoàn tiền)</button></div>';
   return h+'</div>';
 }
 async function vWd(){
@@ -8503,9 +8503,16 @@ async function vWd(){
 view.addEventListener('click',async function(ev){
   var b=ev.target.closest('button[data-a]');if(!b)return;
   var act=b.getAttribute('data-a'),id=b.getAttribute('data-id');
-  if(!confirm((act==='approve'?'Xác nhận ĐÃ CHUYỂN KHOẢN và duyệt':'Từ chối và hoàn tiền')+' đơn #'+id+'?'))return;
+  var reason='';
+  if(act==='reject_no_refund'){
+    reason=prompt('Nhập lý do từ chối KHÔNG hoàn tiền cho đơn #'+id+':');
+    if(reason===null)return;
+    reason=reason.trim();
+    if(!reason){toast('Bạn phải nhập lý do từ chối.');return;}
+    if(!confirm('Xác nhận từ chối đơn #'+id+' và KHÔNG hoàn lại tiền cho người dùng?'))return;
+  }else if(!confirm((act==='approve'?'Xác nhận ĐÃ CHUYỂN KHOẢN và duyệt':'Từ chối và hoàn tiền')+' đơn #'+id+'?'))return;
   b.disabled=true;
-  try{await post('withdraw/'+encodeURIComponent(id)+'/'+act);toast('Đã xử lý đơn #'+id);load();}catch(e){toast(e.message);b.disabled=false;}
+  try{await post('withdraw/'+encodeURIComponent(id)+'/'+act,{reason:reason});toast('Đã xử lý đơn #'+id);load();}catch(e){toast(e.message);b.disabled=false;}
 });
 
 
@@ -8874,18 +8881,29 @@ async def aw_api_wqr(request):
 async def aw_api_withdraw_act(request):
     tok, s = await asyncio.to_thread(_aw_auth, request, True)
     wid_s, act = request.match_info.get("wid", ""), request.match_info.get("act", "")
-    if not wid_s.isdigit() or act not in ("approve", "reject"):
+    if not wid_s.isdigit() or act not in ("approve", "reject", "reject_no_refund"):
         return _aw_json({"err": "Yêu cầu không hợp lệ"}, 400)
     wid = int(wid_s)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    reason = str((payload or {}).get("reason", "")).strip()[:500]
+    if act == "reject_no_refund" and not reason:
+        return _aw_json({"err": "Vui lòng nhập lý do từ chối không hoàn tiền"}, 400)
     note = f"Web: {s['user']}"
     if act == "approve":
         r = await asyncio.to_thread(
             query, "UPDATE withdraw_history SET status='success', admin_id=0, admin_note=%s WHERE id=%s AND status='pending' RETURNING user_id, amount",
             (note, wid))
+    elif act == "reject":
+        r = await asyncio.to_thread(
+            query, "UPDATE withdraw_history SET status='rejected', admin_id=0, admin_note=%s WHERE id=%s AND status='pending' RETURNING user_id, amount",
+            (note + " - Từ chối (hoàn tiền)", wid))
     else:
         r = await asyncio.to_thread(
             query, "UPDATE withdraw_history SET status='rejected', admin_id=0, admin_note=%s WHERE id=%s AND status='pending' RETURNING user_id, amount",
-            (note + " - Từ chối", wid))
+            (note + " - Từ chối KHÔNG hoàn tiền: " + reason, wid))
     if not r:
         return _aw_json({"err": "Đơn này đã được xử lý rồi hoặc không tồn tại"}, 409)
     u_id, amt = int(r[0][0]), int(r[0][1])
@@ -8904,15 +8922,26 @@ async def aw_api_withdraw_act(request):
                                    parse_mode=ParseMode.HTML)
         except Exception:
             pass
-    else:
+    elif act == "reject":
         await asyncio.to_thread(add_money, u_id, amt, "Hoàn tiền rút")
         try:
-            await bot.send_message(u_id, f'{ce("❌")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> bị từ chối.\n'
-                                         f'{ce("🔄")} Tiền đã được hoàn về số dư của bạn.\n{bal_block(u_id)}',
+            await bot.send_message(u_id, f'{ce("❌")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> bị từ chối.\\n'
+                                         f'{ce("🔄")} Tiền đã được hoàn về số dư của bạn.\\n{bal_block(u_id)}',
                                    parse_mode=ParseMode.HTML)
         except Exception:
             pass
-    await asyncio.to_thread(_aw_log, s["user"], "WITHDRAW_" + act.upper(), f"#{wid} ID {u_id} {amt}đ", _aw_ip(request))
+    else:
+        safe_reason = html.escape(reason)
+        try:
+            await bot.send_message(
+                u_id,
+                f'{ce("❌")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> đã bị từ chối.\\n'
+                f'{ce("📝")} Lý do: {safe_reason}\\n'
+                f'{ce("⚠️")} Số tiền của yêu cầu này không được hoàn lại vào số dư.',
+                parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    await asyncio.to_thread(_aw_log, s["user"], "WITHDRAW_" + act.upper(), f"#{wid} ID {u_id} {amt}đ" + (f" | Lý do: {reason}" if act == "reject_no_refund" else ""), _aw_ip(request))
     return _aw_json({"ok": True})
 
 
