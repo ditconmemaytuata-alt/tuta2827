@@ -747,6 +747,12 @@ CREATE TABLE IF NOT EXISTS fan_checkins (
 )
 """)
 query("""
+CREATE TABLE IF NOT EXISTS fan_enrollments (
+    user_id BIGINT PRIMARY KEY,
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+""")
+query("""
 CREATE TABLE IF NOT EXISTS fan_requests (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL UNIQUE,
@@ -4476,6 +4482,13 @@ async def fan_baodanh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if update.effective_chat.type != "private":
         return await msg.reply_text("Vui lòng điểm danh trong chat riêng với bot bằng /baodanh.")
+    enrolled = query("SELECT 1 FROM fan_enrollments WHERE user_id=%s", (uid,))
+    if not enrolled:
+        return await msg.reply_text(
+            "🌸 Bạn chưa tham gia chương trình Fan +30K.\n"
+            "Hãy vào Tài khoản → Fan cứng +30k và bấm tham gia trước, "
+            "sau đó gửi /baodanh mỗi ngày nhé."
+        )
     try:
         chat = await ctx.bot.get_chat(uid)
         photos = await ctx.bot.get_user_profile_photos(uid, limit=1)
@@ -4496,15 +4509,22 @@ async def fan_baodanh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text(report + "Hãy chỉnh đủ 3 điều kiện trên rồi gửi lại /baodanh.", parse_mode=ParseMode.HTML)
     today = get_vietnam_time().date()
     already = query("SELECT 1 FROM fan_checkins WHERE user_id=%s AND checkin_date=%s", (uid, today))
+    reset_notice = ""
     if not already:
+        latest = query("SELECT MAX(checkin_date) FROM fan_checkins WHERE user_id=%s", (uid,))
+        last_date = latest[0][0] if latest else None
+        # Bỏ lỡ ít nhất một ngày: xóa chuỗi cũ để lần báo danh hôm nay bắt đầu lại ngày 1.
+        if last_date and last_date < today - timedelta(days=1):
+            query("DELETE FROM fan_checkins WHERE user_id=%s", (uid,))
+            reset_notice = "⚠️ Bạn đã bỏ lỡ ít nhất 1 ngày, chuỗi điểm danh đã được reset về ngày 1.\n"
         query("INSERT INTO fan_checkins(user_id,checkin_date) VALUES(%s,%s) ON CONFLICT DO NOTHING", (uid,today))
     streak = _fan_streak(uid)
     req = query("SELECT status,gift_code FROM fan_requests WHERE user_id=%s", (uid,))
     if req:
         status, gift = req[0]
         status_text = "đang chờ Admin duyệt" if status == "pending" else ("đã được duyệt" if status == "approved" else "đã bị từ chối")
-        return await msg.reply_text(report + f"📅 Chuỗi điểm danh: <b>{streak}/7 ngày</b>\n📨 Yêu cầu Fan của bạn {status_text}." + (f"\n🎁 Giftcode: <code>{html.escape(gift)}</code>" if gift else ""), parse_mode=ParseMode.HTML)
-    report += f"📅 Chuỗi điểm danh liên tiếp: <b>{streak}/7 ngày</b>\n"
+        return await msg.reply_text(report + reset_notice + f"📅 Chuỗi điểm danh: <b>{streak}/7 ngày</b>\n📨 Yêu cầu Fan của bạn {status_text}." + (f"\n🎁 Giftcode: <code>{html.escape(gift)}</code>" if gift else ""), parse_mode=ParseMode.HTML)
+    report += reset_notice + f"📅 Chuỗi điểm danh liên tiếp: <b>{streak}/7 ngày</b>\n"
     if streak >= 7:
         ins = query("INSERT INTO fan_requests(user_id,streak_days,status) VALUES(%s,7,'pending') ON CONFLICT(user_id) DO NOTHING RETURNING id", (uid,))
         if ins:
@@ -8586,8 +8606,29 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await q.message.reply_text(vip_text, reply_markup=vip_kb, parse_mode=ParseMode.HTML)
 
     if d == "acc_fan_cung":
-        await q.answer("Tính năng đang được cập nhật!", show_alert=True)
-        return
+        await q.answer()
+        joined = query("SELECT 1 FROM fan_enrollments WHERE user_id=%s", (uid,))
+        if not joined:
+            query(
+                "INSERT INTO fan_enrollments(user_id) VALUES(%s) ON CONFLICT(user_id) DO NOTHING",
+                (uid,)
+            )
+            # Không cho lịch sử điểm danh trước khi bấm tham gia được tính vào chương trình.
+            query("DELETE FROM fan_checkins WHERE user_id=%s", (uid,))
+            return await q.message.reply_text(
+                "🌸 <b>BẠN ĐÃ THAM GIA FAN +30K!</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "📅 Hãy gửi lệnh <code>/baodanh</code> mỗi ngày để ghi nhận điểm danh.\n"
+                "🔥 Cần đủ 7 ngày liên tiếp để gửi yêu cầu Admin duyệt thưởng 30.000đ.\n"
+                "⚠️ Nếu bỏ lỡ 1 ngày, chuỗi sẽ reset về ngày 1.\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "👉 Bắt đầu ngay: <code>/baodanh</code>",
+                parse_mode=ParseMode.HTML
+            )
+        return await q.message.reply_text(
+            "🌸 Bạn đã tham gia Fan +30K rồi. Hãy gửi <code>/baodanh</code> để điểm danh hôm nay.",
+            parse_mode=ParseMode.HTML
+        )
 
     if d == "acc_tich_luy":
         await q.answer()
