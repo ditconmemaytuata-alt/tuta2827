@@ -434,6 +434,9 @@ class InlineKeyboardButton(_PTBInlineKeyboardButton):
         super().__init__(text, *args, **kwargs)
 
 
+def _top_medal(rank: int) -> str:
+    return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "🏅")
+
 def fmt_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".")
 
@@ -5500,7 +5503,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
         ])
         return await user_reply.reply_text(
-            f'{ce("🏆")} <b>ĐUA TOP</b>\\nChọn bảng muốn xem:',
+            f'{ce("🏆")} <b>ĐUA TOP</b>\nChọn bảng muốn xem:',
             reply_markup=kb, parse_mode=ParseMode.HTML)
 
     if key == "EVENT":
@@ -8705,18 +8708,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "SELECT user_id, COALESCE(bet,0) FROM bet_daily WHERE day=%s AND COALESCE(bet,0)>0 ORDER BY bet DESC, user_id ASC LIMIT 10",
             (day,)
         ) or []
-        lines = [f'{ce("🔥")} <b>TOP CƯỢC NGÀY {date_text}</b> {ce("🔥")}']
+        lines = [f'{ce("🔥")} <b>TOP CƯỢC NGÀY {date_text}</b>', ""]
         if rows:
             for rank, (player_id, bet_amount) in enumerate(rows, 1):
-                masked_id = "******" + str(player_id)[-5:]
-                medal = '🥇' if rank == 1 else '🥈' if rank == 2 else '🥉' if rank == 3 else '🏅'
-                lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{fmt_money(int(bet_amount or 0))} k</b>')
+                masked_id = "**" + str(player_id)[-4:]
+                medal = _top_medal(rank)
+                lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{fmt_money(int(bet_amount or 0))}k</b>')
         else:
             lines.append("Chưa có dữ liệu cược hôm nay.")
         my_rank = next((i for i, row in enumerate(rows, 1) if int(row[0]) == int(uid)), None)
+        lines.append("")
         lines.append(f"🎉 Thứ hạng của bạn: Top {my_rank}" if my_rank else "🎉 Thứ hạng của bạn: Chưa vào top")
         return await q.message.reply_text(
-            "\\n".join(lines),
+            "\n".join(lines),
             reply_markup=InlineKeyboardMarkup([
                 [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"),
                  btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
@@ -8739,6 +8743,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         streak_type = "win" if d.endswith("win") else "loss"
         column = "max_win" if streak_type == "win" else "max_loss"
         title = "DÂY THẮNG" if streak_type == "win" else "DÂY THUA"
+        word = "thắng" if streak_type == "win" else "thua"
         icon = "🔥" if streak_type == "win" else "🥶"
         date_text = get_vietnam_time().strftime("%d/%m/%Y")
         rows = query(
@@ -8746,19 +8751,20 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"WHERE {column}>0 GROUP BY user_id ORDER BY MAX({column}) DESC,user_id ASC LIMIT 10"
         ) or []
         reward_list = [50000, 30000, 20000, 10000] + [5000] * 4
-        lines = [f'{ce(icon)} <b>TOP {title} HÔM NAY {date_text}</b>']
+        lines = [f'{ce(icon)} <b>TOP {title} HÔM NAY {date_text}</b>', ""]
         if rows:
             for rank, (player_id, best) in enumerate(rows, 1):
-                masked_id = "******" + str(player_id)[-5:]
-                medal = '🥇' if rank == 1 else '🥈' if rank == 2 else '🥉' if rank == 3 else '🏅'
-                reward_text = f' | thưởng {fmt_money(reward_list[rank-1])}' if rank <= len(reward_list) else ''
-                lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{int(best or 0)} ván liên tiếp</b>{reward_text}')
+                masked_id = "**" + str(player_id)[-4:]
+                medal = _top_medal(rank)
+                reward_text = f' | thưởng <b>{reward_list[rank-1] // 1000}K</b>' if rank <= len(reward_list) else ''
+                lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{int(best or 0)} ván {word} liên tiếp</b>{reward_text}')
         else:
             lines.append("Chưa có dữ liệu dây thắng/thua.")
         my_rank = next((i for i, row in enumerate(rows, 1) if int(row[0]) == int(uid)), None)
+        lines.append("")
         lines.append(f"🎉 Thứ hạng của bạn: Top {my_rank}" if my_rank else "🎉 Thứ hạng của bạn: Chưa vào top")
         return await q.message.reply_text(
-            "\\n".join(lines),
+            "\n".join(lines),
             reply_markup=InlineKeyboardMarkup([
                 [btn("TOP CƯỢC NGÀY", "🏆", callback_data="top_cuoc_ngay")],
                 [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"),
