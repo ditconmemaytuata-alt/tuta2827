@@ -649,6 +649,46 @@ CREATE TABLE IF NOT EXISTS user_game_streaks (
 """)
 
 query("""
+CREATE TABLE IF NOT EXISTS daily_streaks (
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    day TEXT NOT NULL,
+    current_type TEXT NOT NULL DEFAULT '',
+    current_count INTEGER NOT NULL DEFAULT 0,
+    max_win INTEGER NOT NULL DEFAULT 0,
+    max_loss INTEGER NOT NULL DEFAULT 0,
+    win_at TEXT,
+    loss_at TEXT,
+    PRIMARY KEY (user_id, group_id, day)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS daily_streak_rewards (
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    streak INTEGER NOT NULL DEFAULT 0,
+    reward_amount BIGINT NOT NULL DEFAULT 0,
+    code TEXT,
+    sent INTEGER NOT NULL DEFAULT 0,
+    tries INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    PRIMARY KEY (user_id, group_id, day, kind)
+)
+""")
+query("""
+CREATE TABLE IF NOT EXISTS daily_streak_settlements (
+    group_id BIGINT NOT NULL,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    settled_at TEXT,
+    PRIMARY KEY (group_id, day, kind)
+)
+""")
+
+query("""
 CREATE TABLE IF NOT EXISTS daily_top_interactions (
     user_id BIGINT,
     group_id BIGINT,
@@ -2399,6 +2439,8 @@ GIFT_TYPES = {
     "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
     "INTERACT": {"name": "Code Tương Tác / CHECKTT", "icon": "💬", "fmt": "XOCLO88-INTERACT-xxxxxxx"},
     "TICHLUY": {"name": "Code TOP / Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
+    "DAYTHANG": {"name": "Code Top Dây Thắng", "icon": "🔥", "fmt": "XOCLO88-DAYTHANG-xxxxxxx", "hidden": True},
+    "DAYTHUA":  {"name": "Code Top Dây Thua",  "icon": "🥶", "fmt": "XOCLO88-DAYTHUA-xxxxxxx",  "hidden": True},
 }
 GIFT_BUY_EXPIRE_DAYS = 30
 _DIGITS = "0123456789"
@@ -2705,6 +2747,8 @@ async def gift_flow_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pending_inputs.pop(uid, None)
     rows = []
     for key, t in GIFT_TYPES.items():
+        if t.get("hidden"):
+            continue
         rows.append([btn(f'{t["name"]} ({t["fmt"]})', t["icon"], callback_data=f"gcn_type_{key}")])
     await update.effective_message.reply_text(
         f'{ce("🎁")} <b>TẠO GIFTCODE</b>\n━━━━━━━━━━━━━━━━━━━━━\n'
@@ -3482,6 +3526,10 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                     )
                 except Exception as streak_error:
                     print(f"[streak] lỗi cập nhật user {streak_uid}: {streak_error}")
+                try:
+                    _record_daily_streak(streak_uid, group_id, round_type)
+                except Exception as streak_error:
+                    print(f"[daily_streak] lỗi cập nhật user {streak_uid}: {streak_error}")
 
             jackpot_amount = get_jackpot()
             jackpot_contribution = 0
@@ -12118,53 +12166,90 @@ def _tbl_render(headers, rows, aligns):
     body = [line(headers), sep] + [line(r) for r in rows]
     return "<pre>" + html.escape("\n".join(body)) + "</pre>"
 
+# ============================================================
+# ===== /daythang  /daythua : TOP ĐU DÂY TRONG NGÀY (top 3 + thưởng giftcode tự động) =====
+# ============================================================
+DAY_STREAK_MIN = 3                         # dây tối thiểu (số phiên liên tiếp) mới tính là "dây hợp lệ"
+DAY_STREAK_PRIZES = {1: 50000, 2: 30000, 3: 20000}   # thưởng Top 1/2/3 (đ) - chỉnh tại đây
+DAY_STREAK_WAGER = 3                       # yêu cầu vòng cược x3
+DAY_STREAK_EXPIRE_HOURS = 24               # hạn dùng giftcode: 1 ngày
+DAY_STREAK_KIND = {
+    "win":  {"ctype": "DAYTHANG", "label": "THẮNG", "col": "max_win",  "at": "win_at",  "icon": "🔥"},
+    "loss": {"ctype": "DAYTHUA",  "label": "THUA",   "col": "max_loss", "at": "loss_at", "icon": "🥶"},
+}
+
+def _today_key():
+    return get_vietnam_time().strftime("%Y-%m-%d")
+
+def _record_daily_streak(user_id, group_id, round_type):
+    """Cập nhật dây thắng/thua liên tiếp TRONG NGÀY (reset theo ngày Việt Nam)."""
+    day = _today_key()
+    now_txt = get_vietnam_time().strftime("%Y-%m-%d %H:%M:%S")
+    row = query("SELECT current_type,current_count,max_win,max_loss FROM daily_streaks "
+                "WHERE user_id=%s AND group_id=%s AND day=%s", (user_id, group_id, day))
+    if row:
+        ctype, ccount, mwin, mloss = row[0][0], int(row[0][1] or 0), int(row[0][2] or 0), int(row[0][3] or 0)
+    else:
+        ctype, ccount, mwin, mloss = "", 0, 0, 0
+    new_count = ccount + 1 if ctype == round_type else 1
+    win_at = loss_at = None
+    if round_type == "win" and new_count > mwin:
+        mwin, win_at = new_count, now_txt
+    if round_type == "loss" and new_count > mloss:
+        mloss, loss_at = new_count, now_txt
+    query(
+        "INSERT INTO daily_streaks (user_id,group_id,day,current_type,current_count,max_win,max_loss,win_at,loss_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (user_id,group_id,day) DO UPDATE SET "
+        "current_type=EXCLUDED.current_type, current_count=EXCLUDED.current_count, "
+        "max_win=EXCLUDED.max_win, max_loss=EXCLUDED.max_loss, "
+        "win_at=COALESCE(EXCLUDED.win_at, daily_streaks.win_at), "
+        "loss_at=COALESCE(EXCLUDED.loss_at, daily_streaks.loss_at)",
+        (user_id, group_id, day, round_type, new_count, mwin, mloss, win_at, loss_at))
+
+def _day_streak_top(group_id, day, kind, limit=3):
+    """Top dây trong ngày: dây dài nhất trước, bằng nhau thì ai đạt mốc đó trước xếp trên."""
+    k = DAY_STREAK_KIND[kind]
+    return query(
+        f"SELECT user_id, {k['col']} FROM daily_streaks "
+        f"WHERE group_id=%s AND day=%s AND {k['col']}>=%s "
+        f"ORDER BY {k['col']} DESC, {k['at']} ASC, user_id ASC LIMIT {int(limit)}",
+        (group_id, day, DAY_STREAK_MIN)) or []
+
+def _day_streak_prize_text(rank):
+    return fmt_money(DAY_STREAK_PRIZES.get(rank, 0))
+
 async def _streak_top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, streak_type: str):
     group = update.effective_chat
     gid = group.id if group and group.type != "private" else (GROUP_IDS[0] if GROUP_IDS else None)
     if not gid:
         return await update.effective_message.reply_text("Chưa xác định được nhóm thống kê.")
-    column = "max_win" if streak_type == "win" else "max_loss"
-    title = "DÂY THẮNG LIÊN TIẾP" if streak_type == "win" else "DÂY THUA LIÊN TIẾP"
-    icon = "🔥" if streak_type == "win" else "🥶"
-    word = "thắng" if streak_type == "win" else "thua"
-    rows = query(
-        f"SELECT user_id, {column}, current_type, current_count FROM user_game_streaks "
-        f"WHERE group_id=%s AND {column}>0 ORDER BY {column} DESC, user_id ASC LIMIT 10",
-        (gid,)
-    ) or []
-    lines = [f"{icon} <b>TOP 10 {title}</b>"]
-    if rows:
-        table_rows = []
-        for rank, row in enumerate(rows, 1):
-            uid, best, current_type, current_count = row
-            name = await _telegram_name(ctx.bot, uid, {}) or f"Thành viên {uid}"
-            now_cnt = int(current_count or 0) if current_type == streak_type else 0
-            table_rows.append((f"{rank:02d}", _tbl_name(name), f"{int(best)}", f"{now_cnt}"))
-        lines.append(_tbl_render(("Hạng", "Người chơi", "Kỷ lục", "Đang có"), table_rows, "llrr"))
-        lines.append("<i>Đơn vị: phiên · Đang có = dây hiện tại chưa bị ngắt</i>")
-    else:
-        lines.append("Chưa có dữ liệu chuỗi thắng/thua.")
-    own = query(
-        "SELECT current_type,current_count,max_win,max_loss FROM user_game_streaks WHERE user_id=%s AND group_id=%s",
-        (update.effective_user.id, gid)
-    ) or []
-    if own:
-        current_type, current_count, max_win, max_loss = own[0]
-        if current_type == streak_type:
-            lines.append(f"👤 <b>Bạn đang có:</b> {int(current_count)} phiên {word} liên tiếp.")
+    k = DAY_STREAK_KIND[streak_type]
+    day = _today_key()
+    rows = _day_streak_top(gid, day, streak_type, 3)
+    lines = [f"🏆 <b>Top đu dây {k['label']} hôm nay</b> (tính tới hiện tại)", ""]
+    for rank in (1, 2, 3):
+        if rank <= len(rows):
+            uid, best = rows[rank - 1]
+            lines.append(f"Top {rank}: <code>{mask_user_id(uid)}</code> | {int(best)} trận | thưởng {_day_streak_prize_text(rank)}")
         else:
-            lines.append(f"👤 <b>Bạn hiện không có dây {word}.</b>")
-        lines.append(f"🏆 Kỷ lục cá nhân: thắng {int(max_win)} · thua {int(max_loss)} phiên.")
-        my_best = int(max_win if streak_type == "win" else max_loss)
-        rank = next((i for i, r in enumerate(rows, 1) if int(r[0]) == update.effective_user.id), None)
-        if rank:
-            lines.append(f"✅ Bạn đang đứng Top {rank} trong bảng này.")
-        elif my_best:
-            lines.append("ℹ️ Kỷ lục của bạn hiện chưa lọt Top 10.")
-        else:
-            lines.append("ℹ️ Bạn chưa có chuỗi nào được ghi nhận.")
+            lines.append(f"Top {rank}: — | thưởng {_day_streak_prize_text(rank)}")
+    lines.append("")
+    me = update.effective_user.id
+    own = query(f"SELECT {k['col']}, current_type, current_count FROM daily_streaks "
+                f"WHERE user_id=%s AND group_id=%s AND day=%s", (me, gid, day)) or []
+    my_best = int(own[0][0] or 0) if own else 0
+    if my_best >= DAY_STREAK_MIN:
+        rank = next((i for i, r in enumerate(rows, 1) if int(r[0]) == me), None)
+        now_cnt = int(own[0][2] or 0) if own[0][1] == streak_type else 0
+        lines.append(f"Dây {k['label'].lower()} dài nhất của bạn hôm nay: <b>{my_best} trận</b>"
+                     + (f" · đang đứng <b>Top {rank}</b>" if rank else " · chưa lọt Top 3"))
+        if now_cnt:
+            lines.append(f"Đang có: {now_cnt} trận liên tiếp")
     else:
-        lines.append("👤 Bạn chưa có dữ liệu thắng/thua trong nhóm này.")
+        lines.append("Bạn chưa có dây hợp lệ hôm nay.")
+    lines.append(f"<i>Dây hợp lệ từ {DAY_STREAK_MIN} trận liên tiếp · chốt thưởng 00:00 · giftcode gửi riêng qua bot "
+                 f"(x{DAY_STREAK_WAGER} vòng cược, hạn 1 ngày)</i>")
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def daythang_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -12180,6 +12265,85 @@ async def daythua_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Lỗi /daythua: {e}")
         await update.effective_message.reply_text("Không tải được bảng dây thua. Vui lòng thử lại.")
+
+async def _send_day_streak_code(bot, user_id, kind, rank, streak, reward, code, day_text):
+    k = DAY_STREAK_KIND[kind]
+    await bot.send_message(
+        user_id,
+        f"🏆 <b>BẠN ĐẠT TOP {rank} DÂY {k['label']} NGÀY {day_text}!</b>\n"
+        f"{k['icon']} Dây dài nhất: <b>{int(streak)} trận</b>\n"
+        f"🎁 Giftcode: <code>{code}</code>\n"
+        f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược x{DAY_STREAK_WAGER}\n"
+        f"⏰ Hạn dùng 1 ngày. Nhập bằng <code>/code {code}</code>.",
+        parse_mode=ParseMode.HTML)
+
+async def settle_day_streak_loop(bot):
+    """00:00 mỗi ngày: chốt Top 3 dây thắng/thua của hôm qua, tự tạo giftcode và gửi riêng cho từng người."""
+    while True:
+        try:
+            y = get_vietnam_time().date() - timedelta(days=1)
+            day = y.strftime("%Y-%m-%d")
+            day_text = y.strftime("%d/%m/%Y")
+            for group_id in GROUP_IDS:
+                for kind, k in DAY_STREAK_KIND.items():
+                    done = query("SELECT 1 FROM daily_streak_settlements WHERE group_id=%s AND day=%s AND kind=%s",
+                                 (group_id, day, kind))
+                    if done:
+                        continue
+                    rows = _day_streak_top(group_id, day, kind, 3)
+                    public = [f"🏆 <b>CHỐT TOP ĐU DÂY {k['label']} NGÀY {day_text}</b>"]
+                    for rank, (uid, best) in enumerate(rows, 1):
+                        reward = DAY_STREAK_PRIZES.get(rank, 0)
+                        if reward <= 0:
+                            continue
+                        code = gen_gift_code(k["ctype"])
+                        expiry = get_vietnam_time() + timedelta(hours=DAY_STREAK_EXPIRE_HOURS)
+                        created = query(
+                            "INSERT INTO giftcodes (code,ctype,reward,wager,expiry,require_deposit,required_amount,"
+                            "bound_user,used,created_by,created_at) "
+                            "VALUES (%s,%s,%s,%s,%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
+                            (code, k["ctype"], reward, DAY_STREAK_WAGER, expiry, uid, get_vietnam_datetime_db()))
+                        if created:
+                            ins = query(
+                                "INSERT INTO daily_streak_rewards (user_id,group_id,day,kind,rank,streak,reward_amount,code,created_at) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING user_id",
+                                (uid, group_id, day, kind, rank, int(best), reward, code, get_vietnam_datetime_db()))
+                            if ins:
+                                try:
+                                    await _send_day_streak_code(bot, uid, kind, rank, best, reward, code, day_text)
+                                    query("UPDATE daily_streak_rewards SET sent=1,tries=tries+1 WHERE user_id=%s AND group_id=%s AND day=%s AND kind=%s",
+                                          (uid, group_id, day, kind))
+                                except Exception:
+                                    query("UPDATE daily_streak_rewards SET tries=tries+1 WHERE user_id=%s AND group_id=%s AND day=%s AND kind=%s",
+                                          (uid, group_id, day, kind))
+                        public.append(f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉'} Top {rank}: "
+                                      f"<code>{mask_user_id(uid)}</code> | {int(best)} trận | thưởng {fmt_money(reward)}")
+                    if rows:
+                        public.append("\n🎁 Giftcode đã gửi riêng qua bot (x%d vòng cược, hạn 1 ngày). "
+                                      "Ai chưa nhận được hãy mở bot bấm /start." % DAY_STREAK_WAGER)
+                        try:
+                            await bot.send_message(group_id, "\n".join(public), parse_mode=ParseMode.HTML)
+                        except Exception as e:
+                            print(f"Không gửi được bảng chốt dây {kind} nhóm {group_id}: {e}")
+                    query("INSERT INTO daily_streak_settlements (group_id,day,kind,settled_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                          (group_id, day, kind, get_vietnam_datetime_db()))
+            # Gửi lại giftcode chưa tới được người nhận (chưa /start bot), tối đa 10 lần, chỉ khi code còn hạn.
+            pend = query(
+                "SELECT r.user_id,r.group_id,r.day,r.kind,r.rank,r.streak,r.reward_amount,r.code "
+                "FROM daily_streak_rewards r JOIN giftcodes g ON g.code=r.code "
+                "WHERE r.sent=0 AND r.tries<10 AND g.used=0 AND g.expiry>NOW() LIMIT 20") or []
+            for uid, gid_, day_, kind_, rank_, streak_, reward_, code_ in pend:
+                try:
+                    dt = datetime.strptime(day_, "%Y-%m-%d").strftime("%d/%m/%Y")
+                    await _send_day_streak_code(bot, uid, kind_, rank_, streak_, reward_, code_, dt)
+                    query("UPDATE daily_streak_rewards SET sent=1,tries=tries+1 WHERE user_id=%s AND group_id=%s AND day=%s AND kind=%s",
+                          (uid, gid_, day_, kind_))
+                except Exception:
+                    query("UPDATE daily_streak_rewards SET tries=tries+1 WHERE user_id=%s AND group_id=%s AND day=%s AND kind=%s",
+                          (uid, gid_, day_, kind_))
+        except Exception as e:
+            print(f"Lỗi settle dây thắng/thua: {e}")
+        await asyncio.sleep(30)
 
 async def topnap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Top 10 người nạp thành công."""
@@ -16007,8 +16171,8 @@ async def main():
         BotCommand("baucua", "Chơi Bầu Cua"),
         BotCommand("soloxd", "Tạo phòng Solo Xúc Xắc"),
         BotCommand("solokbb", "Tạo phòng Solo Kéo Búa Bao"),
-        BotCommand("daythang", "Top 10 dây thắng liên tiếp"),
-        BotCommand("daythua", "Top 10 dây thua liên tiếp"),
+        BotCommand("daythang", "Top đu dây THẮNG hôm nay"),
+        BotCommand("daythua", "Top đu dây THUA hôm nay"),
         BotCommand("help", "Hướng dẫn sử dụng"),
         BotCommand("sd", "Xem số dư"),
         BotCommand("his", "Lịch sử giao dịch"),
@@ -16027,6 +16191,7 @@ async def main():
     _bg_tasks.append(asyncio.create_task(reward_settle_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(auto_settle_tich_luy_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(settle_interaction_top_loop(application.bot)))
+    _bg_tasks.append(asyncio.create_task(settle_day_streak_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(promo_golden_loop(application.bot)))
     _bg_tasks.append(asyncio.create_task(tx3d_loop()))
     
