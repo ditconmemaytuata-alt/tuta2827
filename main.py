@@ -7581,12 +7581,131 @@ async def _solo_create(update, ctx, game):
         parse_mode=ParseMode.HTML)
 
 
+async def _solo_join_by_code(update, ctx, room_id, expected_game):
+    msg, user = update.effective_message, update.effective_user
+    room_id = str(room_id).strip()
+    async with SOLO_ROOM_LOCK:
+        room = SOLO_ROOMS.get(room_id)
+        if not room or room.get("status") != "open":
+            return await msg.reply_text("Phòng không tồn tại hoặc đã đóng.")
+        if room.get("game") != expected_game:
+            return await msg.reply_text("Mã phòng không thuộc trò chơi này.")
+        if user.id == room["owner"]:
+            return await msg.reply_text("Bạn không thể tự vào phòng của mình.")
+        if is_banned(user.id) and user.id not in ADMIN_IDS:
+            return await msg.reply_text("Tài khoản đã bị khóa.")
+        if not has_bank_linked(user.id):
+            return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
+        amount, owner = room["amount"], room["owner"]
+        if get_balance(user.id) < amount or get_balance(owner) < amount:
+            return await msg.reply_text("Một trong hai người không đủ số dư.")
+        if not sub_money(owner, amount, f"Cược phòng Solo #{room_id}"):
+            return await msg.reply_text("Người tạo không còn đủ số dư.")
+        if not sub_money(user.id, amount, f"Cược phòng Solo #{room_id}"):
+            add_money(owner, amount, f"Hoàn cược phòng Solo #{room_id}")
+            return await msg.reply_text("Không thể trừ tiền cược của bạn; đã hoàn tiền người tạo.")
+        room["opponent"] = user.id
+        room["opponent_name"] = html.escape(user.full_name or str(user.id))
+        room["status"] = "choosing" if expected_game == "kbb" else "playing"
+        room_copy = dict(room)
+
+    chat_id = msg.chat_id
+    if expected_game == "kbb":
+        pick_kb = InlineKeyboardMarkup([[
+            btn("KÉO", "✂️", callback_data=f"pvp:pick:{room_id}:keo"),
+            btn("BÚA", "🪨", callback_data=f"pvp:pick:{room_id}:bua"),
+            btn("BAO", "📄", callback_data=f"pvp:pick:{room_id}:bao"),
+        ]])
+        return await ctx.bot.send_message(
+            chat_id,
+            f'{ce("✊")} <b>SOLO KÉO BÚA BAO - CHỌN NƯỚC ĐI</b>\\n'
+            f'{room_copy["owner_name"]} đấu với <b>{room_copy["opponent_name"]}</b>\\n'
+            f'Mỗi người: <code>{fmt_money(amount)}đ</code>\\n'
+            'Mỗi người chơi bấm chọn một nút bên dưới. Lựa chọn được giữ kín đến khi cả hai đã chọn.',
+            parse_mode=ParseMode.HTML, reply_markup=pick_kb)
+
+    settled = False
+    try:
+        await ctx.bot.send_message(chat_id,
+            f'{ce("🎲")} <b>SOLO XÚC XẮC BẮT ĐẦU</b>\\n'
+            f'{room_copy["owner_name"]} đấu với <b>{room_copy["opponent_name"]}</b>\\n'
+            f'Mỗi người: <code>{fmt_money(amount)}đ</code>', parse_mode=ParseMode.HTML)
+        one = await ctx.bot.send_dice(chat_id=chat_id, emoji="🎲")
+        await asyncio.sleep(1)
+        two = await ctx.bot.send_dice(chat_id=chat_id, emoji="🎲")
+        a, b = one.dice.value, two.dice.value
+        if a == b:
+            add_money(owner, amount, f"Hoàn cược hòa Solo Xúc Xắc #{room_id}")
+            add_money(user.id, amount, f"Hoàn cược hòa Solo Xúc Xắc #{room_id}")
+            settled = True
+            result = f'{ce("🤝")} <b>HÒA</b> - đã hoàn cược cho cả hai.'
+        else:
+            winner = owner if a > b else user.id
+            prize = int(amount * 1.95)
+            add_money(winner, prize, f"Thắng Solo Xúc Xắc #{room_id}")
+            settled = True
+            result = f'{ce("🏆")} Người thắng: <b>{"Người tạo phòng" if winner == owner else "Người tham gia"}</b> · Nhận <code>{fmt_money(prize)}đ</code>'
+        await ctx.bot.send_message(chat_id,
+            f'{ce("🎲")} <b>KẾT QUẢ SOLO XÚC XẮC</b>\\nNgười tạo: <b>{a}</b>\\nNgười tham gia: <b>{b}</b>\\n{result}',
+            parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"[solo-dice-command] Lỗi trận {room_id}: {e}")
+        if not settled:
+            add_money(owner, amount, f"Hoàn cược lỗi Solo Xúc Xắc #{room_id}")
+            add_money(user.id, amount, f"Hoàn cược lỗi Solo Xúc Xắc #{room_id}")
+        try:
+            await msg.reply_text("Trận đấu gặp lỗi kỹ thuật. Hệ thống đã xử lý hoàn cược nếu chưa thanh toán.")
+        except Exception:
+            pass
+    finally:
+        SOLO_ROOMS.pop(room_id, None)
+
+
+async def _solo_cancel_by_code(update, ctx, room_id, expected_game):
+    msg, user = update.effective_message, update.effective_user
+    async with SOLO_ROOM_LOCK:
+        room = SOLO_ROOMS.get(str(room_id))
+        if not room or room.get("status") != "open" or room.get("game") != expected_game:
+            return await msg.reply_text("Phòng không tồn tại hoặc đã đóng.")
+        if user.id != room["owner"] and user.id not in ADMIN_IDS:
+            return await msg.reply_text("Chỉ người tạo phòng mới được hủy.")
+        SOLO_ROOMS.pop(str(room_id), None)
+    return await msg.reply_text(f'{ce("🚫")} Đã hủy phòng SOLO <code>{room_id}</code>.', parse_mode=ParseMode.HTML)
+
+
 async def soloxd_cmd(update, ctx):
+    args = ctx.args or []
+    if len(args) == 1 and args[0].isdigit() and args[0] in SOLO_ROOMS:
+        return await _solo_join_by_code(update, ctx, args[0], "dice")
     return await _solo_create(update, ctx, "dice")
 
 
 async def solokbb_cmd(update, ctx):
+    args = ctx.args or []
+    if len(args) == 1 and args[0].isdigit() and args[0] in SOLO_ROOMS:
+        return await _solo_join_by_code(update, ctx, args[0], "kbb")
     return await _solo_create(update, ctx, "kbb")
+
+
+async def solo_cmd(update, ctx):
+    args = ctx.args or []
+    if len(args) == 1 and args[0].isdigit() and args[0] in SOLO_ROOMS:
+        return await _solo_join_by_code(update, ctx, args[0], "dice")
+    return await _solo_create(update, ctx, "dice")
+
+
+async def solo_cancel_cmd(update, ctx):
+    args = ctx.args or []
+    if len(args) != 1:
+        return await update.effective_message.reply_text("Cú pháp: /huy [mã phòng]")
+    return await _solo_cancel_by_code(update, ctx, args[0], "dice")
+
+
+async def solo_kbb_cancel_cmd(update, ctx):
+    args = ctx.args or []
+    if len(args) != 1:
+        return await update.effective_message.reply_text("Cú pháp: /huykbb [mã phòng]")
+    return await _solo_cancel_by_code(update, ctx, args[0], "kbb")
 
 
 async def _solo_callback(update, ctx, data):
@@ -7899,30 +8018,54 @@ for _g in TGDICE:
 
 GAME_RULES.update({
     "xuctele": (
-        f'{ce("🎲")} <b>XÚC XẮC TELE</b>\n\n'
-        'XXC: 2, 4, 6 · XXL: 1, 3, 5\nXXT: 4, 5, 6 · XXX: 1, 2, 3\n'
-        'Tỷ lệ trả thưởng x1.95 · Min 5.000đ · Max 100.000đ\n'
-        'Cách chơi: <code>/xuctele xxc 10000</code>'
+        f'{ce("🎲")} <b>XÚC XẮC TELEGRAM</b> {ce("🎲")}\n\n'
+        '<b>Chế độ mặc định: BOT tung xúc xắc</b>\n\n'
+        '<b>Nội dung | Kết quả 1 xúc xắc | Tỷ lệ ăn</b>\n'
+        'XXC | 2,4,6 | x1.95\n'
+        'XXL | 1,3,5 | x1.95\n'
+        'XXT | 4,5,6 | x1.95\n'
+        'XXX | 1,2,3 | x1.95\n\n'
+        '🔹 Tối thiểu là 5.000 và tối đa là 100.000\n\n'
+        '💡 Cách chơi: [Nội dung] [tiền cược]\n'
+        'VD: <code>XXC 10000</code> hoặc <code>XXL 10000</code>'
     ),
     "baucua": (
         f'{ce("🦀")} <b>BẦU CUA</b>\n\n'
-        'Bầu=1 · Tôm=2 · Cua=3 · Cá=4 · Gà=5 · Nai=6\n'
-        'Chọn tối đa 3 cửa trong một lệnh.\n'
-        '1 mặt x1.95 · 2 mặt x3 · 3 mặt x4\n'
-        'Min 2.000đ · Max 300.000đ/cửa\n'
-        'Cách chơi: <code>/baucua bau cua ca 5000</code>'
+        '🍐 BẦU - Nếu xúc xắc ra số 1\n'
+        '🦐 TÔM - Nếu xúc xắc ra số 2\n'
+        '🦀 CUA - Nếu xúc xắc ra số 3\n'
+        '🐟 CÁ - Nếu xúc xắc ra số 4\n'
+        '🐓 GÀ - Nếu xúc xắc ra số 5\n'
+        '🦌 NAI - Nếu xúc xắc ra số 6\n\n'
+        'Tỷ lệ: ra 1 viên x1.95 | ra 2 viên x3 | ra 3 viên x4\n'
+        'Đặt tối đa 3 cửa trong 1 lệnh.\n\n'
+        '🔹 Tối thiểu là 2.000 và tối đa là 300.000 mỗi cửa\n\n'
+        '💡 Cách chơi: [cửa 1] [cửa 2] [cửa 3] [tiền cược]\n'
+        'VD: <code>bau cua ca 5000</code> hoặc <code>cua 10000</code>'
     ),
     "soloxd": (
-        f'{ce("🎲")} <b>SOLO XÚC XẮC</b>\n\n'
-        'Tạo phòng và mời người khác tham gia. Mỗi người tung 1 viên xúc xắc; điểm cao hơn thắng.\n'
-        'Tỷ lệ trả thưởng x1.95 · Min 2.000đ · Max 1.000.000đ\n'
-        'Cách chơi: <code>/soloxd 20000</code>. Bot đăng và ghim thông báo trong nhóm.'
+        f'{ce("🎲")} <b>GAME SOLO XÚC XẮC</b> {ce("🎲")}\n'
+        'Tạo phòng và mời người khác tham gia đấu xúc xắc.\n\n'
+        '🏆 Min: 2.000\n🏆 Max: 1.000.000\n🏆 Tỉ lệ trả thưởng: 1.95\n\n'
+        '💡 <b>Cách chơi</b>\n'
+        '<code>/solo 5000</code> - tạo phòng\n'
+        '<code>/solo [mã phòng]</code> - vào phòng\n'
+        '<code>/huy [mã phòng]</code> - hủy phòng\n\n'
+        'Phòng tạo sẽ được đăng vào nhóm để người khác tham gia.'
     ),
     "solokbb": (
-        f'{ce("✊")} <b>SOLO KÉO BÚA BAO</b>\n\n'
-        'Tạo phòng và mời người khác tham gia đấu Kéo, Búa, Bao. Hòa thì hoàn cược cho cả hai.\n'
-        'Tỷ lệ trả thưởng x1.95 · Min 2.000đ · Max 1.000.000đ\n'
-        'Cách chơi: <code>/solokbb 20000</code>. Bot đăng và ghim thông báo trong nhóm.'
+        f'{ce("✊")} <b>SOLO KÉO BÚA BAO</b>\n'
+        'Tạo phòng và mời người khác tham gia đấu kéo búa bao.\n\n'
+        '🤖 Chế độ BOT: đấu với bot, tỉ lệ thắng x1.95 (hòa hoàn tiền).\n'
+        '🔹 Gõ <code>/kbb [số tiền]</code> để hiện 3 nút Kéo / Búa / Bao.\n'
+        'VD: <code>/kbb 20000</code>\n'
+        '🔹 Hoặc chơi SOLO: <code>/solokbb [kéo|búa|bao] [số tiền]</code>\n'
+        'VD: <code>/solokbb kéo 10000</code>\n\n'
+        '🔹 Min: 2.000\n🔹 Max: 1.000.000\n🔹 Tỉ lệ trả thưởng SOLO: x1.95\n\n'
+        '💡 <b>Cách chơi SOLO</b>\n'
+        '<code>/solokbb 20000</code> - tạo phòng\n'
+        '<code>/solokbb [mã phòng]</code> - vào phòng\n'
+        '<code>/huykbb [mã phòng]</code> - hủy phòng'
     ),
 })
 
@@ -15362,6 +15505,9 @@ application.add_handler(CallbackQueryHandler(payout_link_callback, pattern=r"^pa
 application.add_handler(CommandHandler("xuctele", xuctele_cmd))
 application.add_handler(CommandHandler("baucua", baucua_cmd))
 application.add_handler(CommandHandler("soloxd", soloxd_cmd))
+application.add_handler(CommandHandler("solo", solo_cmd))
+application.add_handler(CommandHandler("huy", solo_cancel_cmd))
+application.add_handler(CommandHandler("huykbb", solo_kbb_cancel_cmd))
 application.add_handler(CommandHandler("solokbb", solokbb_cmd))
 application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.PHOTO, payout_link_photo), group=-2)
