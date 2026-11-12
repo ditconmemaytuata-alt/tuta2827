@@ -232,6 +232,29 @@ def ce(emoji: str) -> str:
 def ce_id(custom_id: str) -> str:
     return f'<tg-emoji emoji-id="{custom_id}">•</tg-emoji>'
 
+# Emoji premium RIÊNG cho từng game trong DANH SÁCH GAME: game -> (emoji dự phòng, ID premium)
+GAME_ICON = {
+    "room":    ("👑", "5190711295703260487"),   # Tài Xỉu Room
+    "tx3d":    ("💎", "5242409610886782878"),   # Tài Xỉu 3D
+    "xuctele": ("✈️", "5242212901384626139"),   # Xúc Xắc Tele
+    "baucua":  ("🦀", "5460895061090771853"),   # Bầu Cua
+    "xxd":     ("🎲", "5242325120290135326"),   # Xúc Xắc Đôi
+    "pk":      ("🆚", "5240175914360250771"),   # Đọ Xúc Xắc
+    "soloxd":  ("⚔️", "5235714190664016775"),   # Solo Xúc Xắc
+    "solokbb": ("✊", "5235520345905046381"),   # Solo Kéo Búa Bao
+    "pt":      ("🎯", "5240330838125583946"),   # Phi Tiêu
+    "br":      ("🏀", "5242677827299450340"),   # Bóng Rổ
+    "bd":      ("⚽", "5235650728227251200"),   # Bóng Đá
+    "ll":      ("🥅", "5235871588330512091"),   # Luân Lưu
+    "bl":      ("🎳", "5240141073585544010"),   # Bowling
+    "sl":      ("🎰", "5460966473512001416"),   # Quay Hũ
+}
+
+def gi(game: str) -> str:
+    """Emoji premium riêng của game (dùng trong nội dung tin nhắn)."""
+    em, eid = GAME_ICON[game]
+    return f'<tg-emoji emoji-id="{eid}">{em}</tg-emoji>'
+
 def _icon_id(emoji):
     if not emoji:
         return None
@@ -907,7 +930,7 @@ query("CREATE TABLE IF NOT EXISTS reward_base (user_id BIGINT, day DATE, scope T
 # Thêm cột ref_code nếu chưa có
 query("ALTER TABLE deposit_history ADD COLUMN IF NOT EXISTS ref_code TEXT")
 
-maintenance_keys = ['mt_taixiu_room', 'mt_xucxac_don', 'mt_longho', 'mt_minipoker', 'mt_baccarat', 'mt_xocdia4', 'mt_taixiumd5', 'mt_baucua', 'mt_xocdia6', 'mt_nap', 'mt_rut']
+maintenance_keys = ['mt_taixiu_room', 'mt_xucxac_don', 'mt_longho', 'mt_minipoker', 'mt_baccarat', 'mt_xocdia4', 'mt_taixiumd5', 'mt_baucua', 'mt_xocdia6', 'mt_soloxd', 'mt_solokbb', 'mt_nap', 'mt_rut']
 for k in maintenance_keys:
     res = query("SELECT 1 FROM settings WHERE key=%s", (k,))
     if not res:
@@ -6644,6 +6667,10 @@ async def reset_progress(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 MT_ITEMS = {
     'mt_taixiu_room': {'name': 'TÀI XỈU ROOM', 'type': 'game', 'icon': '😵'},
     'mt_tx3d': {'name': 'TÀI XỈU 3D', 'type': 'game', 'icon': '🎲'},
+    'mt_xucxac_don': {'name': 'XÚC XẮC TELE', 'type': 'game', 'icon': '✈️'},
+    'mt_baucua': {'name': 'BẦU CUA', 'type': 'game', 'icon': '🦀'},
+    'mt_soloxd': {'name': 'SOLO XÚC XẮC', 'type': 'game', 'icon': '⚔️'},
+    'mt_solokbb': {'name': 'SOLO KÉO BÚA BAO', 'type': 'game', 'icon': '✊'},
     'mt_nap': {'name': 'NẠP TIỀN', 'type': 'feature', 'icon': '💳'},
     'mt_rut': {'name': 'RÚT TIỀN (TẤT CẢ)', 'type': 'feature', 'icon': '💸'},
     'mt_rut_momo': {'name': 'RÚT MOMO', 'type': 'feature', 'icon': '❤️'},
@@ -6671,6 +6698,10 @@ async def baotri_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [btn(f"Tài Xỉu Room: {st('mt_taixiu_room')}", ic('mt_taixiu_room'), callback_data="tg_mt_taixiu_room")],
         *_tgdice_mt_rows(st, ic),
         [btn(f"Tài Xỉu 3D: {st('mt_tx3d')}", ic('mt_tx3d'), callback_data="tg_mt_tx3d")],
+        [btn(f"Xúc Xắc Tele: {st('mt_xucxac_don')}", ic('mt_xucxac_don'), callback_data="tg_mt_xucxac_don"),
+         btn(f"Bầu Cua: {st('mt_baucua')}", ic('mt_baucua'), callback_data="tg_mt_baucua")],
+        [btn(f"Solo Xúc Xắc: {st('mt_soloxd')}", ic('mt_soloxd'), callback_data="tg_mt_soloxd"),
+         btn(f"Solo Kéo Búa Bao: {st('mt_solokbb')}", ic('mt_solokbb'), callback_data="tg_mt_solokbb")],
         [btn(f"Nạp Tiền: {st('mt_nap')}", ic('mt_nap'), callback_data="tg_mt_nap"),
          btn(f"Rút Tiền: {st('mt_rut')}", ic('mt_rut'), callback_data="tg_mt_rut")],
         [btn("ĐÓNG BẢNG", "❌", callback_data="close_admin")]
@@ -7618,7 +7649,7 @@ def _tg_rows(c):
 
 def _tg_rules(g):
     c = TGDICE[g]
-    lines = [f'{ce(c["icon"])} <b>{c["name"]}</b> {ce("✨")}',
+    lines = [f'{gi(g)} <b>{c["name"]}</b> {ce("✨")}',
              '━━━━━━━━━━━━━━━━━━━━',
              f'{ce("🎮")} {c["intro"]}', '']
     if c.get("bets"):
@@ -7677,7 +7708,7 @@ async def play_tgdice(update, ctx, g, code, amount):
     # ---- tung xúc xắc hoạt ảnh Telegram ----
     vals = []
     try:
-        head = (f'{ce(c["icon"])} <b>{c["name"]}</b>\n'
+        head = (f'{gi(g)} <b>{c["name"]}</b>\n'
                 f'━━━━━━━━━━━━━━━━━━━━\n')
         if bet:
             head += f'{ce("🎟")} Cửa: <b>{bet[0]}</b> · <b>x{bet[3]:g}</b>\n'
@@ -7708,7 +7739,7 @@ async def play_tgdice(update, ctx, g, code, amount):
     else:
         status = f'{ce("❌")} <b>THUA</b> · <code>-{fmt_money(amount)}đ</code>'
 
-    res = (f'{ce(c["icon"])} <b>KẾT QUẢ {c["name"]}</b>\n'
+    res = (f'{gi(g)} <b>KẾT QUẢ {c["name"]}</b>\n'
            f'━━━━━━━━━━━━━━━━━━━━\n'
            f'{c["show"](vals)}\n')
     if bet:
@@ -7755,6 +7786,25 @@ KBB_CHOICES = {"keo": "✂️ KÉO", "bua": "🪨 BÚA", "bao": "📄 BAO"}
 KBB_BEATS = {"keo": "bao", "bua": "keo", "bao": "bua"}
 SOLO_MIN, SOLO_MAX = 2000, 1000000
 
+# game -> (khoá bảo trì, game_id dùng cho cấm game, tên). Dùng chung với ADMIN_GAMES (web admin / lệnh admin).
+EXT_GAMES = {
+    "xuctele": ("mt_xucxac_don", 2, "Xúc Xắc Tele"),
+    "baucua":  ("mt_baucua", 9, "Bầu Cua"),
+    "soloxd":  ("mt_soloxd", 20, "Solo Xúc Xắc"),
+    "solokbb": ("mt_solokbb", 21, "Solo Kéo Búa Bao"),
+}
+
+def _ext_game_block(uid, game):
+    """Trả về nội dung chặn (HTML) nếu game đang bảo trì hoặc user bị cấm game; None nếu được chơi."""
+    if uid in ADMIN_IDS:
+        return None
+    key, gid, name = EXT_GAMES[game]
+    if is_game_banned(uid, gid):
+        return f'{ce("🚫")} Bạn đã bị cấm chơi trò chơi này!'
+    if check_mt(key):
+        return f'{ce("⚙️")} Game {name} đang bảo trì!'
+    return None
+
 
 def _solo_mask_id(uid):
     value = str(int(uid))
@@ -7786,6 +7836,9 @@ async def _solo_create(update, ctx, game):
         return await msg.reply_text("Mức cược từ 2.000đ đến 1.000.000đ/người.")
     if is_banned(user.id) and user.id not in ADMIN_IDS:
         return await msg.reply_text("Tài khoản của bạn đã bị khóa.")
+    _blk = _ext_game_block(user.id, "soloxd" if game == "dice" else "solokbb")
+    if _blk:
+        return await msg.reply_text(_blk, parse_mode=ParseMode.HTML)
     if not has_bank_linked(user.id):
         return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if get_balance(user.id) < amount:
@@ -7846,6 +7899,9 @@ async def _solo_join_by_code(update, ctx, room_id, expected_game):
             return await msg.reply_text("Bạn không thể tự vào phòng của mình.")
         if is_banned(user.id) and user.id not in ADMIN_IDS:
             return await msg.reply_text("Tài khoản đã bị khóa.")
+        _blk = _ext_game_block(user.id, "soloxd" if expected_game == "dice" else "solokbb")
+        if _blk:
+            return await msg.reply_text(_blk, parse_mode=ParseMode.HTML)
         if not has_bank_linked(user.id):
             return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
         amount, owner = room["amount"], room["owner"]
@@ -8045,6 +8101,12 @@ async def _solo_callback(update, ctx, data):
             return await q.answer("Bạn không thể tự vào phòng của mình.", show_alert=True)
         if is_banned(uid) and uid not in ADMIN_IDS:
             return await q.answer("Tài khoản đã bị khóa.", show_alert=True)
+        if uid not in ADMIN_IDS:
+            _k, _gid, _nm = EXT_GAMES["soloxd" if room["game"] == "dice" else "solokbb"]
+            if is_game_banned(uid, _gid):
+                return await q.answer("Bạn đã bị cấm chơi trò chơi này!", show_alert=True)
+            if check_mt(_k):
+                return await q.answer(f"Game {_nm} đang bảo trì!", show_alert=True)
         if not has_bank_linked(uid):
             return await q.answer("Bạn cần liên kết ngân hàng trước khi chơi.", show_alert=True)
         amount, owner, game = room["amount"], room["owner"], room["game"]
@@ -8141,6 +8203,9 @@ async def xuctele_cmd(update, ctx):
     if not 5000 <= amount <= 100000:
         return await update.effective_message.reply_text("Mức cược từ 5.000đ đến 100.000đ.")
     uid = update.effective_user.id
+    _blk = _ext_game_block(uid, "xuctele")
+    if _blk:
+        return await update.effective_message.reply_text(_blk, parse_mode=ParseMode.HTML)
     if not has_bank_linked(uid):
         return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if not sub_money(uid, amount, f"Cược Xúc Xắc Tele {args[0].upper()}"):
@@ -8185,6 +8250,9 @@ async def baucua_cmd(update, ctx):
     if not 2000 <= amount <= 300000:
         return await update.effective_message.reply_text("Mức cược mỗi cửa từ 2.000đ đến 300.000đ.")
     uid, total = update.effective_user.id, amount * len(choices)
+    _blk = _ext_game_block(uid, "baucua")
+    if _blk:
+        return await update.effective_message.reply_text(_blk, parse_mode=ParseMode.HTML)
     if not has_bank_linked(uid):
         return await update.effective_message.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if not sub_money(uid, total, f"Cược Bầu Cua {','.join(choices)}"):
@@ -8358,23 +8426,23 @@ GAME_LIST_TEXT = (
     f'{ce("🎮")} <b>TRUNG TÂM TRÒ CHƠI</b> {ce("✨")}\n'
     f'━━━━━━━━━━━━━━━━━━━━\n'
     f'{ce("👑")} <b>PHÒNG VIP</b>\n'
-    f'  {ce("👑")} Tài Xỉu Room\n'
-    f'  {ce("💎")} Tài Xỉu 3D\n\n'
+    f'  {gi("room")} Tài Xỉu Room\n'
+    f'  {gi("tx3d")} Tài Xỉu 3D\n\n'
     f'{ce("🎲")} <b>XÚC XẮC &amp; BẦU CUA</b>\n'
-    f'  {ce("✈️")} Xúc Xắc Tele\n'
-    f'  {ce("🦀")} Bầu Cua\n'
-    f'  {ce("🎲")} Xúc Xắc Đôi\n'
-    f'  {ce("🆚")} Đọ Xúc Xắc\n\n'
+    f'  {gi("xuctele")} Xúc Xắc Tele\n'
+    f'  {gi("baucua")} Bầu Cua\n'
+    f'  {gi("xxd")} Xúc Xắc Đôi\n'
+    f'  {gi("pk")} Đọ Xúc Xắc\n\n'
     f'{ce("⚔️")} <b>ĐẤU SOLO</b>\n'
-    f'  {ce("⚔️")} Solo Xúc Xắc\n'
-    f'  {ce("✊")} Solo Kéo Búa Bao\n\n'
+    f'  {gi("soloxd")} Solo Xúc Xắc\n'
+    f'  {gi("solokbb")} Solo Kéo Búa Bao\n\n'
     f'{ce("🔥")} <b>GAME HOẠT ẢNH TELEGRAM</b>\n'
-    f'  {ce("🎯")} Phi Tiêu\n'
-    f'  {ce("🏀")} Bóng Rổ\n'
-    f'  {ce("⚽")} Bóng Đá\n'
-    f'  {ce("🥅")} Luân Lưu\n'
-    f'  {ce("🎳")} Bowling\n'
-    f'  {ce("🎰")} Quay Hũ\n'
+    f'  {gi("pt")} Phi Tiêu\n'
+    f'  {gi("br")} Bóng Rổ\n'
+    f'  {gi("bd")} Bóng Đá\n'
+    f'  {gi("ll")} Luân Lưu\n'
+    f'  {gi("bl")} Bowling\n'
+    f'  {gi("sl")} Quay Hũ\n'
     f'━━━━━━━━━━━━━━━━━━━━\n'
     f'{ce("💡")} Bấm vào game bên dưới để xem luật và chọn cửa cược.\n'
     f'{ce("🍀")} Chúc bạn chơi vui, may mắn!'
@@ -8389,7 +8457,7 @@ OLD_MENU_ALIAS = {
 def game_list_kb():
     rows = []
     for r in GAME_ROWS:
-        rows.append([btn(GAMES[k]["name"], GAMES[k]["icon"], callback_data=f"gm_{k}") for k in r])
+        rows.append([btn_id(GAMES[k]["name"], GAME_ICON[k][1], callback_data=f"gm_{k}") for k in r])
     return InlineKeyboardMarkup(rows)
 
 def game_choice_label(g, c):
@@ -8495,6 +8563,9 @@ async def _solo_bot_kbb_cmd(update, ctx):
         return await msg.reply_text("Số tiền không hợp lệ.")
     if not SOLO_MIN <= amount <= SOLO_MAX:
         return await msg.reply_text("Mức cược từ 2.000đ đến 1.000.000đ.")
+    _blk = _ext_game_block(uid, "solokbb")
+    if _blk:
+        return await msg.reply_text(_blk, parse_mode=ParseMode.HTML)
     if not has_bank_linked(uid):
         return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if not sub_money(uid, amount, "Cược Kéo Búa Bao với BOT"):
@@ -8522,6 +8593,9 @@ async def _solo_bot_dice_cmd(update, ctx):
         return await msg.reply_text("Số tiền không hợp lệ.")
     if not SOLO_MIN <= amount <= SOLO_MAX:
         return await msg.reply_text("Mức cược từ 2.000đ đến 1.000.000đ.")
+    _blk = _ext_game_block(uid, "soloxd")
+    if _blk:
+        return await msg.reply_text(_blk, parse_mode=ParseMode.HTML)
     if not has_bank_linked(uid):
         return await msg.reply_text(BANK_LINK_REQUIRED_MSG, parse_mode=ParseMode.HTML)
     if not sub_money(uid, amount, "Cược Solo Xúc Xắc với BOT"):
@@ -8631,7 +8705,7 @@ async def handle_game_callbacks(update: Update, ctx: ContextTypes.DEFAULT_TYPE, 
             return await q.answer("Lựa chọn không hợp lệ!", show_alert=True)
         await q.answer()
         text = (
-            f'{ce(GAMES[g]["icon"])} <b>{GAMES[g]["name"]}</b>\n\n'
+            f'{gi(g)} <b>{GAMES[g]["name"]}</b>\n\n'
             f'{ce("🎯")} Bạn chọn: <b>{html.escape(game_choice_label(g, c))}</b>\n'
             f'{ce("💰")} Số dư: <code>{fmt_money(get_balance(uid))}đ</code>\n\n'
             f'{ce("⬇️")} <b>Chọn số tiền cược:</b>'
@@ -11966,11 +12040,17 @@ async def start_webhook_server():
 ADMIN_GAMES = {
     "room": ("mt_taixiu_room", 1, "Tài Xỉu Room"),
     "tx3d": (TX3D_MT_KEY, TX3D_GAME_ID, "Tài Xỉu 3D"),
+    "xuctele": EXT_GAMES["xuctele"],
+    "baucua": EXT_GAMES["baucua"],
+    "soloxd": EXT_GAMES["soloxd"],
+    "solokbb": EXT_GAMES["solokbb"],
 }
 for _a, _c in TGDICE.items():
     ADMIN_GAMES[_a] = (_c["key"], _c["gid"], _c["name"].title())
 ADMIN_FEATURES = {"nap": ("mt_nap", "Nạp tiền"), "rut": ("mt_rut", "Rút tiền")}
 GAME_ALIAS = {"tx": "room", "taixiu": "room", "3d": "tx3d", "taixiu3d": "tx3d", "tx3d": "tx3d",
+              "xxtele": "xuctele", "xucxactele": "xuctele", "bc": "baucua", "bau": "baucua",
+              "solo": "soloxd", "xdsolo": "soloxd", "kbb": "solokbb", "keobuabao": "solokbb",
               "naptien": "nap", "ruttien": "rut"}
 for _a, _c in TGDICE.items():
     for _al in _c["aliases"]:
@@ -12044,7 +12124,7 @@ async def baotrigame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args or []
     msg = update.effective_message
     if len(args) < 2 or args[-1].lower() not in ("on", "off"):
-        return await msg.reply_text("Cú pháp: <code>/baotrigame [game...] on|off</code>\nGame: room tx3d pt br bd bl sl xxd pk ll; tính năng: nap rut; nhóm: games all\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
+        return await msg.reply_text("Cú pháp: <code>/baotrigame [game...] on|off</code>\nGame: room tx3d xuctele baucua xxd pk soloxd solokbb pt br bd ll bl sl; tính năng: nap rut; nhóm: games all\n\n" + _admin_mt_lines(), parse_mode=ParseMode.HTML)
     action = args[-1].lower()
     value = "1" if action == "on" else "0"
     keys, names, invalid = [], [], []
@@ -12123,7 +12203,7 @@ async def camgame_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         target = int(ctx.args[0]); game = _admin_norm(ctx.args[1]); gid = ADMIN_GAMES[game][1]
     except (IndexError, ValueError, KeyError):
-        return await update.effective_message.reply_text("Cú pháp: <code>/camgame ID room|tx3d|pt|br|bd|bl|sl|xxd|pk|ll</code>", parse_mode=ParseMode.HTML)
+        return await update.effective_message.reply_text("Cú pháp: <code>/camgame ID room|tx3d|xuctele|baucua|xxd|pk|soloxd|solokbb|pt|br|bd|ll|bl|sl</code>", parse_mode=ParseMode.HTML)
     query("INSERT INTO banned_games(user_id,game_id) VALUES(%s,%s) ON CONFLICT DO NOTHING", (target,gid))
     await update.effective_message.reply_text(f"Đã cấm user <code>{target}</code> chơi {html.escape(ADMIN_GAMES[game][2])}.", parse_mode=ParseMode.HTML)
 
