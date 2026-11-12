@@ -1591,10 +1591,10 @@ async def send_deposit_qr(bot, chat_id, qr_url, caption, kb, amount=0, content="
 def deposit_menu_content(uid):
     """Menu chọn mệnh giá nạp (dùng cho nút NẠP TIỀN và nút đổi mệnh giá)."""
     kb = InlineKeyboardMarkup([
-        [btn("10.000đ", "💵", "dep_10000"), btn("20.000đ", "💵", "dep_20000"), btn("30.000đ", "💵", "dep_30000")],
-        [btn("50.000đ · NẠP NHANH", "👑", "dep_50000"), btn("100.000đ", "💵", "dep_100000"), btn("200.000đ", "💵", "dep_200000")],
-        [btn("500.000đ", "💵", "dep_500000"), btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000")],
-        [btn("5.000.000đ", "💰", "dep_5000000"), btn("10.000.000đ", "💎", "dep_10000000"), btn("20.000.000đ", "💎", "dep_20000000")],
+        [btn("10.000đ", "💰", "dep_10000"), btn("20.000đ", "💰", "dep_20000"), btn("30.000đ", "💰", "dep_30000")],
+        [btn("50.000đ · NẠP NHANH", "💰", "dep_50000"), btn("100.000đ", "💰", "dep_100000"), btn("200.000đ", "💰", "dep_200000")],
+        [btn("500.000đ", "💰", "dep_500000"), btn("1.000.000đ", "💰", "dep_1000000"), btn("2.000.000đ", "💰", "dep_2000000")],
+        [btn("5.000.000đ", "💰", "dep_5000000"), btn("10.000.000đ", "💰", "dep_10000000"), btn("20.000.000đ", "💰", "dep_20000000")],
         [btn("Hỗ Trợ", "🔔", "dep_support")]
     ])
     
@@ -5502,7 +5502,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "🛒", callback_data="acc_mua_gift")],
             [btn("Nhận thưởng", "🎉", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
-            [btn("Tích lũy nạp", "💎", callback_data="acc_tich_luy")],
+            [btn("Tích lũy nạp", "💰", callback_data="acc_tich_luy")],
             [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
         ])
 
@@ -8442,7 +8442,7 @@ def _solo_entry_text(game, uid):
     """Nội dung hướng dẫn SOLO: xuống dòng chuẩn, emoji đều dùng custom emoji Premium."""
     if game == "kbb":
         return (
-            f'{ce("🎮")} <b>SOLO KÉO BÚA BAO</b> {ce("🎮")}\n'
+            f'{ce("🎮")} <b>SOLO KÉO BÚA BAO</b>\n'
             'Tạo phòng và mời người khác tham gia đấu kéo búa bao.\n\n'
             f'{ce("🎮")} <b>CHẾ ĐỘ BOT</b>: Đấu với bot, tỉ lệ thắng x1.95 (hòa hoàn tiền).\n'
             f'{ce("🎯")} Gõ <code>/kbb [số tiền]</code> để hiện 3 nút chọn Kéo, Búa hoặc Bao.\n'
