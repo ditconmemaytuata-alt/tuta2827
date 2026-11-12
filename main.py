@@ -8224,10 +8224,10 @@ AMOUNT_BUTTONS = [("1k", 1000), ("5k", 5000), ("10k", 10000), ("20k", 20000), ("
 GAMES = {
     "room": {"name": "TÀI XỈU ROOM", "icon": "👑", "rows": None},
     "tx3d": {"name": "TÀI XỈU 3D", "icon": "🎲", "rows": None},
-    "xuctele": {"name": "XÚC XẮC TELE", "icon": "🎲", "rows": None},
+    "xuctele": {"name": "XÚC XẮC TELE", "icon": "🎯", "rows": None},
     "baucua": {"name": "BẦU CUA", "icon": "🦀", "rows": None},
-    "soloxd": {"name": "SOLO XÚC XẮC", "icon": "🎲", "rows": None},
-    "solokbb": {"name": "SOLO KÉO BÚA BAO", "icon": "✊", "rows": None},
+    "soloxd": {"name": "SOLO XÚC XẮC", "icon": "🪙", "rows": None},
+    "solokbb": {"name": "SOLO KÉO BÚA BAO", "icon": "🎮", "rows": None},
 }
 for _g, _c in TGDICE.items():
     GAMES[_g] = {"name": _c["name"], "icon": _c["icon"], "rows": _tg_rows(_c)}
@@ -8439,24 +8439,36 @@ def _solo_entry_keyboard(game):
     ])
 
 def _solo_entry_text(game, uid):
+    """Nội dung hướng dẫn SOLO: xuống dòng chuẩn, emoji đều dùng custom emoji Premium."""
     if game == "kbb":
         return (
-            f'{ce("✊")} <b>SOLO KÉO BÚA BAO</b>\\n\\n'
-            f'{ce("🤖")} <b>CHƠI NHANH VỚI BOT</b>\\n'
-            'Nhập <code>/kbb [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
-            'Bot sẽ hiện 3 nút để bạn chọn ✂️ Kéo, 🪨 Búa hoặc 📄 Bao.\\n\\n'
-            f'{ce("🟩")} <b>TẠO PHÒNG SOLO</b>\\n'
-            'Nhập <code>/solokbb [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
-            'Sau khi tạo, bot gửi mã phòng để mời người khác tham gia.'
+            f'{ce("🎮")} <b>SOLO KÉO BÚA BAO</b> {ce("🎮")}\n'
+            'Tạo phòng và mời người khác tham gia đấu kéo búa bao.\n\n'
+            f'{ce("🎮")} <b>CHẾ ĐỘ BOT</b>: Đấu với bot, tỉ lệ thắng x1.95 (hòa hoàn tiền).\n'
+            f'{ce("🎯")} Gõ <code>/kbb [số tiền]</code> để hiện 3 nút chọn Kéo, Búa hoặc Bao.\n'
+            'Ví dụ: <code>/kbb 20000</code>\n\n'
+            f'{ce("💰")} <b>MỨC CƯỢC</b>\n'
+            f'{ce("📌")} Min: <b>2.000đ</b>\n'
+            f'{ce("📌")} Max: <b>1.000.000đ</b>\n'
+            f'{ce("🏆")} Tỉ lệ trả thưởng SOLO: <b>x1.95</b>\n\n'
+            f'{ce("📜")} <b>CÁCH CHƠI SOLO</b>\n'
+            '<code>/solokbb 20000</code> — tạo phòng\n'
+            '<code>/solokbb [mã phòng]</code> — vào phòng\n'
+            '<code>/huykbb [mã phòng]</code> — hủy phòng\n\n'
+            f'{ce("👥")} Tạo phòng xong, bot gửi mã phòng để bạn mời người khác tham gia.'
         )
     return (
-        f'{ce("🎲")} <b>SOLO XÚC XẮC</b>\\n\\n'
-        f'{ce("🤖")} <b>CHƠI NHANH VỚI BOT</b>\\n'
-        'Nhập <code>/xucxacbot [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
-        'Bot tung xúc xắc, so điểm với bạn; điểm cao hơn thắng. Hòa hoàn tiền.\\n\\n'
-        f'{ce("🟩")} <b>TẠO PHÒNG SOLO</b>\\n'
-        'Nhập <code>/solo [số tiền]</code> từ 2.000 đến 1.000.000.\\n'
-        'Sau khi tạo, bot gửi mã phòng để mời người khác tham gia.'
+        f'{ce("🎲")} <b>SOLO XÚC XẮC</b> {ce("🎲")}\n'
+        'Tạo phòng và mời người khác tham gia đấu xúc xắc.\n\n'
+        f'{ce("💰")} <b>MỨC CƯỢC</b>\n'
+        f'{ce("📌")} Min: <b>2.000đ</b>\n'
+        f'{ce("📌")} Max: <b>1.000.000đ</b>\n'
+        f'{ce("🏆")} Tỉ lệ trả thưởng: <b>x1.95</b>\n\n'
+        f'{ce("📜")} <b>CÁCH CHƠI</b>\n'
+        '<code>solo 5000</code> — tạo phòng\n'
+        '<code>/solo [mã phòng]</code> — vào phòng\n'
+        '<code>/huy [mã phòng]</code> — hủy phòng\n\n'
+        f'{ce("👥")} Tạo phòng xong, bot gửi mã phòng để bạn mời người khác tham gia.'
     )
 
 async def _solo_bot_kbb_cmd(update, ctx):
