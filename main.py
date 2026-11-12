@@ -281,9 +281,10 @@ import telegram as _tg
 ICON_ALIAS.update({
     "📅": "🗓", "🎟": "🎁", "🏁": "🚩", "📦": "🛍", "⏸️": "⌛", "⏸": "⌛",
     "🧰": "🛠", "🔎": "🔭", "📋": "🧾", "📄": "📜", "📝": "✏️", "🤖": "💻",
-    "🛑": "⛔️", "🎃": "🎉", "⚔️": "🔥", "⚔": "🔥", "⚫️": "🔒", "⚪️": "🏳️",
-    "🏀": "🏅", "⚽": "🏆", "🎳": "🔮",
+    "🛑": "⛔️", "🎃": "🎉", "⚫️": "🔒", "⚪️": "🏳️",
 })
+# Emoji thể thao / game (🏀 ⚽ 🎳 ⚔️ 🥅 🆚 ✊) giữ nguyên bản gốc, KHÔNG đổi sang emoji premium sai nghĩa
+# (trước đây 🏀=huy chương, ⚽=cúp, 🎳=cầu pha lê, ⚔️=lửa nên danh sách game nhìn rất lạ).
 
 def _norm_emoji(s: str) -> str:
     return s.replace("\ufe0f", "")
@@ -1750,15 +1751,15 @@ def get_tich_luy_text(uid):
             next_moc = m
 
     if not next_moc and reached_mocs:
-        current_moc_text = f"Mốc {reached_mocs[-1]['moc']} (Tối đa)"
+        current_moc_text = f"{ce('✅')} Mốc {reached_mocs[-1]['moc']} (Tối đa)"
         thieu_nap = 0
         thieu_cuoc = 0
     elif next_moc:
-        current_moc_text = f"Chưa đạt" if not reached_mocs else f"Đã đạt mốc {reached_mocs[-1]['moc']}"
+        current_moc_text = f"{ce('❌')} Chưa đạt" if not reached_mocs else f"{ce('✅')} Đã đạt mốc {reached_mocs[-1]['moc']}"
         thieu_nap = max(0, next_moc["nap"] - dep_today)
         thieu_cuoc = max(0, next_moc["cuoc"] - bet_today)
     else:
-        current_moc_text = "Chưa đạt"
+        current_moc_text = f"{ce('❌')} Chưa đạt"
         thieu_nap = MILESTONES[0]["nap"] - dep_today
         thieu_cuoc = MILESTONES[0]["cuoc"] - bet_today
 
@@ -1802,8 +1803,8 @@ def get_tich_luy_text(uid):
 
     msg += (
         f'🏷 Trạng thái giftcode mốc hôm nay:\n'
-        f'• Đã sử dụng: {", ".join(da_dung) if da_dung else "Chưa có"}\n'
-        f'• Chưa sử dụng: {", ".join(chua_dung) if chua_dung else "Chưa có"}\n\n'
+        f'{ce("✅")} Đã sử dụng: {", ".join(da_dung) if da_dung else "Chưa có"}\n'
+        f'{ce("❌")} Chưa sử dụng: {", ".join(chua_dung) if chua_dung else "Chưa có"}\n\n'
         f'🎁 <b>Code chưa sử dụng:</b>\n'
         f'• {chr(10).join(chua_dung) if chua_dung else "Chưa có code khả dụng."}\n\n'
         f'💡 Khi đạt mốc mới, bot sẽ tự động gửi code. Bấm 🔄 Làm mới để cập nhật giao diện.'
@@ -1931,7 +1932,7 @@ def vip_reward_screen(uid):
             status = f'{ce("🎉")} <b>CÓ THỂ NHẬN</b>'
             claimable.append(level)
         else:
-            status = f'{ce("🔒")} Còn <b>{fmt_money(threshold - points)}</b> điểm'
+            status = f'{ce("❌")} Còn <b>{fmt_money(threshold - points)}</b> điểm'
 
         lines.append(
             f'{ce("🏅")} <b>VIP {level}</b>  ·  Thưởng: <b>{fmt_money(reward)}đ</b>\n'
@@ -5395,7 +5396,7 @@ async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         msg = f'{title_icon} <b>LỊCH SỬ CHI TIẾT:</b>\n'
         msg += f'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
         for d in data:
-            icon = ce("✔️") if d[0] > 0 else ce("❌")
+            icon = ce("✅") if d[0] > 0 else ce("❌")
             msg += f'{icon} <code>{fmt_money(abs(d[0]))}đ</code> | {html.escape(d[1])}\n'
             msg += f'     <i>{clock_icon} {d[2]}</i>\n'
         msg += f'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
@@ -7533,7 +7534,7 @@ TGDICE = {
         "dice": "🏀", "n": 1, "wait": 4.2, "aliases": ("bongro", "basket"),
         "intro": "Telegram ném 1 quả bóng rổ: <b>điểm 4–5 = vào rổ</b>, điểm 3 = kẹt vành, điểm 1–2 = trượt.",
         "bets": [
-            ("VÀO RỔ", "vao", "🔥", 2.35, "điểm 4–5", lambda v: v[0] in (4, 5)),
+            ("VÀO RỔ", "vao", "✅", 2.35, "điểm 4–5", lambda v: v[0] in (4, 5)),
             ("TRƯỢT", "truot", "❌", 2.35, "điểm 1–2", lambda v: v[0] in (1, 2)),
             ("KẸT VÀNH", "ket", "🍀", 4.7, "điểm 3", lambda v: v[0] == 3),
         ],
@@ -7544,7 +7545,7 @@ TGDICE = {
         "dice": "⚽", "n": 1, "wait": 4.2, "aliases": ("bongda", "football"),
         "intro": "Telegram sút 1 quả bóng: <b>điểm 3–5 = VÀO LƯỚI</b>, điểm 1–2 = trượt.",
         "bets": [
-            ("VÀO LƯỚI", "vao", "🏆", 1.55, "điểm 3–5", lambda v: v[0] >= 3),
+            ("VÀO LƯỚI", "vao", "✅", 1.55, "điểm 3–5", lambda v: v[0] >= 3),
             ("TRƯỢT", "truot", "❌", 2.3, "điểm 1–2", lambda v: v[0] <= 2),
         ],
         "show": lambda v: f'{ce("⚽")} Điểm bóng đá: <b>{v[0]}</b> · <b>' + ("VÀO LƯỚI" if v[0] >= 3 else "TRƯỢT") + '</b>',
@@ -7585,7 +7586,7 @@ TGDICE = {
         "show": lambda v: f'{ce("🎲")} Xúc xắc: <b>{v[0]}</b> + <b>{v[1]}</b> = <b>{sum(v)}</b>',
     },
     "pk": {
-        "key": "mt_dopk", "gid": 18, "name": "ĐỌ XÚC XẮC", "note": "Đọ Xúc Xắc", "icon": "⚔️",
+        "key": "mt_dopk", "gid": 18, "name": "ĐỌ XÚC XẮC", "note": "Đọ Xúc Xắc", "icon": "🆚",
         "dice": "🎲", "n": 2, "wait": 3.8, "aliases": ("dopk", "pk"),
         "intro": "Bạn và <b>NHÀ CÁI</b> mỗi bên tung 1 viên xúc xắc — <b>điểm cao hơn thắng</b>!",
         "bets": None,
@@ -7594,10 +7595,10 @@ TGDICE = {
             f'• {ce("⚖️")} <b>Hòa điểm</b> — hoàn tiền cược',
             f'• {ce("🎲")} Viên xúc xắc <b>trên</b> là của bạn, viên <b>dưới</b> là của nhà cái.',
         ],
-        "show": lambda v: f'{ce("🎲")} BẠN: <b>{v[0]}</b>  {ce("⚔️")}  NHÀ CÁI: <b>{v[1]}</b>',
+        "show": lambda v: f'{ce("🎲")} BẠN: <b>{v[0]}</b>  {ce("🆚")}  NHÀ CÁI: <b>{v[1]}</b>',
     },
     "ll": {
-        "key": "mt_luanluu", "gid": 19, "name": "LUÂN LƯU", "note": "Luân Lưu", "icon": "⚽",
+        "key": "mt_luanluu", "gid": 19, "name": "LUÂN LƯU", "note": "Luân Lưu", "icon": "🥅",
         "dice": "⚽", "n": 3, "wait": 4.4, "aliases": ("luanluu", "penalty"),
         "intro": "Sút <b>3 quả luân lưu</b> liên tiếp — đoán xem bạn ghi được mấy bàn (mỗi quả điểm 3–5 là vào).",
         "bets": [
@@ -8223,17 +8224,17 @@ AMOUNT_BUTTONS = [("1k", 1000), ("5k", 5000), ("10k", 10000), ("20k", 20000), ("
 
 GAMES = {
     "room": {"name": "TÀI XỈU ROOM", "icon": "👑", "rows": None},
-    "tx3d": {"name": "TÀI XỈU 3D", "icon": "🎲", "rows": None},
-    "xuctele": {"name": "XÚC XẮC TELE", "icon": "🎯", "rows": None},
+    "tx3d": {"name": "TÀI XỈU 3D", "icon": "💎", "rows": None},
+    "xuctele": {"name": "XÚC XẮC TELE", "icon": "✈️", "rows": None},
     "baucua": {"name": "BẦU CUA", "icon": "🦀", "rows": None},
-    "soloxd": {"name": "SOLO XÚC XẮC", "icon": "🪙", "rows": None},
-    "solokbb": {"name": "SOLO KÉO BÚA BAO", "icon": "🎮", "rows": None},
+    "soloxd": {"name": "SOLO XÚC XẮC", "icon": "⚔️", "rows": None},
+    "solokbb": {"name": "SOLO KÉO BÚA BAO", "icon": "✊", "rows": None},
 }
 for _g, _c in TGDICE.items():
     GAMES[_g] = {"name": _c["name"], "icon": _c["icon"], "rows": _tg_rows(_c)}
 
 # Bố cục 2 cột: Tài Xỉu Room + Tài Xỉu 3D ở hàng đầu, sau đó là các game hoạt ảnh Telegram.
-GAME_ROWS = [["room", "tx3d"], ["xuctele", "baucua"], ["soloxd", "solokbb"], ["pt", "br"], ["bd", "bl"], ["sl", "xxd"], ["pk", "ll"]]
+GAME_ROWS = [["room", "tx3d"], ["xuctele", "baucua"], ["xxd", "pk"], ["soloxd", "solokbb"], ["pt", "br"], ["bd", "ll"], ["bl", "sl"]]
 
 GAME_RULES = {
     "room": (
@@ -8357,13 +8358,25 @@ GAME_LIST_TEXT = (
     f'{ce("🎮")} <b>TRUNG TÂM TRÒ CHƠI</b> {ce("✨")}\n'
     f'━━━━━━━━━━━━━━━━━━━━\n'
     f'{ce("👑")} <b>PHÒNG VIP</b>\n'
-    f'{ce("🎲")} Tài Xỉu Room · Tài Xỉu 3D\n\n'
+    f'  {ce("👑")} Tài Xỉu Room\n'
+    f'  {ce("💎")} Tài Xỉu 3D\n\n'
+    f'{ce("🎲")} <b>XÚC XẮC &amp; BẦU CUA</b>\n'
+    f'  {ce("✈️")} Xúc Xắc Tele\n'
+    f'  {ce("🦀")} Bầu Cua\n'
+    f'  {ce("🎲")} Xúc Xắc Đôi\n'
+    f'  {ce("🆚")} Đọ Xúc Xắc\n\n'
+    f'{ce("⚔️")} <b>ĐẤU SOLO</b>\n'
+    f'  {ce("⚔️")} Solo Xúc Xắc\n'
+    f'  {ce("✊")} Solo Kéo Búa Bao\n\n'
     f'{ce("🔥")} <b>GAME HOẠT ẢNH TELEGRAM</b>\n'
-    f'{ce("🎯")} Phi Tiêu · {ce("🏀")} Bóng Rổ · {ce("⚽")} Bóng Đá\n'
-    f'{ce("🎳")} Bowling · {ce("🎰")} Quay Hũ · {ce("🎲")} Xúc Xắc Đôi\n'
-    f'{ce("⚔️")} Đọ Xúc Xắc · {ce("⚽")} Luân Lưu\n'
+    f'  {ce("🎯")} Phi Tiêu\n'
+    f'  {ce("🏀")} Bóng Rổ\n'
+    f'  {ce("⚽")} Bóng Đá\n'
+    f'  {ce("🥅")} Luân Lưu\n'
+    f'  {ce("🎳")} Bowling\n'
+    f'  {ce("🎰")} Quay Hũ\n'
     f'━━━━━━━━━━━━━━━━━━━━\n'
-    f'{ce("💡")} Bấm vào game để xem luật và chọn cửa cược.\n'
+    f'{ce("💡")} Bấm vào game bên dưới để xem luật và chọn cửa cược.\n'
     f'{ce("🍀")} Chúc bạn chơi vui, may mắn!'
 )
 
@@ -8705,7 +8718,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = f'{ce("📥")} <b>10 GIAO DỊCH NẠP GẦN NHẤT:</b>\n\n'
         if not data: text += "Trống."
         else:
-            for row in data: text += f'{ce("✔️")} <code>+{fmt_money(row[0])}đ</code> | <i>{row[1]}</i>\n'
+            for row in data: text += f'{ce("✅")} <code>+{fmt_money(row[0])}đ</code> | <i>{row[1]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
 
     if d == "acc_ls_rut":
@@ -8715,7 +8728,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = ce("✔️") if row[1] == "success" else ce("❌") if row[1] == "rejected" else ce("⏰")
+                status_icon = ce("✅") if row[1] == "success" else ce("❌") if row[1] == "rejected" else ce("⏰")
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | {row[1]} | <i>{row[2]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -8951,7 +8964,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = f'{ce("📥")} <b>10 GIAO DỊCH NẠP GẦN NHẤT:</b>\n\n'
         if not data: text += "Trống."
         else:
-            for row in data: text += f'{ce("✔️")} <code>+{fmt_money(row[0])}đ</code> | <i>{row[1]}</i>\n'
+            for row in data: text += f'{ce("✅")} <code>+{fmt_money(row[0])}đ</code> | <i>{row[1]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
     if d == "his_withdraw":
@@ -8961,7 +8974,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = ce("✔️") if row[1] == "success" else ce("❌") if row[1] == "rejected" else ce("⏰")
+                status_icon = ce("✅") if row[1] == "success" else ce("❌") if row[1] == "rejected" else ce("⏰")
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | {row[1]} | <i>{row[2]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
@@ -12288,7 +12301,7 @@ async def topsodu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
 def _interaction_reward_table(count, claimed):
-    """Bảng mốc thưởng tin nhắn: ✅ đã đạt, 🔒 chưa đạt."""
+    """Bảng mốc thưởng tin nhắn: ✅ đã đạt, ❌ chưa đạt."""
     rows = []
     for m, reward in INTERACTION_MILESTONES:
         if count >= m:
@@ -12298,7 +12311,7 @@ def _interaction_reward_table(count, claimed):
                 tag = "đã nhận code" if m in claimed else "đạt mốc, gõ /checktt để nhận"
             rows.append(f"✅ <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>{tag}</i>")
         else:
-            rows.append(f"🔒 <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>còn {fmt_money(m-count)} tin</i>")
+            rows.append(f"❌ <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>còn {fmt_money(m-count)} tin</i>")
     return "\n".join(rows)
 
 def _interaction_top_prize_table():
@@ -13242,7 +13255,7 @@ async def _rp_render_card(bot, uid):
         "━━━━━━━━━━━━━━━━━━━━",
         f'{ce("🏦")} Ngân hàng: <code>{html.escape(str(p["bank"] or "Chưa liên kết"))}</code>',
         f'{ce("💳")} STK: <code>{html.escape(str(p["stk"] or "—"))}</code> · {html.escape(str(p["name"] or "—"))}',
-        f'{ce("🔗")} Liên kết: {"Đã liên kết" if p["bank_linked"] else "Chưa liên kết"}',
+        f'{ce("✅" if p["bank_linked"] else "❌")} Liên kết: {"Đã liên kết" if p["bank_linked"] else "Chưa liên kết"}',
         f'{ce("👥")} Đã mời: <b>{p["refs"]}</b> · {"Được mời bởi người khác" if p["refed"] else "Tự đăng ký"}',
         f'{ce("🎟")} Code đã nhập: <b>{p["codes_used"]}</b> · Giftcode đã dùng: <b>{p["gifts_used"]}</b>',
         f'{ce("🗓")} Check-in cuối: <code>{html.escape(str(p["last_checkin"] or "—"))}</code>',
@@ -13330,7 +13343,7 @@ def _rp_line(kind, row):
                 f'    {ce("⏱")} <i>{e(str(t))}</i>')
     # mua / gift
     t, code, creator, used_by, rw, wager, status, exp, ctype = row
-    icon = {"Đã dùng": "✅", "Hết hạn": "⌛", "Chưa dùng": "🎁"}.get(status, "🎁")
+    icon = {"Đã dùng": "✅", "Hết hạn": "❌", "Chưa dùng": "🎁"}.get(status, "🎁")
     return (f'{ce(icon)} <code>{e(str(code))}</code> · <b>{_rp_money(rw)}đ</b> · {e(wager)} · {e(status)}\n'
             f'    {ce("⏱")} <i>{e(str(t))}</i> · {e(str(ctype))}')
 
