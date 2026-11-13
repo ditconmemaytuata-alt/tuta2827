@@ -10055,8 +10055,12 @@ def _aw_room_bets_sync(session_id=None, uid=None, limit=250):
         user_id BIGINT NOT NULL, username TEXT DEFAULT '', full_name TEXT DEFAULT '',
         choice TEXT NOT NULL, amount BIGINT NOT NULL, anonymous BOOLEAN DEFAULT FALSE,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        result TEXT DEFAULT '', win_amount BIGINT DEFAULT 0,
         UNIQUE(group_id, session_id, user_id, choice)
     )""")
+    # Nâng cấp bảng cũ nếu đã được tạo từ phiên bản trước.
+    query("ALTER TABLE room_bet_audit ADD COLUMN IF NOT EXISTS result TEXT DEFAULT ''")
+    query("ALTER TABLE room_bet_audit ADD COLUMN IF NOT EXISTS win_amount BIGINT DEFAULT 0")
     cond, args = [], []
     if session_id is not None:
         cond.append("session_id=%s"); args.append(int(session_id))
@@ -10064,7 +10068,7 @@ def _aw_room_bets_sync(session_id=None, uid=None, limit=250):
         cond.append("user_id=%s"); args.append(int(uid))
     where = (" WHERE " + " AND ".join(cond)) if cond else ""
     rows = query("""SELECT group_id,session_id,user_id,username,full_name,choice,amount,
-                           anonymous,created_at,updated_at
+                           anonymous,created_at,updated_at,result,win_amount
                     FROM room_bet_audit""" + where + " ORDER BY session_id DESC, id DESC LIMIT %s",
                   tuple(args+[int(limit)])) or []
     return [{"group_id":int(r[0]),"session_id":int(r[1]),"user_id":int(r[2]),
