@@ -3714,6 +3714,34 @@ def choices_conflict(c1, c2):
     if "le" in p1 and "chan" in p2: return True
     return False
 
+
+def _room_bet_record(group_id, game, user_id, choice, amount, username="", anonymous=False):
+    """Lưu dấu vết từng cửa cược để web-admin tra cứu cả sau khi bot restart."""
+    try:
+        query("""CREATE TABLE IF NOT EXISTS room_bet_audit (
+            id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL, session_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL, username TEXT DEFAULT '', full_name TEXT DEFAULT '',
+            choice TEXT NOT NULL, amount BIGINT NOT NULL, anonymous BOOLEAN DEFAULT FALSE,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(group_id, session_id, user_id, choice)
+        )""")
+        rows = query("SELECT name FROM users WHERE user_id=%s", (int(user_id),)) or []
+        full_name = str(rows[0][0] or "") if rows else ""
+        now = get_vietnam_datetime_db()
+        query("""INSERT INTO room_bet_audit
+            (group_id,session_id,user_id,username,full_name,choice,amount,anonymous,created_at,updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (group_id,session_id,user_id,choice) DO UPDATE SET
+              amount=room_bet_audit.amount+EXCLUDED.amount,
+              username=CASE WHEN EXCLUDED.username<>'' THEN EXCLUDED.username ELSE room_bet_audit.username END,
+              full_name=CASE WHEN EXCLUDED.full_name<>'' THEN EXCLUDED.full_name ELSE room_bet_audit.full_name END,
+              anonymous=room_bet_audit.anonymous OR EXCLUDED.anonymous,
+              updated_at=EXCLUDED.updated_at""",
+            (int(group_id), int(game.get("session_id",0)), int(user_id), str(username or ""),
+             full_name, str(choice), int(amount), bool(anonymous), now, now))
+    except Exception as e:
+        print(f"[room-audit] Không lưu được cược: {e}")
+
 async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""):
     if check_mt('mt_taixiu_room') and user_id not in ADMIN_IDS:
         return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
@@ -3760,6 +3788,7 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
             "anonymous": False
         }
 
+    _room_bet_record(group_id, game, user_id, choice, amount, username, False)
     new_balance = get_balance(user_id)
 
     choice_display_map = {
@@ -3832,6 +3861,7 @@ async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
             "anonymous": True
         }
 
+    _room_bet_record(group_id, game, user_id, choice, amount, "Ẩn Danh", True)
     new_balance = get_balance(user_id)
     session_id = game.get("session_id", 0)
 
@@ -9658,10 +9688,10 @@ async function api(path,opt){
   var j;try{j=await r.json();}catch(e){throw new Error('Máy chủ lỗi ('+r.status+'), xem log Railway');}if(j.err){throw new Error(j.err);}return j;
 }
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
-var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin'],['fan','Duyệt Fan']];
+var tabs=[['stats','Tổng quan'],['room','Room'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin'],['fan','Duyệt Fan']];
 var cur='stats',view=document.getElementById('view'),isOwner=false,allowed={};
 function nav(){var n=document.getElementById('nav');n.innerHTML='';tabs.filter(function(t){return t[0]==='admins'?isOwner:(isOwner||allowed[t[0]]);}).forEach(function(t){var b=document.createElement('button');b.textContent=t[1];if(t[0]===cur)b.className='on';b.onclick=function(){cur=t[0];nav();load();};n.appendChild(b);});}
-function load(){view.innerHTML='<p class="mut">Đang tải…</p>';var pages={stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog,admins:vAdmins,fan:vFan};var fn=pages[cur];if(!fn){view.innerHTML='<p class="err">Mục này chưa được cấu hình.</p>';return;}fn().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
+function load(){if(cur!=='room'&&vRoom.timer){clearInterval(vRoom.timer);vRoom.timer=null;}view.innerHTML='<p class="mut">Đang tải…</p>';var pages={stats:vStats2,room:vRoom,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog,admins:vAdmins,fan:vFan};var fn=pages[cur];if(!fn){view.innerHTML='<p class="err">Mục này chưa được cấu hình.</p>';return;}fn().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
 
 
 async function vFan(){
@@ -9682,6 +9712,32 @@ async function vFan(){
     try{var x=await post('fan',{id:Number(b.dataset.id),action:b.dataset.fan});toast(x.msg||'Đã xử lý');vFan();}
     catch(e){toast(e.message);}
   };});
+}
+
+
+async function vRoom(){
+  var h='<h2>🎯 Theo dõi Room</h2><p class="mut">Theo dõi cược đang mở theo thời gian thực và tra cứu lịch sử theo số phiên hoặc ID người dùng. ID đầy đủ chỉ hiển thị trong khu vực quản trị.</p>'
+    +'<div class="inl"><input id="rs" placeholder="Số phiên cũ (để trống = tất cả)"><input id="ru" placeholder="ID người chơi (không bắt buộc)"><button class="btn" id="rfind">Tìm phiên</button><button class="btn gray" id="rrefresh">Làm mới</button></div>'
+    +'<div id="rlive"></div><h3>📚 Lịch sử cược</h3><div id="rhistory"></div>';
+  view.innerHTML=h;
+  async function run(){
+    var sid=document.getElementById('rs').value.trim(),uid=document.getElementById('ru').value.trim();
+    var d=await api('room-bets?session='+encodeURIComponent(sid)+'&uid='+encodeURIComponent(uid));
+    var live=d.live||[],rows=d.rows||[];
+    document.getElementById('rlive').innerHTML='<h3>🟢 Phiên đang chạy</h3>'+(live.length?live.map(function(g){
+      return '<div class="item"><div class="row"><b>Room '+esc(g.group_id)+' · Phiên #'+esc(g.session_id)+'</b><span class="tag success">'+esc(g.status)+'</span></div>'
+       +(g.bets.length?g.bets.map(function(b){return '<div class="row" style="margin-top:6px"><span><b>'+esc(b.full_name||b.username||'Người chơi')+'</b> · ID <code>'+esc(b.user_id)+'</code> '+(b.anonymous?'· Đặt ẩn danh':'')+'</span><span>'+esc(b.choice.toUpperCase())+' · <b>'+money(b.amount)+'</b></span></div>';}).join(''):'<p class="mut">Chưa có cược.</p>')+'</div>';
+    }).join(''):'<p class="mut">Hiện không có phiên cược đang mở.</p>');
+    document.getElementById('rhistory').innerHTML=rows.length?'<div class="item"><div class="mut">Hiển thị '+rows.length+' bản ghi gần nhất.</div>'+rows.map(function(b){
+      return '<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span><b>Phiên #'+esc(b.session_id)+'</b> · Room '+esc(b.group_id)+'<br>'+esc(b.full_name||b.username||'Người chơi')+' · ID <code>'+esc(b.user_id)+'</code> '+(b.anonymous?'· Ẩn danh':'')+'<br><span class="mut">'+esc(b.created_at)+' · cập nhật '+esc(b.updated_at)+'</span></span><span><b>'+esc(b.choice.toUpperCase())+'</b><br>'+money(b.amount)+'</span></div>';
+    }).join('')+'</div>':'<p class="mut">Không có dữ liệu phù hợp. Các phiên trước khi bật tính năng lưu sẽ không có lịch sử chi tiết.</p>';
+  }
+  document.getElementById('rfind').onclick=function(){run().catch(function(e){toast(e.message);});};
+  document.getElementById('rrefresh').onclick=function(){run().catch(function(e){toast(e.message);});};
+  document.getElementById('rs').onkeydown=document.getElementById('ru').onkeydown=function(e){if(e.key==='Enter')run().catch(function(x){toast(x.message);});};
+  await run();
+  if(vRoom.timer)clearInterval(vRoom.timer);
+  vRoom.timer=setInterval(function(){if(cur==='room')run().catch(function(){});},5000);
 }
 
 async function vStats(){
@@ -9783,7 +9839,7 @@ async function vUser(){
   run();
 }
 
-var secs=[['his','Lịch sử số dư'],['nap','Nạp tiền'],['rut','Rút tiền'],['cuoc','Cược / thắng'],['code','Code đã nhập'],['mua','Giftcode đã mua'],['gift','Giftcode nhận / dùng']];
+var secs=[['room','Cược Room'],['his','Lịch sử số dư'],['nap','Nạp tiền'],['rut','Rút tiền'],['cuoc','Cược / thắng'],['code','Code đã nhập'],['mua','Giftcode đã mua'],['gift','Giftcode nhận / dùng']];
 async function openUser(id){
   curUser=id;view.innerHTML='<p class="mut">Đang tải…</p>';
   var d=await api('user/'+encodeURIComponent(id)+'/full');var p=d.p;
@@ -9950,6 +10006,57 @@ async def aw_login_post(request):
     raise resp
 
 
+
+def _aw_room_bets_sync(session_id=None, uid=None, limit=250):
+    query("""CREATE TABLE IF NOT EXISTS room_bet_audit (
+        id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL, session_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL, username TEXT DEFAULT '', full_name TEXT DEFAULT '',
+        choice TEXT NOT NULL, amount BIGINT NOT NULL, anonymous BOOLEAN DEFAULT FALSE,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(group_id, session_id, user_id, choice)
+    )""")
+    cond, args = [], []
+    if session_id is not None:
+        cond.append("session_id=%s"); args.append(int(session_id))
+    if uid is not None:
+        cond.append("user_id=%s"); args.append(int(uid))
+    where = (" WHERE " + " AND ".join(cond)) if cond else ""
+    rows = query("""SELECT group_id,session_id,user_id,username,full_name,choice,amount,
+                           anonymous,created_at,updated_at
+                    FROM room_bet_audit""" + where + " ORDER BY session_id DESC, id DESC LIMIT %s",
+                  tuple(args+[int(limit)])) or []
+    return [{"group_id":int(r[0]),"session_id":int(r[1]),"user_id":int(r[2]),
+             "username":r[3] or "","full_name":r[4] or "","choice":r[5],
+             "amount":int(r[6] or 0),"anonymous":bool(r[7]),
+             "created_at":r[8] or "","updated_at":r[9] or ""} for r in rows]
+
+def _aw_room_live_sync():
+    out=[]
+    for gid, game in list(group_games.items()):
+        if not game: continue
+        bets=[]
+        for b in list((game.get("bets") or {}).values()):
+            uid=int(b.get("user_id",0))
+            rows=query("SELECT name FROM users WHERE user_id=%s",(uid,)) or []
+            bets.append({"user_id":uid,"username":b.get("username") or "",
+                         "full_name":str(rows[0][0] or "") if rows else "",
+                         "choice":b.get("choice",""),"amount":int(b.get("amount",0) or 0),
+                         "anonymous":bool(b.get("anonymous",False))})
+        out.append({"group_id":int(gid),"session_id":int(game.get("session_id",0)),
+                    "status":str(game.get("status","")),"bets":bets})
+    return out
+
+async def aw_api_room_bets(request):
+    await asyncio.to_thread(_aw_auth, request)
+    sid=request.query.get("session","").strip()
+    uid_s=request.query.get("uid","").strip()
+    if sid and not sid.isdigit(): return _aw_json({"err":"Số phiên không hợp lệ"},400)
+    if uid_s and not uid_s.isdigit(): return _aw_json({"err":"ID người dùng không hợp lệ"},400)
+    live=await asyncio.to_thread(_aw_room_live_sync)
+    rows=await asyncio.to_thread(_aw_room_bets_sync,int(sid) if sid else None,
+                                 int(uid_s) if uid_s else None,300)
+    return _aw_json({"live":live,"rows":rows})
+
 async def aw_home(request):
     tok, s = _aw_session(request)
     if not s:
@@ -9981,7 +10088,8 @@ def _aw_auth(request, need_csrf=False):
                    "exp" if "/export/" in path else
                    "reset" if "/reset/" in path else
                    "log" if "/log" in path else
-                   "admins" if "/admins" in path else None)
+                   "admins" if "/admins" in path else
+                   "room" if "/room-bets" in path else None)
         if feature and not s.get("permissions", {}).get(feature, False):
             raise web.HTTPForbidden(text='{"err":"Tài khoản này không được cấp quyền sử dụng mục này"}', content_type="application/json")
     return tok, s
@@ -10438,10 +10546,14 @@ async def aw_api_user_full(request):
     return _aw_json({"user_id": uid, "p": p})
 
 
-_AW_SECTIONS = {"his", "nap", "rut", "cuoc", "code", "mua", "gift"}
+_AW_SECTIONS = {"his", "nap", "rut", "cuoc", "code", "mua", "gift", "room"}
 
 
 def _aw_user_section_sync(uid, kind):
+    if kind == "room":
+        rows = _aw_room_bets_sync(None, uid, 300)
+        return {"headers":["Phiên","Room","Cửa cược","Số tiền","Ẩn danh","Thời gian"],"money_cols":[3],"status_col":None,
+                "total":len(rows),"rows":[[r["session_id"],r["group_id"],r["choice"].upper(),r["amount"],"Có" if r["anonymous"] else "Không",r["created_at"]] for r in rows],"extra":{}}
     d = _rp_collect(kind, uid, None, None)
     rows = d.get("rows", [])
     total = len(rows)
@@ -10687,6 +10799,7 @@ def admin_web_register_routes(app):
     app.router.add_get("/admin/api/me", aw_api_me)
     app.router.add_post("/admin/api/logout", aw_api_logout)
     app.router.add_get("/admin/api/stats", aw_api_stats)
+    app.router.add_get("/admin/api/room-bets", aw_api_room_bets)
     app.router.add_route("*", "/admin/api/fan", aw_api_fan)
     app.router.add_get("/admin/api/withdraws", aw_api_withdraws)
     app.router.add_get("/admin/api/wqr/{wid}", aw_api_wqr)
