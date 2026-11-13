@@ -3499,6 +3499,12 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                         is_win = True; multiplier = 150
 
                 user_round_results.setdefault(uid, []).append(bool(is_win))
+                try:
+                    query("UPDATE room_bet_audit SET result=%s, win_amount=%s WHERE group_id=%s AND session_id=%s AND user_id=%s AND choice=%s",
+                          ("win" if is_win else "lose", int(amt * multiplier) if is_win else 0,
+                           int(group_id), int(session_id), int(uid), str(choice)))
+                except Exception as _room_result_error:
+                    print(f"[room-audit] Không cập nhật được kết quả cược: {_room_result_error}")
                 if is_win:
                     win_amt = int(amt * multiplier)
                     add_money(uid, win_amt, f"Thắng Tài Xỉu Room {choice.upper()}")
@@ -3664,6 +3670,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                                                disable_notification=True)
                 except Exception as _pin_error:
                     print(f"[jackpot] Không gửi/ghim được tin nổ hũ ở nhóm {chat_id}: {_pin_error}")
+            _room_session_settle(group_id, game_state, dice_str, total, result_text, total_win)
             # Gửi kết quả từng phiên sang nhóm lưu lịch sử.
             try:
                 # Định dạng lịch sử gọn giống mẫu kênh: một dòng số phiên,
@@ -3723,7 +3730,16 @@ def _room_bet_record(group_id, game, user_id, choice, amount, username="", anony
             user_id BIGINT NOT NULL, username TEXT DEFAULT '', full_name TEXT DEFAULT '',
             choice TEXT NOT NULL, amount BIGINT NOT NULL, anonymous BOOLEAN DEFAULT FALSE,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            result TEXT DEFAULT '', win_amount BIGINT DEFAULT 0,
             UNIQUE(group_id, session_id, user_id, choice)
+        )""")
+        query("ALTER TABLE room_bet_audit ADD COLUMN IF NOT EXISTS result TEXT DEFAULT ''")
+        query("ALTER TABLE room_bet_audit ADD COLUMN IF NOT EXISTS win_amount BIGINT DEFAULT 0")
+        query("""CREATE TABLE IF NOT EXISTS room_session_audit (
+            id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL, session_id BIGINT NOT NULL,
+            dice TEXT DEFAULT '', total INTEGER DEFAULT 0, result TEXT DEFAULT '',
+            total_bet BIGINT DEFAULT 0, total_win BIGINT DEFAULT 0, created_at TEXT DEFAULT '',
+            UNIQUE(group_id, session_id)
         )""")
         rows = query("SELECT name FROM users WHERE user_id=%s", (int(user_id),)) or []
         full_name = str(rows[0][0] or "") if rows else ""
@@ -3741,6 +3757,27 @@ def _room_bet_record(group_id, game, user_id, choice, amount, username="", anony
              full_name, str(choice), int(amount), bool(anonymous), now, now))
     except Exception as e:
         print(f"[room-audit] Không lưu được cược: {e}")
+
+def _room_session_settle(group_id, game, dice, total, result, total_win):
+    """Lưu kết quả phiên để tra cứu lịch sử Room sau khi bot khởi động lại."""
+    try:
+        query("""CREATE TABLE IF NOT EXISTS room_session_audit (
+            id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL, session_id BIGINT NOT NULL,
+            dice TEXT DEFAULT '', total INTEGER DEFAULT 0, result TEXT DEFAULT '',
+            total_bet BIGINT DEFAULT 0, total_win BIGINT DEFAULT 0, created_at TEXT DEFAULT '',
+            UNIQUE(group_id, session_id)
+        )""")
+        bets = list((game or {}).get("bets", {}).values())
+        query("""INSERT INTO room_session_audit
+            (group_id,session_id,dice,total,result,total_bet,total_win,created_at)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT(group_id,session_id) DO UPDATE SET dice=EXCLUDED.dice,total=EXCLUDED.total,
+            result=EXCLUDED.result,total_bet=EXCLUDED.total_bet,total_win=EXCLUDED.total_win""",
+            (int(group_id), int(game.get("session_id", 0)), str(dice), int(total), str(result),
+             sum(int(b.get("amount", 0) or 0) for b in bets), int(total_win), get_vietnam_datetime_db()))
+    except Exception as exc:
+        print(f"[room-audit] Không lưu được kết quả phiên: {exc}")
+
 
 async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""):
     if check_mt('mt_taixiu_room') and user_id not in ADMIN_IDS:
@@ -9504,6 +9541,9 @@ _ADMIN_SESSIONS = {}                  # token -> {user, csrf, created, last, ip}
 _ADMIN_LOGIN_FAILS = {}               # key (ip / user) -> [timestamps]
 _USERNAME_RE = re.compile(r"^[a-z0-9_]{3,20}$")
 
+# Khai báo quyền trước khi bootstrap SUPER ADMIN để tránh NameError.
+_AW_FEATURES = {"stats":"Tổng quan","wd":"Rút tiền","dep":"Nạp tiền","user":"Người dùng","dupe":"Trùng tên rút tiền","gift":"Giftcode","tx3d":"Ép TX3D","ctl":"Điều khiển","bc":"Thông báo","exp":"Xuất file","reset":"Reset","log":"Nhật ký","fan":"Duyệt Fan","room":"Room Tài Xỉu"}
+
 
 def _aw_hash_password(password: str, salt: bytes = None, iters: int = 200_000) -> str:
     salt = salt or os.urandom(16)
@@ -9717,27 +9757,29 @@ async function vFan(){
 
 async function vRoom(){
   var h='<h2>🎯 Theo dõi Room</h2><p class="mut">Theo dõi cược đang mở theo thời gian thực và tra cứu lịch sử theo số phiên hoặc ID người dùng. ID đầy đủ chỉ hiển thị trong khu vực quản trị.</p>'
-    +'<div class="inl"><input id="rs" placeholder="Số phiên cũ (để trống = tất cả)"><input id="ru" placeholder="ID người chơi (không bắt buộc)"><button class="btn" id="rfind">Tìm phiên</button><button class="btn gray" id="rrefresh">Làm mới</button></div>'
-    +'<div id="rlive"></div><h3>📚 Lịch sử cược</h3><div id="rhistory"></div>';
+    +'<div class="inl"><input id="rs" placeholder="Số phiên cũ (để trống = tất cả)"><input id="ru" placeholder="ID người chơi"><input id="rq" placeholder="@username / tìm nhanh"><button class="btn" id="rfind">Tìm phiên</button><button class="btn gray" id="rrefresh">Làm mới</button></div>'
+    +'<div id="rlive"></div><h3>📚 Lịch sử cược</h3><div id="rhistory"></div><div id="rsession"></div>';
   view.innerHTML=h;
   async function run(){
-    var sid=document.getElementById('rs').value.trim(),uid=document.getElementById('ru').value.trim();
-    var d=await api('room-bets?session='+encodeURIComponent(sid)+'&uid='+encodeURIComponent(uid));
+    var sid=document.getElementById('rs').value.trim(),uid=document.getElementById('ru').value.trim(),q=document.getElementById('rq').value.trim();
+    var d=await api('room-bets?session='+encodeURIComponent(sid)+'&uid='+encodeURIComponent(uid)+'&q='+encodeURIComponent(q));
     var live=d.live||[],rows=d.rows||[];
     document.getElementById('rlive').innerHTML='<h3>🟢 Phiên đang chạy</h3>'+(live.length?live.map(function(g){
       return '<div class="item"><div class="row"><b>Room '+esc(g.group_id)+' · Phiên #'+esc(g.session_id)+'</b><span class="tag success">'+esc(g.status)+'</span></div>'
        +(g.bets.length?g.bets.map(function(b){return '<div class="row" style="margin-top:6px"><span><b>'+esc(b.full_name||b.username||'Người chơi')+'</b> · ID <code>'+esc(b.user_id)+'</code> '+(b.anonymous?'· Đặt ẩn danh':'')+'</span><span>'+esc(b.choice.toUpperCase())+' · <b>'+money(b.amount)+'</b></span></div>';}).join(''):'<p class="mut">Chưa có cược.</p>')+'</div>';
     }).join(''):'<p class="mut">Hiện không có phiên cược đang mở.</p>');
     document.getElementById('rhistory').innerHTML=rows.length?'<div class="item"><div class="mut">Hiển thị '+rows.length+' bản ghi gần nhất.</div>'+rows.map(function(b){
-      return '<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span><b>Phiên #'+esc(b.session_id)+'</b> · Room '+esc(b.group_id)+'<br>'+esc(b.full_name||b.username||'Người chơi')+' · ID <code>'+esc(b.user_id)+'</code> '+(b.anonymous?'· Ẩn danh':'')+'<br><span class="mut">'+esc(b.created_at)+' · cập nhật '+esc(b.updated_at)+'</span></span><span><b>'+esc(b.choice.toUpperCase())+'</b><br>'+money(b.amount)+'</span></div>';
+      var outcome=b.result==='win'?'<span class="tag success">Thắng +'+money(b.win_amount)+'</span>':b.result==='lose'?'<span class="tag rejected">Thua</span>':'<span class="tag pending">Chờ kết quả</span>';
+      return '<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span><b>Phiên #'+esc(b.session_id)+'</b> · Room '+esc(b.group_id)+'<br>'+esc(b.full_name||b.username||'Người chơi')+' · ID <code>'+esc(b.user_id)+'</code> '+(b.anonymous?'· Ẩn danh':'')+'<br><span class="mut">'+esc(b.created_at)+' · cập nhật '+esc(b.updated_at)+'</span></span><span><b>'+esc(b.choice.toUpperCase())+'</b><br>'+money(b.amount)+'<br>'+outcome+'</span></div>';
     }).join('')+'</div>':'<p class="mut">Không có dữ liệu phù hợp. Các phiên trước khi bật tính năng lưu sẽ không có lịch sử chi tiết.</p>';
+    document.getElementById('rsession').innerHTML=(d.sessions||[]).map(function(x){return '<div class="item"><b>Kết quả phiên</b> · '+esc(x.created_at)+'<div class="row"><span>Xúc xắc: <b>'+esc(x.dice)+'</b> = '+esc(x.total)+' · '+esc(x.result)+'</span><span>Tổng cược '+money(x.total_bet)+' · Tổng trả '+money(x.total_win)+'</span></div></div>';}).join('');
   }
   document.getElementById('rfind').onclick=function(){run().catch(function(e){toast(e.message);});};
   document.getElementById('rrefresh').onclick=function(){run().catch(function(e){toast(e.message);});};
-  document.getElementById('rs').onkeydown=document.getElementById('ru').onkeydown=function(e){if(e.key==='Enter')run().catch(function(x){toast(x.message);});};
+  document.getElementById('rs').onkeydown=document.getElementById('ru').onkeydown=document.getElementById('rq').onkeydown=function(e){if(e.key==='Enter')run().catch(function(x){toast(x.message);});};
   await run();
   if(vRoom.timer)clearInterval(vRoom.timer);
-  vRoom.timer=setInterval(function(){if(cur==='room')run().catch(function(){});},5000);
+  vRoom.timer=setInterval(function(){if(cur==='room')run().catch(function(){});},3000);
 }
 
 async function vStats(){
@@ -10028,7 +10070,8 @@ def _aw_room_bets_sync(session_id=None, uid=None, limit=250):
     return [{"group_id":int(r[0]),"session_id":int(r[1]),"user_id":int(r[2]),
              "username":r[3] or "","full_name":r[4] or "","choice":r[5],
              "amount":int(r[6] or 0),"anonymous":bool(r[7]),
-             "created_at":r[8] or "","updated_at":r[9] or ""} for r in rows]
+             "created_at":r[8] or "","updated_at":r[9] or "","result":r[10] or "",
+             "win_amount":int(r[11] or 0)} for r in rows]
 
 def _aw_room_live_sync():
     out=[]
@@ -10050,12 +10093,31 @@ async def aw_api_room_bets(request):
     await asyncio.to_thread(_aw_auth, request)
     sid=request.query.get("session","").strip()
     uid_s=request.query.get("uid","").strip()
+    q=request.query.get("q","").strip()
+    if q:
+        if q.startswith("#"): q=q[1:].strip()
+        if q.isdigit():
+            if len(q) >= 8: uid_s=q
+            else: sid=q
+        else:
+            key=q.lstrip("@").strip()
+            found=await asyncio.to_thread(query,
+                "SELECT user_id FROM users WHERE COALESCE(tg_username,'') ILIKE %s OR COALESCE(tg_full_name,'') ILIKE %s OR COALESCE(name,'') ILIKE %s LIMIT 1",
+                ("%"+key+"%", "%"+key+"%", "%"+key+"%"))
+            if found: uid_s=str(found[0][0])
+            else: uid_s="0"
     if sid and not sid.isdigit(): return _aw_json({"err":"Số phiên không hợp lệ"},400)
     if uid_s and not uid_s.isdigit(): return _aw_json({"err":"ID người dùng không hợp lệ"},400)
     live=await asyncio.to_thread(_aw_room_live_sync)
     rows=await asyncio.to_thread(_aw_room_bets_sync,int(sid) if sid else None,
                                  int(uid_s) if uid_s else None,300)
-    return _aw_json({"live":live,"rows":rows})
+    if sid:
+        sessions=await asyncio.to_thread(query,
+            "SELECT dice,total,result,created_at,total_bet,total_win FROM room_session_audit WHERE session_id=%s ORDER BY id DESC LIMIT 20",
+            (int(sid),)) or []
+    else:
+        sessions=[]
+    return _aw_json({"live":live,"rows":rows,"sessions":[{"dice":r[0] or "","total":r[1],"result":r[2] or "","created_at":r[3] or "","total_bet":int(r[4] or 0),"total_win":int(r[5] or 0)} for r in sessions]})
 
 async def aw_home(request):
     tok, s = _aw_session(request)
@@ -10552,8 +10614,10 @@ _AW_SECTIONS = {"his", "nap", "rut", "cuoc", "code", "mua", "gift", "room"}
 def _aw_user_section_sync(uid, kind):
     if kind == "room":
         rows = _aw_room_bets_sync(None, uid, 300)
-        return {"headers":["Phiên","Room","Cửa cược","Số tiền","Ẩn danh","Thời gian"],"money_cols":[3],"status_col":None,
-                "total":len(rows),"rows":[[r["session_id"],r["group_id"],r["choice"].upper(),r["amount"],"Có" if r["anonymous"] else "Không",r["created_at"]] for r in rows],"extra":{}}
+        return {"headers":["Số phiên","Room","Cửa cược","Tiền cược","Kết quả","Tiền thắng","Ẩn danh","Thời gian"],"money_cols":[3,5],"status_col":None,
+                "total":len(rows),"rows":[[r["session_id"],r["group_id"],r["choice"].upper(),r["amount"],
+                ("Thắng" if r.get("result")=="win" else "Thua" if r.get("result")=="lose" else "Chờ kết quả"),
+                r.get("win_amount",0),"Có" if r["anonymous"] else "Không",r["created_at"]] for r in rows],"extra":{}}
     d = _rp_collect(kind, uid, None, None)
     rows = d.get("rows", [])
     total = len(rows)
@@ -10649,8 +10713,6 @@ async def aw_api_gifts(request):
         request.query.get("q", ""), int(page_s) if page_s.isdigit() else 1))
 
 
-
-_AW_FEATURES = {"stats":"Tổng quan","wd":"Rút tiền","dep":"Nạp tiền","user":"Người dùng","dupe":"Trùng tên rút tiền","gift":"Giftcode","tx3d":"Ép TX3D","ctl":"Điều khiển","bc":"Thông báo","exp":"Xuất file","reset":"Reset","log":"Nhật ký","fan":"Duyệt Fan"}
 
 async def aw_api_admins(request):
     tok, sess = await asyncio.to_thread(_aw_auth, request, True)
