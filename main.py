@@ -223,7 +223,11 @@ ICON_ALIAS = {
     "🔐": "🔒", "🧑‍🤝‍🧑": "👥", "₿": "💸", "⚫": "🔒", "🔵": "🔝",
 }
 
+_PLAIN_EMOJI = {"✅", "❌", "❎"}
+
 def ce(emoji: str) -> str:
+    if emoji in _PLAIN_EMOJI:
+        return emoji
     emoji_id = CUSTOM_EMOJI.get(emoji)
     if emoji_id:
         return f'<tg-emoji emoji-id="{emoji_id}">{emoji}</tg-emoji>'
@@ -256,7 +260,7 @@ def gi(game: str) -> str:
     return f'<tg-emoji emoji-id="{eid}">{em}</tg-emoji>'
 
 def _icon_id(emoji):
-    if not emoji:
+    if not emoji or emoji in _PLAIN_EMOJI:
         return None
     return CUSTOM_EMOJI.get(emoji) or CUSTOM_EMOJI.get(ICON_ALIAS.get(emoji, ""))
 
@@ -332,6 +336,10 @@ for _k, _target in ICON_ALIAS.items():
 
 # Giữ nguyên các bi tròn màu thường (🔵 🔴 ⚪ ⚫) trong tin nhắn - không đổi sang cờ/khiên/khóa premium
 for _plain in ("🔵", "🔴", "⚪", "⚫"):
+    _PREMIUM_MAP.pop(_norm_emoji(_plain), None)
+
+# ✅ / ❌ luôn là emoji thường (dấu tích / dấu X)
+for _plain in ("✅", "❌", "❎"):
     _PREMIUM_MAP.pop(_norm_emoji(_plain), None)
 
 def _emoji_pattern(key: str) -> str:
@@ -475,6 +483,14 @@ class InlineKeyboardButton(_PTBInlineKeyboardButton):
 
 def _top_medal(rank: int) -> str:
     return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "🏅")
+
+def fmt_tx_status(status):
+    s = str(status or "").lower()
+    if s == "success":
+        return "✅ Thành công"
+    if s in ("rejected", "failed", "cancelled"):
+        return "❌ Từ chối"
+    return "⏳ Chờ duyệt"
 
 def fmt_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".")
@@ -3044,10 +3060,7 @@ _interaction_seen = {}  # (user_id, chat_id) -> {"counted_at": datetime, "text":
 
 def mask_user_id(user_id):
     """Chỉ hiển thị 5 chữ số cuối; mọi chữ số phía trước được thay bằng *."""
-    raw = str(user_id or "")
-    if len(raw) <= 5:
-        return raw
-    return ("*" * (len(raw) - 5)) + raw[-5:]
+    return "*" * 10
 
 def _parse_db_date(value):
     if not value:
@@ -3602,7 +3615,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                         add_money(w["user_id"], share, f"Nổ hũ Jackpot (3 con 6) +{share:,}đ")
                         _winner_rows = query("SELECT name FROM users WHERE user_id=%s", (w["user_id"],)) or []
                         _winner_name = html.escape(str(_winner_rows[0][0] or f'ID {w["user_id"]}')) if _winner_rows else f'ID {w["user_id"]}'
-                        _masked_winner_id = ("*" * max(0, len(str(w["user_id"])) - 5)) + str(w["user_id"])[-5:]
+                        _masked_winner_id = "*" * 10
                         jackpot_winners.append(
                             f'{ce("👤")} {_winner_name} · ID <code>{_masked_winner_id}</code>: '
                             f'<code>+{fmt_money(share)}đ</code>'
@@ -3618,7 +3631,7 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                         add_money(w["user_id"], share, f"Nổ hũ Jackpot (3 con 1) +{share:,}đ")
                         _winner_rows = query("SELECT name FROM users WHERE user_id=%s", (w["user_id"],)) or []
                         _winner_name = html.escape(str(_winner_rows[0][0] or f'ID {w["user_id"]}')) if _winner_rows else f'ID {w["user_id"]}'
-                        _masked_winner_id = ("*" * max(0, len(str(w["user_id"])) - 5)) + str(w["user_id"])[-5:]
+                        _masked_winner_id = "*" * 10
                         jackpot_winners.append(
                             f'{ce("👤")} {_winner_name} · ID <code>{_masked_winner_id}</code>: '
                             f'<code>+{fmt_money(share)}đ</code>'
@@ -7919,8 +7932,7 @@ def _ext_game_block(uid, game):
 
 
 def _solo_mask_id(uid):
-    value = str(int(uid))
-    return "*" * min(5, len(value)) + value[5:]
+    return "*" * 10
 
 
 def _solo_kb(room_id):
@@ -9013,8 +9025,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = ce("✅") if row[1] == "success" else ce("❌") if row[1] == "rejected" else ce("⏰")
-                text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | {row[1]} | <i>{row[2]}</i>\n'
+                status_icon = fmt_tx_status(row[1])
+                text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
 
     if d == "acc_ls_choi":
@@ -9108,7 +9120,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines = [f'{ce("🔥")} <b>TOP CƯỢC NGÀY {date_text}</b>', ""]
         if rows:
             for rank, (player_id, bet_amount) in enumerate(rows, 1):
-                masked_id = "**" + str(player_id)[-4:]
+                masked_id = "*" * 10
                 medal = _top_medal(rank)
                 lines.append(f'{medal} Top {rank}: <code>{masked_id}</code> | <b>{fmt_money(int(bet_amount or 0))}k</b>')
         else:
@@ -9276,8 +9288,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = ce("✅") if row[1] == "success" else ce("❌") if row[1] == "rejected" else ce("⏰")
-                text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | {row[1]} | <i>{row[2]}</i>\n'
+                status_icon = fmt_tx_status(row[1])
+                text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
     if d.startswith("accept_promo_"):
