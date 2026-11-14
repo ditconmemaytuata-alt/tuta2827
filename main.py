@@ -75,7 +75,7 @@ CUSTOM_EMOJI = {
     "💰": "5443038326535759644", "🍀": "5440833702642857683", "⁉️": "6070874824798901794",
     "⚠️": "6078085525133071695", "☄️": "5402186569006210455", "🛍": "5416117059207572332",
     "⛔️": "6307297450000389581", "🚫": "5375338737028841420", "❗️": "5463071033256848094",
-    "👀": "5341715473882955310", "❌": "5445267414562389170", "💸": "5296369303661067030",
+    "👀": "5341715473882955310", "✅": "5197387964098813812", "❌": "5445267414562389170", "💸": "5296369303661067030",
     "💱": "5253742260054409879", "▶️": "5235640209852343235", "💥": "5361741454685256344",
     "🔗": "5388632425314140043", "🔄": "5406745015365943482", "🔝": "5399913388845322366",
     "➕": "6339274490836423919", "✉️": "5447203607294265305", "📍": "5453902265922376865",
@@ -223,7 +223,7 @@ ICON_ALIAS = {
     "🔐": "🔒", "🧑‍🤝‍🧑": "👥", "₿": "💸", "⚫": "🔒", "🔵": "🔝",
 }
 
-_PLAIN_EMOJI = {"✅", "❌", "❎"}
+_PLAIN_EMOJI = {"❎"}
 
 def ce(emoji: str) -> str:
     if emoji in _PLAIN_EMOJI:
@@ -338,9 +338,8 @@ for _k, _target in ICON_ALIAS.items():
 for _plain in ("🔵", "🔴", "⚪", "⚫"):
     _PREMIUM_MAP.pop(_norm_emoji(_plain), None)
 
-# ✅ / ❌ luôn là emoji thường (dấu tích / dấu X)
-for _plain in ("✅", "❌", "❎"):
-    _PREMIUM_MAP.pop(_norm_emoji(_plain), None)
+# ✅ và ❌ dùng emoji Premium theo CUSTOM_EMOJI; ❎ giữ emoji thường
+_PREMIUM_MAP.pop(_norm_emoji("❎"), None)
 
 def _emoji_pattern(key: str) -> str:
     # Cho phép (tuỳ chọn) ký tự variation selector U+FE0F sau từng ký tự.
@@ -487,9 +486,9 @@ def _top_medal(rank: int) -> str:
 def fmt_tx_status(status):
     s = str(status or "").lower()
     if s == "success":
-        return "✅ Thành công"
+        return f'{ce("✅")} Thành công'
     if s in ("rejected", "failed", "cancelled"):
-        return "❌ Từ chối"
+        return f'{ce("❌")} Từ chối' 
     return "⏳ Chờ duyệt"
 
 def fmt_money(amount: int) -> str:
