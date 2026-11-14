@@ -309,6 +309,14 @@ ICON_ALIAS.update({
 # Emoji thể thao / game (🏀 ⚽ 🎳 ⚔️ 🥅 🆚 ✊) giữ nguyên bản gốc, KHÔNG đổi sang emoji premium sai nghĩa
 # (trước đây 🏀=huy chương, ⚽=cúp, 🎳=cầu pha lê, ⚔️=lửa nên danh sách game nhìn rất lạ).
 
+# Emoji thường còn sót -> emoji premium cùng nghĩa (giữ nguyên emoji mang nghĩa game: ⚽🏀🎳⚔️🥅✊✂️🪨🦐🐟🐓♠♥♦♣⚀-⚅ và bi màu 🔴⚪⚫🔵).
+ICON_ALIAS.update({
+    "⏳": "⌛", "🔇": "🔈", "🔊": "📣", "🔹": "💠", "❎": "❌", "🔢": "🧮",
+    "👉": "➡️", "👇": "⬇️", "🤝": "🫴", "💨": "⚡", "🟩": "🟢", "🔁": "🔄",
+    "♻️": "🔄", "❔": "❓", "📭": "📫", "📨": "📩", "📚": "🧾", "🏧": "🏦",
+    "🗒": "✏️", "🕒": "⏰", "⏭": "▶️", "💯": "🏅", "🧑": "👤", "👨": "👤",
+})
+
 def _norm_emoji(s: str) -> str:
     return s.replace("\ufe0f", "")
 
@@ -2476,7 +2484,7 @@ GIFT_TYPES = {
     "INTERACT": {"name": "Code Tương Tác / CHECKTT", "icon": "💬", "fmt": "XOCLO88-INTERACT-xxxxxxx"},
     "TICHLUY": {"name": "Code TOP / Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
     "DAYTHANG": {"name": "Code Top Dây Thắng", "icon": "🔥", "fmt": "XOCLO88-DAYTHANG-xxxxxxx", "hidden": True},
-    "DAYTHUA":  {"name": "Code Top Dây Thua",  "icon": "🥶", "fmt": "XOCLO88-DAYTHUA-xxxxxxx",  "hidden": True},
+    "DAYTHUA":  {"name": "Code Top Dây Thua",  "icon": "😭", "fmt": "XOCLO88-DAYTHUA-xxxxxxx",  "hidden": True},
 }
 GIFT_BUY_EXPIRE_DAYS = 30
 _DIGITS = "0123456789"
@@ -2624,8 +2632,9 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
     chat = update.effective_chat
     user = update.effective_user
     if chat and chat.type != "private":
-        await msg.reply_text(
-            f"{ce('🎁')} Nhập giftcode thành công! ID: <code>{mask_user_id(uid)}</code>. "
+        await reply_group_notice(
+            msg,
+            f"{ce('🎁')} <b>NHẬP GIFTCODE THÀNH CÔNG</b>! ID: <code>{mask_user_id(uid)}</code>. "
             f"Chi tiết được gửi riêng qua bot.",
             parse_mode=ParseMode.HTML
         )
@@ -2638,7 +2647,8 @@ async def redeem_giftcode(update: Update, uid: int, code_str: str) -> bool:
     try:
         public_name = ("@" + user.username) if user and user.username else (user.full_name if user else "Thành viên")
         if not chat or chat.id != LOG_GROUP_ID:
-            await update.get_bot().send_message(
+            await send_group_notice(
+                update.get_bot(),
                 LOG_GROUP_ID,
                 f"{ce('🎁')} <b>NHẬP GIFTCODE THÀNH CÔNG</b>\n"
                 f"{ce('🆔')} ID: <code>{mask_user_id(uid)}</code>\n"
@@ -5353,7 +5363,8 @@ async def _reply_code_success_safely(update, ctx, uid, code_str, reward, wager, 
     user = update.effective_user
     public_name = ("@" + user.username) if user and user.username else (user.full_name if user else "Thành viên")
     if chat and chat.type != "private":
-        await msg.reply_text(
+        await reply_group_notice(
+            msg,
             f"{ce('🎁')} <b>NHẬP CODE THÀNH CÔNG</b>\n"
             f"{ce('🆔')} ID: <code>{mask_user_id(uid)}</code>\n"
             f"{ce('💰')} Giá trị: <b>{fmt_money(int(reward))}đ</b>\n"
@@ -5368,7 +5379,8 @@ async def _reply_code_success_safely(update, ctx, uid, code_str, reward, wager, 
         await msg.reply_text(success_text, parse_mode=ParseMode.HTML)
     try:
         if not chat or chat.id != LOG_GROUP_ID:
-            await ctx.bot.send_message(
+            await send_group_notice(
+                ctx.bot,
                 LOG_GROUP_ID,
                 f"{ce('🎁')} <b>NHẬP CODE THÀNH CÔNG</b>\n"
                 f"{ce('🆔')} ID: <code>{mask_user_id(uid)}</code>\n"
@@ -5711,7 +5723,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [btn("TOP CƯỢC NGÀY", "🏆", callback_data="top_cuoc_ngay")],
             [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win")],
-            [btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
+            [btn("TOP DÂY THUA", "😭", callback_data="top_streak_loss")]
         ])
         return await user_reply.reply_text(
             f'{ce("🏆")} <b>ĐUA TOP</b>\nChọn bảng muốn xem:',
@@ -5983,7 +5995,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         try:
             await send_group_notice(ctx.bot, chat_id=LOG_GROUP_ID,
-                text=f'{ce("📥")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("🆔")} ID: <code>{masked_id}</code>\n{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>',
+                text=f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("🆔")} ID: <code>{masked_id}</code>\n{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>',
                 parse_mode=ParseMode.HTML)
         except: pass
 
@@ -9108,7 +9120,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "\n".join(lines),
             reply_markup=InlineKeyboardMarkup([
                 [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"),
-                 btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
+                 btn("TOP DÂY THUA", "😭", callback_data="top_streak_loss")]
             ]),
             parse_mode=ParseMode.HTML)
 
@@ -9119,7 +9131,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [btn("TOP CƯỢC NGÀY", "🏆", callback_data="top_cuoc_ngay")],
                 [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win")],
-                [btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
+                [btn("TOP DÂY THUA", "😭", callback_data="top_streak_loss")]
             ]),
             parse_mode=ParseMode.HTML)
 
@@ -9170,7 +9182,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [btn("TOP CƯỢC NGÀY", "🏆", callback_data="top_cuoc_ngay")],
                 [btn("TOP DÂY THẮNG", "🔥", callback_data="top_streak_win"),
-                 btn("TOP DÂY THUA", "🥶", callback_data="top_streak_loss")]
+                 btn("TOP DÂY THUA", "😭", callback_data="top_streak_loss")]
             ]),
             parse_mode=ParseMode.HTML)
 
@@ -9515,7 +9527,7 @@ async def sepay_webhook(request):
             await send_group_notice(
                 _bot_instance,
                 LOG_GROUP_ID,
-                f'{ce("📥")} <b>THÔNG BÁO NẠP TIỀN TỰ ĐỘNG</b>\n'
+                f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN TỰ ĐỘNG</b>\n'
                 f'{ce("🆔")} ID: <code>{masked_id}</code>\n'
                 f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>',
                 parse_mode=ParseMode.HTML
@@ -11294,7 +11306,7 @@ async def _awp_after_deposit(uid, amount, cleared, extra):
     masked = mask_user_id(uid)
     try:
         await send_group_notice(bot, chat_id=LOG_GROUP_ID, parse_mode=ParseMode.HTML,
-                                text=f'{ce("📥")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("🆔")} ID: <code>{masked}</code>\n'
+                                text=f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("🆔")} ID: <code>{masked}</code>\n'
                                      f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>')
     except Exception:
         pass
@@ -12936,7 +12948,7 @@ DAY_STREAK_WAGER = 3                       # yêu cầu vòng cược x3
 DAY_STREAK_EXPIRE_HOURS = 24               # hạn dùng giftcode: 1 ngày
 DAY_STREAK_KIND = {
     "win":  {"ctype": "DAYTHANG", "label": "THẮNG", "col": "max_win",  "at": "win_at",  "icon": "🔥"},
-    "loss": {"ctype": "DAYTHUA",  "label": "THUA",   "col": "max_loss", "at": "loss_at", "icon": "🥶"},
+    "loss": {"ctype": "DAYTHUA",  "label": "THUA",   "col": "max_loss", "at": "loss_at", "icon": "😭"},
 }
 
 def _today_key():
@@ -13171,6 +13183,9 @@ _ROOM_MUTE_CACHE = {}          # chat_id -> (muted: bool, checked_at: float)
 _ROOM_MUTE_CACHE_TTL = 20      # giây
 # Tin xác nhận bật/tắt room (bắt đầu bằng 🔇/🔊) vẫn được gửi vào nhóm.
 _ROOM_MUTE_ALLOW_PREFIX = ("🔇", "🔊")
+# Các thông báo luôn được gửi lên nhóm dù đã tắt room: rút thành công, nạp thành công, nhập code/giftcode thành công.
+_ROOM_MUTE_ALLOW_NOTICES = ("RÚT TIỀN THÀNH CÔNG", "THÔNG BÁO NẠP TIỀN",
+                            "NHẬP CODE THÀNH CÔNG", "NHẬP GIFTCODE THÀNH CÔNG")
 # Thông báo NẠP / RÚT thành công vẫn gửi lên nhóm kể cả khi room đã tắt (gửi qua send_group_notice).
 import contextvars as _contextvars
 _ROOM_MUTE_BYPASS = _contextvars.ContextVar("room_mute_bypass", default=False)
@@ -13180,6 +13195,14 @@ async def send_group_notice(bot, *args, **kwargs):
     tok = _ROOM_MUTE_BYPASS.set(True)
     try:
         return await bot.send_message(*args, **kwargs)
+    finally:
+        _ROOM_MUTE_BYPASS.reset(tok)
+
+async def reply_group_notice(msg, *args, **kwargs):
+    """msg.reply_text nhưng KHÔNG bị chặn bởi chế độ tắt room (thông báo nhập code thành công)."""
+    tok = _ROOM_MUTE_BYPASS.set(True)
+    try:
+        return await msg.reply_text(*args, **kwargs)
     finally:
         _ROOM_MUTE_BYPASS.reset(tok)
 
@@ -13278,7 +13301,8 @@ def _guard_room_mute(method_name, text_kw=None, allow_prefix=False):
         if numeric is not None and numeric < 0 and _is_room_muted(numeric) and not _ROOM_MUTE_BYPASS.get():
             if allow_prefix:
                 text = kwargs.get(text_kw, args[1] if len(args) > 1 else "")
-                if str(text or "").startswith(_ROOM_MUTE_ALLOW_PREFIX):
+                _t = str(text or "")
+                if _t.startswith(_ROOM_MUTE_ALLOW_PREFIX) or any(k in _t for k in _ROOM_MUTE_ALLOW_NOTICES):
                     return await orig(self, *args, **kwargs)
             return None
         return await orig(self, *args, **kwargs)
