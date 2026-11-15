@@ -228,6 +228,21 @@ ICON_ALIAS = {
 
 _PLAIN_EMOJI = {"❎"}
 
+def _find_image(name):
+    """Tìm file ảnh cạnh main.py; chịu được tên bị thừa đuôi (vd: abc.jpg.jpg) hoặc khác đuôi."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isabs(name):
+        return name if os.path.exists(name) else None
+    stem = os.path.splitext(name)[0]
+    cands = [name, name + ".jpg", name + ".jpeg", name + ".png",
+             stem + ".jpg", stem + ".jpeg", stem + ".png", stem + ".jpg.jpg"]
+    for c in cands:
+        fp = os.path.join(base, c)
+        if os.path.isfile(fp):
+            return fp
+    return None
+
+
 def ce(emoji: str) -> str:
     if emoji in _PLAIN_EMOJI:
         return emoji
@@ -4697,8 +4712,8 @@ async def _fan_send_guide(ctx, uid, msg):
     except Exception:
         return await msg.reply_text("Bot chưa kiểm tra được hồ sơ Telegram. Bạn hãy thử lại sau.")
     text = _fan_guide_text(uid, chat, has_photo)
-    path = FAN_PROMO_IMAGE if os.path.isabs(FAN_PROMO_IMAGE) else os.path.join(os.path.dirname(os.path.abspath(__file__)), FAN_PROMO_IMAGE)
-    if os.path.exists(path):
+    path = _find_image(FAN_PROMO_IMAGE)
+    if path:
         try:
             with open(path, "rb") as f:
                 return await msg.reply_photo(photo=f, caption=text[:1024], parse_mode=ParseMode.HTML)
@@ -4864,9 +4879,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'{ce("💬")} Tham gia Nhóm giao lưu để nhận giftcode hằng ngày\n'
         f'{GROUP_GIAOLUU_LINK}'
     )
-    _img_path = START_IMAGE if os.path.isabs(START_IMAGE) else os.path.join(os.path.dirname(os.path.abspath(__file__)), START_IMAGE)
+    _img_path = _find_image(START_IMAGE)
     _sent = False
-    if os.path.exists(_img_path):
+    if _img_path:
         try:
             with open(_img_path, "rb") as _f:
                 await update.effective_message.reply_photo(
