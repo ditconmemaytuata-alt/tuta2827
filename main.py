@@ -36,7 +36,7 @@ ADMIN_IDS = [5633649201, 7884394252]
 BOT_USERNAME = "cavoixanh_cvxbot"
 SESSION_HISTORY_GROUP_ID = -1004464587619
 SESSION_HISTORY_URL = "https://t.me/lsphiencavoixanh"
-ROOM_LINK = "https://t.me/hocviencbm"
+ROOM_LINK = "https://t.me/cavoixanh_room"
 GROUP_GIAOLUU_LINK = "https://t.me/cavoixanh_room"   # Nhóm giao lưu (hiện ở /start)
 CHANNEL_CODE_LINK = "https://t.me/thongbaocvx"       # Kênh phát code (hiện ở /start)
 START_IMAGE = os.getenv("START_IMAGE", "cavoixanh_sangame.jpg")   # Ảnh banner /start
@@ -507,7 +507,7 @@ def fmt_tx_status(status):
         return f'{ce("✅")} Thành công'
     if s in ("rejected", "failed", "cancelled"):
         return f'{ce("❌")} Từ chối' 
-    return "⏳ Chờ duyệt"
+    return f'{ce("❌")} Chờ duyệt'
 
 def fmt_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".")
@@ -5564,7 +5564,7 @@ async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         msg = f'{title_icon} <b>LỊCH SỬ CHI TIẾT:</b>\n'
         msg += f'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
-        # Trạng thái các lệnh rút gần đây: rút thành công -> ✅, bị từ chối -> ❌, đang chờ -> ⌛.
+        # Trạng thái các lệnh rút gần đây: thành công -> ✅ premium; chưa hoàn thành (từ chối / đang chờ) -> ❌ premium.
         _wd_status = {}
         for _a, _s in (query("SELECT amount, status FROM withdraw_history WHERE user_id=%s ORDER BY id DESC LIMIT 60", (uid,)) or []):
             _wd_status.setdefault(int(_a or 0), []).append(_s)
@@ -5573,7 +5573,7 @@ async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if note == "Rút tiền":
                 _lst = _wd_status.get(abs(int(d[0])))
                 _st = _lst.pop(0) if _lst else "success"
-                icon = ce("✅") if _st == "success" else (ce("⌛") if _st == "pending" else ce("❌"))
+                icon = ce("✅") if _st == "success" else ce("❌")
             elif note.startswith("Hoàn"):
                 icon = ce("🔄")
             elif note.startswith(("Nạp", "Nhận tiền từ")):
@@ -13643,7 +13643,7 @@ def _rp_status(s):
     return {"success": "Thành công", "pending": "Chờ duyệt", "rejected": "Từ chối"}.get(s, (s or "—"))
 
 def _rp_status_icon(label):
-    return {"Thành công": "✅", "Chờ duyệt": "⌛", "Từ chối": "❌"}.get(label, "🔖")
+    return {"Thành công": "✅", "Chờ duyệt": "❌", "Từ chối": "❌"}.get(label, "🔖")
 
 def _rp_admin_label(admin_id):
     try:
@@ -14790,7 +14790,7 @@ async def lsnaptatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         return await update.effective_message.reply_text("Chưa có lịch sử nạp.")
     text = "📥 <b>50 LỊCH SỬ NẠP MỚI NHẤT</b>\n\n" + "\n".join(
-        f"{ {'success': '✅', 'rejected': '❌', 'pending': '⏳'}.get(str(r[3] or ''), '❔') } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
+        f"{ {'success': ce('✅'), 'rejected': ce('❌'), 'pending': ce('❌')}.get(str(r[3] or ''), ce('❌')) } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -14825,7 +14825,7 @@ async def lsrut_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows = query(sql + "ORDER BY w.id DESC LIMIT %s", (limit,)) or []
     if not rows:
         return await msg.reply_text("Chưa có lịch sử rút.")
-    status_txt = {"pending": "⏳ Chờ duyệt", "success": "✅ Đã duyệt", "rejected": "❌ Từ chối"}
+    status_txt = {"pending": f'{ce("❌")} Chờ duyệt', "success": f'{ce("✅")} Đã duyệt', "rejected": f'{ce("❌")} Từ chối'}
     for (wid, uid_, amount, status, time_, code, admin_id, admin_note, method, bank, stk, acc_name,
          qr_fid, memo, u_bank, u_stk, u_name) in rows:
         # Bản ghi cũ chưa lưu snapshot -> dùng thông tin hiện tại của user.
@@ -14886,7 +14886,7 @@ async def lsruttatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         return await update.effective_message.reply_text("Chưa có lịch sử rút.")
     text = "📤 <b>50 LỊCH SỬ RÚT MỚI NHẤT</b>\n\n" + "\n".join(
-        f"{ {'success': '✅', 'rejected': '❌', 'pending': '⏳'}.get(str(r[3] or ''), '❔') } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
+        f"{ {'success': ce('✅'), 'rejected': ce('❌'), 'pending': ce('❌')}.get(str(r[3] or ''), ce('❌')) } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
