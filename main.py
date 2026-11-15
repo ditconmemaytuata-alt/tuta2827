@@ -37,6 +37,9 @@ BOT_USERNAME = "cavoixanh_cvxbot"
 SESSION_HISTORY_GROUP_ID = -1004464587619
 SESSION_HISTORY_URL = "https://t.me/lsphiencavoixanh"
 ROOM_LINK = "https://t.me/hocviencbm"
+GROUP_GIAOLUU_LINK = "https://t.me/cavoixanh_room"   # Nhóm giao lưu (hiện ở /start)
+CHANNEL_CODE_LINK = "https://t.me/thongbaocvx"       # Kênh phát code (hiện ở /start)
+START_IMAGE = os.getenv("START_IMAGE", "cavoixanh_sangame.jpg")   # Ảnh banner /start
 MIN_WITHDRAW = 50000
 MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
 LOG_GROUP_ID = -1003663678808
@@ -4856,20 +4859,28 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _menu_rows.append([kbtn("ADMIN", "🛠")])   # nút chỉ hiện với admin
     menu = ReplyKeyboardMarkup(_menu_rows, resize_keyboard=True)
 
-    welcome_text = (
-        f'{ce("🎉")} <b>CHÀO MỪNG {html.escape(update.effective_user.first_name.upper())} ĐÃ THAM GIA!</b>\n\n'
-        f'{ce("🛡")} <b>{html.escape(get_bot_name())}</b>\n'
-        f'Hệ thống trò chơi minh bạch — uy tín hàng đầu.\n'
-        f'━━━━━━━━━━━━━━━━━━━━━\n'
-        f'{ce("💰")} <b>MIN RÚT TIỀN:</b> <code>50,000đ</code>\n'
-        f'{ce("💵")} <b>MIN NẠP TIỀN:</b> <code>10,000đ</code>\n\n'
-        f'{ce("⚖️")} <b>CAM KẾT MINH BẠCH:</b>\n'
-        f'• <b>100%</b> Kết quả hoàn toàn ngẫu nhiên.\n'
-        f'• {ce("🔥")} <b>KHÔNG</b> can thiệp kết quả dưới mọi hình thức.\n'
-        f'━━━━━━━━━━━━━━━━━━━━━\n'
-        f'{ce("🎯")} Chúc bạn có những trải nghiệm may mắn và thú vị!'
+    start_caption = (
+        f'{ce("🆔")} ID của bạn là <code>{uid}</code>\n\n'
+        f'{ce("💬")} Tham gia Nhóm giao lưu để nhận giftcode hằng ngày\n'
+        f'{GROUP_GIAOLUU_LINK}'
     )
-    await update.effective_message.reply_text(welcome_text, reply_markup=menu, parse_mode=ParseMode.HTML)
+    _img_path = START_IMAGE if os.path.isabs(START_IMAGE) else os.path.join(os.path.dirname(os.path.abspath(__file__)), START_IMAGE)
+    _sent = False
+    if os.path.exists(_img_path):
+        try:
+            with open(_img_path, "rb") as _f:
+                await update.effective_message.reply_photo(
+                    photo=_f, caption=start_caption, reply_markup=menu, parse_mode=ParseMode.HTML)
+            _sent = True
+        except Exception as e:
+            print("start photo error:", e)
+    if not _sent:
+        await update.effective_message.reply_text(
+            start_caption, reply_markup=menu, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await update.effective_message.reply_text(
+        f'{ce("📣")} Tham gia kênh thông báo để nhận code hằng ngày {ce("⬇️")}',
+        reply_markup=InlineKeyboardMarkup([[btn("KÊNH PHÁT CODE", "🎁", url=CHANNEL_CODE_LINK)]]),
+        parse_mode=ParseMode.HTML)
 
 async def show_withdraw_methods(message):
     kb = InlineKeyboardMarkup([
