@@ -35,7 +35,7 @@ SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằn
 ADMIN_IDS = [5633649201, 7884394252]
 BOT_USERNAME = "xoclo88dtbot"
 SESSION_HISTORY_GROUP_ID = -1004464587619
-SESSION_HISTORY_URL = "https://t.me/lsphienxoclo88"
+SESSION_HISTORY_URL = "https://t.me/lsphiencavoixanh"
 ROOM_LINK = "https://t.me/hocviencbm"
 MIN_WITHDRAW = 50000
 MIN_DEPOSIT_FEATURES = 200000   # tổng nạp phải TRÊN mức này mới được mua giftcode / chuyển tiền
@@ -2490,16 +2490,16 @@ async def sethoancuoc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ===== GIFTCODE 5 LOẠI ================================
 # ============================================================
 GIFT_TYPES = {
-    "TANTHU":  {"name": "Code Tân Thủ",  "icon": "🎁", "fmt": "XOCLO88-TANTHU-xxxxxxx"},
-    "CODEMUA": {"name": "Code Mua",      "icon": "🛒", "fmt": "XOCLO88-CODEMUA-xxxxxxx"},
-    "GIOVANG": {"name": "Code Giờ Vàng", "icon": "⏰", "fmt": "XOCLO88-GIOVANG-xxxxxxx"},
-    "NAP":     {"name": "Code Nạp",      "icon": "💳", "fmt": "XOCLO88-1234567-ABCDEFG"},
-    "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "XOCLO88-TRIAN-xxxxxxx"},
-    "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
-    "INTERACT": {"name": "Code Tương Tác / CHECKTT", "icon": "💬", "fmt": "XOCLO88-INTERACT-xxxxxxx"},
-    "TICHLUY": {"name": "Code TOP / Tích Lũy", "icon": "🏆", "fmt": "XOCLO88-TICHLUY-xxxxxxx"},
-    "DAYTHANG": {"name": "Code Top Dây Thắng", "icon": "🔥", "fmt": "XOCLO88-DAYTHANG-xxxxxxx", "hidden": True},
-    "DAYTHUA":  {"name": "Code Top Dây Thua",  "icon": "😭", "fmt": "XOCLO88-DAYTHUA-xxxxxxx",  "hidden": True},
+    "TANTHU":  {"name": "Code Tân Thủ",  "icon": "🎁", "fmt": "CAVOIXANH-TANTHU-xxxxxxx"},
+    "CODEMUA": {"name": "Code Mua",      "icon": "🛒", "fmt": "CAVOIXANH-CODEMUA-xxxxxxx"},
+    "GIOVANG": {"name": "Code Giờ Vàng", "icon": "⏰", "fmt": "CAVOIXANH-GIOVANG-xxxxxxx"},
+    "NAP":     {"name": "Code Nạp",      "icon": "💳", "fmt": "CAVOIXANH-1234567-ABCDEFG"},
+    "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "CAVOIXANH-TRIAN-xxxxxxx"},
+    "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "CAVOIXANH-TICHLUY-xxxxxxx"},
+    "INTERACT": {"name": "Code Tương Tác / CHECKTT", "icon": "💬", "fmt": "CAVOIXANH-INTERACT-xxxxxxx"},
+    "TICHLUY": {"name": "Code TOP / Tích Lũy", "icon": "🏆", "fmt": "CAVOIXANH-TICHLUY-xxxxxxx"},
+    "DAYTHANG": {"name": "Code Top Dây Thắng", "icon": "🔥", "fmt": "CAVOIXANH-DAYTHANG-xxxxxxx", "hidden": True},
+    "DAYTHUA":  {"name": "Code Top Dây Thua",  "icon": "😭", "fmt": "CAVOIXANH-DAYTHUA-xxxxxxx",  "hidden": True},
 }
 GIFT_BUY_EXPIRE_DAYS = 30
 _DIGITS = "0123456789"
@@ -2512,9 +2512,9 @@ def _rand(chars, n):
 def gen_gift_code(ctype):
     while True:
         if ctype == "NAP":
-            code = f"XOCLO88-{_rand(_DIGITS, 7)}-{_rand(_LETTERS, 7)}"
+            code = f"CAVOIXANH-{_rand(_DIGITS, 7)}-{_rand(_LETTERS, 7)}"
         else:
-            code = f"XOCLO88-{ctype}-{_rand(_ALNUM, 7)}"
+            code = f"CAVOIXANH-{ctype}-{_rand(_ALNUM, 7)}"
         if not query("SELECT 1 FROM giftcodes WHERE code=%s", (code,)):
             return code
 
@@ -3242,6 +3242,13 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 JACKPOT_RATE = 0.018   # 1,8% tiền thua của phiên được trích cộng vào hũ jackpot
+JACKPOT_SOLO_RATE = 0.5      # phiên chỉ có 1 người chơi mà nổ hũ: người đó chỉ nhận 50% hũ
+JACKPOT_FULL_MIN_PLAYERS = 2 # từ 2 người chơi trở lên: nổ 100% hũ (chia theo tỉ lệ tiền cược)
+
+def jackpot_payout_pool(pot, n_players):
+    """Số tiền hũ thực sự được chia khi nổ: 1 người -> 50% hũ, từ 2 người -> 100% hũ."""
+    pot = int(pot)
+    return int(pot * JACKPOT_SOLO_RATE) if int(n_players) < JACKPOT_FULL_MIN_PLAYERS else pot
 
 def get_jackpot():
     res = query("SELECT value FROM settings WHERE key='jackpot_amount'")
@@ -3605,12 +3612,17 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
             count_1 = dice_values.count(1)
             count_6 = dice_values.count(6)
 
+            _jp_players = len({b["user_id"] for b in game_state["bets"].values()})
+            _jp_paid = 0
+            _jp_solo = _jp_players < JACKPOT_FULL_MIN_PLAYERS
             if count_6 >= 3:
                 winners = [b for b in game_state["bets"].values() if b["choice"] == "tai"]
                 if winners and jackpot_amount > 0:
                     total_bet_tai = sum(w["amount"] for w in winners)
+                    _jp_pool = jackpot_payout_pool(jackpot_amount, _jp_players)
                     for w in winners:
-                        share = int(jackpot_amount * (w["amount"] / total_bet_tai))
+                        share = int(_jp_pool * (w["amount"] / total_bet_tai))
+                        _jp_paid += share
                         add_money(w["user_id"], share, f"Nổ hũ Jackpot (3 con 6) +{share:,}đ")
                         _winner_rows = query("SELECT name FROM users WHERE user_id=%s", (w["user_id"],)) or []
                         _winner_name = html.escape(str(_winner_rows[0][0] or f'ID {w["user_id"]}')) if _winner_rows else f'ID {w["user_id"]}'
@@ -3619,14 +3631,16 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                             f'{ce("👤")} {_winner_name} · ID <code>{_masked_winner_id}</code>: '
                             f'<code>+{fmt_money(share)}đ</code>'
                         )
-                    update_jackpot(100000)
-                    jackpot_amount = 100000
+                    jackpot_amount = max(jackpot_amount - _jp_paid, 100000)
+                    update_jackpot(jackpot_amount)
             elif count_1 >= 3:
                 winners = [b for b in game_state["bets"].values() if b["choice"] == "xiu"]
                 if winners and jackpot_amount > 0:
                     total_bet_xiu = sum(w["amount"] for w in winners)
+                    _jp_pool = jackpot_payout_pool(jackpot_amount, _jp_players)
                     for w in winners:
-                        share = int(jackpot_amount * (w["amount"] / total_bet_xiu))
+                        share = int(_jp_pool * (w["amount"] / total_bet_xiu))
+                        _jp_paid += share
                         add_money(w["user_id"], share, f"Nổ hũ Jackpot (3 con 1) +{share:,}đ")
                         _winner_rows = query("SELECT name FROM users WHERE user_id=%s", (w["user_id"],)) or []
                         _winner_name = html.escape(str(_winner_rows[0][0] or f'ID {w["user_id"]}')) if _winner_rows else f'ID {w["user_id"]}'
@@ -3635,8 +3649,8 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                             f'{ce("👤")} {_winner_name} · ID <code>{_masked_winner_id}</code>: '
                             f'<code>+{fmt_money(share)}đ</code>'
                         )
-                    update_jackpot(100000)
-                    jackpot_amount = 100000
+                    jackpot_amount = max(jackpot_amount - _jp_paid, 100000)
+                    update_jackpot(jackpot_amount)
 
             if group_id not in game_history:
                 game_history[group_id] = []
@@ -3686,7 +3700,9 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
                     f'┃ {ce("💰")} Danh sách người trúng và tiền được chia:\n'
                     + "\n".join([f'┃ {w}' for w in jackpot_winners]) +
                     f'\n┗━━━━━━━━━━━━━\n'
-                    f'{ce("🔄")} Hũ đã reset về 100.000đ'
+                    + (f'{ce("🔄")} Chỉ có 1 người chơi nên nổ 50% hũ · hũ còn lại {fmt_money(jackpot_amount)}đ'
+                       if _jp_solo else
+                       f'{ce("🔄")} Hũ đã nổ 100% · hũ mới {fmt_money(jackpot_amount)}đ')
                 )
                 try:
                     jackpot_post = await bot.send_message(chat_id, jackpot_notice, parse_mode=ParseMode.HTML)
@@ -4621,7 +4637,7 @@ async def ls_room_tx_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ================= START & MAIN MENU =================
 
-FAN_PROMO_IMAGE = os.getenv("FAN_PROMO_IMAGE", "fan_xoclo88.jpg")
+FAN_PROMO_IMAGE = os.getenv("FAN_PROMO_IMAGE", "fan_cavoixanh.jpg")
 FAN_REF_URL = f"https://t.me/{BOT_USERNAME}?start={{uid}}"
 
 def _fan_streak(uid):
@@ -4646,24 +4662,24 @@ def _fan_profile_check(chat, has_photo, uid):
     display_name = " ".join(x for x in [getattr(chat, "first_name", ""), getattr(chat, "last_name", "")] if x).strip()
     bio = getattr(chat, "bio", "") or ""
     need_link = FAN_REF_URL.format(uid=uid)
-    name_ok = "fan xoclo88" in display_name.casefold()
+    name_ok = "fan cavoixanh" in display_name.casefold()
     bio_ok = need_link.casefold() in bio.casefold()
     return display_name, name_ok, bool(has_photo), bio_ok, need_link
 
 def _fan_guide_text(uid, chat, has_photo):
     display, name_ok, photo_ok, bio_ok, ref_link = _fan_profile_check(chat, has_photo, uid)
-    base_name = (display or "Tên của bạn").replace("Fan Xoclo88", "").strip() or "Tên của bạn"
+    base_name = (display or "Tên của bạn").replace("Fan Cavoixanh", "").strip() or "Tên của bạn"
     ok_all = name_ok and photo_ok and bio_ok
     head = ("✅ <b>BẠN ĐÃ ĐỦ ĐIỀU KIỆN, GỬI /baodanh ĐỂ ĐIỂM DANH!</b>" if ok_all
             else "❌ <b>BẠN CHƯA ĐẶT TÊN / ẢNH / TIỂU SỬ ĐÚNG YÊU CẦU ĐỂ NHẬN 30.000</b>")
     return (
         f"{head}\n\n"
         f"👤 Tên hiện tại: <b>{html.escape(display or '(chưa đặt)')}</b>\n"
-        f"{'✅' if name_ok else '❌'} Tên {'đã' if name_ok else 'không'} chứa Fan Xoclo88\n"
+        f"{'✅' if name_ok else '❌'} Tên {'đã' if name_ok else 'không'} chứa Fan Cavoixanh\n"
         f"{'✅' if photo_ok else '❌'} Ảnh đại diện {'đã đúng yêu cầu' if photo_ok else 'chưa được đặt'}\n"
-        f"{'✅' if bio_ok else '❌'} Tiểu sử {'đã' if bio_ok else 'không'} chứa link giới thiệu của XOCLO88\n\n"
-        "✏️ Yêu cầu tên phải chứa cụm:\n<b>Fan Xoclo88</b>\n\n"
-        f"✏️ Ví dụ tên hợp lệ:\n<code>{html.escape(base_name)} Fan Xoclo88</code>\n\n"
+        f"{'✅' if bio_ok else '❌'} Tiểu sử {'đã' if bio_ok else 'không'} chứa link giới thiệu của CAVOIXANH\n\n"
+        "✏️ Yêu cầu tên phải chứa cụm:\n<b>Fan Cavoixanh</b>\n\n"
+        f"✏️ Ví dụ tên hợp lệ:\n<code>{html.escape(base_name)} Fan Cavoixanh</code>\n\n"
         "✏️ Set tiểu sử Telegram chứa link giới thiệu:\n"
         f"⭐ <code>{html.escape(ref_link)}</code>\n\n"
         "📅 Cần điểm danh đủ 7 ngày liên tiếp để nhận 30.000đ.\n"
@@ -4711,9 +4727,9 @@ async def fan_baodanh(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text("Bot chưa kiểm tra được hồ sơ Telegram. Bạn hãy thử lại sau.")
     display, name_ok, photo_ok, bio_ok, ref_link = _fan_profile_check(chat, has_photo, uid)
     report = (
-        "🌸 <b>FAN +30.000Đ · XOCLO88</b>\n"
+        "🌸 <b>FAN +30.000Đ · CAVOIXANH</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{'✅' if name_ok else '❌'} Tên hiển thị phải chứa: <b>Fan Xoclo88</b>\n"
+        f"{'✅' if name_ok else '❌'} Tên hiển thị phải chứa: <b>Fan Cavoixanh</b>\n"
         f"{'✅' if photo_ok else '❌'} Ảnh đại diện đã được đặt\n"
         f"{'✅' if bio_ok else '❌'} Tiểu sử có link giới thiệu cá nhân\n\n"
         f"👤 Tên hiện tại: <code>{html.escape(display or '(chưa đặt)')}</code>\n"
@@ -5598,7 +5614,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # nhập liệu đang chờ (pending_inputs), lệnh /code hay gửi mã trực tiếp.
     if query("SELECT 1 FROM admin_code_bans WHERE user_id=%s", (uid,)):
         code_like = (
-            txt.strip().upper().startswith("XOCLO88-")
+            txt.strip().upper().startswith(("CAVOIXANH-", "XOCLO88-"))
             or re.match(r"^/code(?:@\\w+)?(?:\\s|$)", txt.strip(), re.I)
             or re.match(r"^/nhapcode(?:@\\w+)?(?:\\s|$)", txt.strip(), re.I)
         )
@@ -5622,7 +5638,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_reply = update.effective_message
     key = re.sub(r'^[^\w]+', '', txt).strip()
 
-    if update.effective_chat.type == "private" and re.fullmatch(r'XOCLO88-[A-Z0-9]+(?:-[A-Z0-9]+)?', txt.strip().upper()):
+    if update.effective_chat.type == "private" and re.fullmatch(r'(?:CAVOIXANH|XOCLO88)-[A-Z0-9]+(?:-[A-Z0-9]+)?', txt.strip().upper()):
         code_in = txt.strip().upper()
         if await redeem_giftcode(update, uid, code_in):
             return
@@ -5750,7 +5766,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [btn("Mời đệ tử", "🧑‍🤝‍🧑", callback_data="ev_moi_de_tu")]
         ])
         return await user_reply.reply_text(
-            f'{ce("🎁")} <b>TRUNG TÂM EVENT XOCLO88</b>\nChọn chương trình bạn muốn xem hoặc nhận thưởng:',
+            f'{ce("🎁")} <b>TRUNG TÂM EVENT CAVOIXANH</b>\nChọn chương trình bạn muốn xem hoặc nhận thưởng:',
             reply_markup=kb, parse_mode=ParseMode.HTML)
 
     if key == "LỆNH":
@@ -6991,8 +7007,8 @@ TX3D_COVER_SECONDS = 20          # thời gian úp bát / mở bát trước khi
 TX3D_MIN_BET = 1000
 TX3D_MAX_BET = 10 ** 12
 TX3D_PAYOUT = 1.97               # thắng Tài/Xỉu nhận x1.97 (giống Tài Xỉu Room)
-TX3D_JP_MULT_MIN = 10            # nổ hũ: mỗi người nhận x10 đến x12 tiền cược (không ăn cả hũ)
-TX3D_JP_MULT_MAX = 12
+TX3D_JP_SOLO_RATE = 0.5          # nổ hũ mà phiên chỉ có 1 người chơi: người đó nhận 50% hũ
+TX3D_JP_FULL_MIN_PLAYERS = 2     # từ 2 người chơi trở lên: nổ 100% hũ, chia theo tỉ lệ tiền cược
 TX3D_POT_DEFAULT = 100000        # tiền hũ khi mới tạo / sau khi nổ
 TX3D_POT_RATE = 0.018            # 1,8% tiền thua cộng vào hũ (khi nhà thắng phiên đó)
 TX3D_BAO_REFUND = False          # True = Bão (3 mặt giống nhau, trừ 111 và 666) hoàn tiền cược; False = nhà ăn
@@ -7271,13 +7287,10 @@ def _tx3d_compute(dice, bets, rid, pot):
         winners = [(uid, b) for uid, b in bets.items() if b["side"] == jp_side]
         tb = sum(b["amt"] for _, b in winners)
         if winners and pot_total > 0 and tb > 0:
+            pool = int(pot_total * TX3D_JP_SOLO_RATE) if len(bets) < TX3D_JP_FULL_MIN_PLAYERS else int(pot_total)
             for uid, b in winners:
-                share[uid] = int(b["amt"] * _TX3D_RNG.randint(TX3D_JP_MULT_MIN, TX3D_JP_MULT_MAX))
+                share[uid] = int(pool * b["amt"] / tb)     # chia theo tỉ lệ tiền cược của người thắng hũ
             paid = sum(share.values())
-            if paid > pot_total:                      # hũ không đủ: chia lại theo tỉ lệ, không vượt quá hũ
-                for uid in share:
-                    share[uid] = int(share[uid] * pot_total / paid)
-                paid = sum(share.values())
             jp = {"id": rid, "total": paid, "n": len(winners),
                   "winners": sorted(((uid, _tx3d_mask(b["name"]), b["amt"], share[uid]) for uid, b in winners),
                                     key=lambda w: -w[3])[:5]}
@@ -8587,7 +8600,7 @@ GAME_RULES["tx3d"] = (
     f'• Tài: tổng 11-18 · Xỉu: tổng 3-10 · Thắng nhận x{TX3D_PAYOUT}.\n'
     f'• Mỗi phiên chỉ được cược một cửa (có thể cược thêm nhiều lần).\n'
     f'• Bão (3 mặt giống nhau): {"hoàn tiền cược" if TX3D_BAO_REFUND else "nhà cái ăn cả hai cửa"}.\n'
-    f'• Nổ hũ: 3 con 6 → cửa Tài ăn hũ · 3 con 1 → cửa Xỉu ăn hũ (người thắng hũ nhận x10–x12 tiền cược).\n'
+    f'• Nổ hũ: 3 con 6 → cửa Tài ăn hũ · 3 con 1 → cửa Xỉu ăn hũ (chỉ 1 người chơi trong phiên: nhận 50% hũ · từ 2 người chơi: nổ 100% hũ chia theo tiền cược).\n'
     f'• Số dư dùng chung với bot chính, cược/thắng tự cập nhật ngay.\n\n'
     f'{ce("💡")} <b>Bấm nút bên dưới để vào game.</b>'
 )
@@ -12056,6 +12069,99 @@ async def awp_api_reset_system(request):
     return _aw_json({"ok": True, "msg": f"Đã reset {count} bảng. Cấu hình settings được giữ lại."})
 
 
+# ---------- Top dây thắng / dây thua (xem theo ngày) + gửi code cho người chơi ----------
+def _awp_streak_top_sync(day, kind, min_len, limit=50):
+    k = DAY_STREAK_KIND[kind]
+    col, at = k["col"], k["at"]
+    rows = query(
+        f"SELECT user_id, MAX({col}) AS best, MIN({at}) AS first_at, "
+        f"MAX(CASE WHEN current_type=%s THEN current_count ELSE 0 END) AS cur "
+        f"FROM daily_streaks WHERE group_id = ANY(%s) AND day=%s AND {col}>=%s "
+        f"GROUP BY user_id ORDER BY best DESC, MIN({at}) ASC NULLS LAST, user_id ASC LIMIT {int(limit)}",
+        (kind, list(GROUP_IDS), day, int(min_len))) or []
+    ids = [int(r[0]) for r in rows]
+    info = _awp_user_infos(ids)
+    unames = {}
+    if ids:
+        for r in query("SELECT user_id, tg_username FROM users WHERE user_id = ANY(%s)", (ids,)) or []:
+            unames[int(r[0])] = r[1] or ""
+    rewards = {}
+    if ids:
+        for r in query("SELECT user_id, rank, code, sent FROM daily_streak_rewards "
+                       "WHERE day=%s AND kind=%s AND group_id = ANY(%s)", (day, kind, list(GROUP_IDS))) or []:
+            rewards[int(r[0])] = {"rank": int(r[1] or 0), "code": r[2] or "", "sent": int(r[3] or 0)}
+    out = []
+    for i, r in enumerate(rows, 1):
+        uid = int(r[0])
+        u = info.get(uid, {})
+        out.append({"rank": i, "user_id": uid, "name": u.get("name") or "", "username": unames.get(uid, ""),
+                    "best": int(r[1] or 0), "at": str(r[2] or ""), "current": int(r[3] or 0),
+                    "balance": int(u.get("balance", 0)), "reward": rewards.get(uid)})
+    days = [str(r[0]) for r in (query("SELECT DISTINCT day FROM daily_streaks ORDER BY day DESC LIMIT 60") or [])]
+    return {"day": day, "kind": kind, "min": int(min_len), "rows": out, "days": days, "today": _today_key()}
+
+
+async def awp_api_streak_top(request):
+    await asyncio.to_thread(_aw_auth, request)
+    kind = request.query.get("kind", "win")
+    if kind not in DAY_STREAK_KIND:
+        kind = "win"
+    day = request.query.get("day", "")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
+        day = _today_key()
+    try:
+        min_len = max(1, min(50, int(request.query.get("min", DAY_STREAK_MIN))))
+    except ValueError:
+        min_len = DAY_STREAK_MIN
+    data = await asyncio.to_thread(_awp_streak_top_sync, day, kind, min_len)
+    return _aw_json(data)
+
+
+async def awp_api_streak_send(request):
+    """Tạo 1 code (bất kỳ loại nào) gắn riêng cho 1 người chơi rồi nhắn thẳng cho họ qua bot."""
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    ctype = str(b.get("ctype", ""))
+    if ctype not in GIFT_TYPES:
+        return _aw_json({"err": "Loại code không hợp lệ"}, 400)
+    try:
+        uid = int(str(b.get("user_id", "")).strip())
+    except ValueError:
+        return _aw_json({"err": "ID người nhận không hợp lệ"}, 400)
+    if not await asyncio.to_thread(query, "SELECT 1 FROM users WHERE user_id=%s", (uid,)):
+        return _aw_json({"err": "Không tìm thấy người dùng này"}, 404)
+    try:
+        reward = _awp_int(b.get("reward"), 1000, 10 ** 8)
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Giá trị code phải từ 1.000đ đến 100.000.000đ"}, 400)
+    try:
+        wager = _awp_int(b.get("wager", 0), 0, 100)
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Vòng cược phải từ 0 đến 100"}, 400)
+    try:
+        minutes = _awp_int(b.get("minutes", 1440), 1, 525600)
+    except (ValueError, TypeError):
+        return _aw_json({"err": "Hạn dùng phải từ 1 phút đến 365 ngày"}, 400)
+    st = {"ctype": ctype, "reward": reward, "wager": wager, "duration": minutes, "qty": 1,
+          "require_deposit": 0, "required_amount": 0, "bound_user": uid}
+    codes, expiry = await asyncio.to_thread(_create_gift_codes, st, 0)
+    code = codes[0]
+    note = html.escape(str(b.get("note", "")).strip()[:200])
+    text = (f"🎁 <b>BẠN NHẬN ĐƯỢC {html.escape(GIFT_TYPES[ctype]['name'].upper())}</b>\n"
+            + (f"📝 {note}\n" if note else "")
+            + f"🎁 Giftcode: <code>{code}</code>\n"
+            + f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · "
+            + (f"Vòng cược x{wager}\n" if wager > 0 else "Không yêu cầu vòng cược\n")
+            + f"⏰ Hạn dùng đến {expiry.strftime('%d/%m/%Y %H:%M')}. Nhập bằng <code>/code {code}</code>.")
+    sent = await _awp_send(uid, text)
+    await asyncio.to_thread(_aw_log, s["user"], "GIFT_SEND",
+                            f"{ctype} {reward}đ x{wager} -> ID {uid} ({'đã nhắn' if sent else 'chưa nhắn được'}) {code}",
+                            _aw_ip(request))
+    return _aw_json({"ok": True, "code": code, "sent": bool(sent), "expiry": expiry.strftime("%d/%m/%Y %H:%M"),
+                     "msg": ("Đã gửi code cho người chơi" if sent else
+                             "Đã tạo code nhưng chưa nhắn được (người chơi chưa /start bot). Hãy copy code gửi tay.")})
+
+
 def admin_web_plus_register(app):
     r = app.router
     r.add_get("/admin/api/chart", awp_api_chart)
@@ -12075,6 +12181,8 @@ def admin_web_plus_register(app):
     r.add_post("/admin/api/u2/{uid}/{act}", awp_api_user_act)
     r.add_get("/admin/api/gift/types", awp_api_gift_types)
     r.add_post("/admin/api/gift/create", awp_api_gift_create)
+    r.add_get("/admin/api/gift/streak-top", awp_api_streak_top)
+    r.add_post("/admin/api/gift/streak-send", awp_api_streak_send)
     r.add_post("/admin/api/gift/delete", awp_api_gift_delete)
     r.add_get("/admin/api/gifts/unused", awp_api_unused)
     r.add_post("/admin/api/gifts/unused/delete", awp_api_unused_delete)
@@ -12351,19 +12459,71 @@ view.addEventListener('click',async function(ev){
 '''
 
 
+_AWP_JS_STREAK = r'''
+var SK={kind:'win',day:'',min:3};
+function skShift(n){var p=(SK.day||'').split('-');if(p.length!==3)return;var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]+n));SK.day=dt.getUTCFullYear()+'-'+('0'+(dt.getUTCMonth()+1)).slice(-2)+'-'+('0'+dt.getUTCDate()).slice(-2);}
+async function vStreak(){
+  var d=await api('gift/streak-top?kind='+SK.kind+'&min='+SK.min+(SK.day?'&day='+encodeURIComponent(SK.day):''));
+  var ty=await api('gift/types');
+  SK.day=d.day;
+  var win=SK.kind==='win';
+  var h='<div class="item"><div class="acts"><button class="btn '+(win?'':'gray')+'" id="skw">🔥 Top dây thắng</button><button class="btn '+(win?'gray':'')+'" id="skl">😭 Top dây thua</button></div>'
+   +'<div class="inl" style="margin-top:10px"><button class="btn gray" id="skp">◀</button><input type="date" id="skd" value="'+esc(d.day)+'"><button class="btn gray" id="skn">▶</button><button class="btn gray" id="skt">Hôm nay</button>'
+   +'<select id="skm" style="max-width:160px">'+[1,2,3,5,7,10].map(function(m){return '<option value="'+m+'"'+(m===d.min?' selected':'')+'>Dây từ '+m+' phiên</option>';}).join('')+'</select></div>'
+   +'<p class="mut" style="margin:8px 0 0">Ngày <b>'+esc(d.day)+'</b>'+(d.day===d.today?' (hôm nay · đang cập nhật theo từng phiên)':'')+' · '+d.rows.length+' người · dữ liệu từ Tài Xỉu Room, reset 00:00 mỗi ngày.</p></div>';
+  h+='<div id="skform"></div>';
+  h+='<div class="item tw"><table><tr><th>#</th><th>ID</th><th>Tên</th><th>Dây dài nhất</th><th>Đang chạy</th><th>Số dư</th><th>Code tự động</th><th></th></tr>'
+   +d.rows.map(function(r){
+     var rw=r.reward?('Top '+r.rank+' → '+esc(r.reward.code)+(r.reward.sent?' ✅':' ⏳')):'—';
+     return '<tr><td>'+r.rank+'</td><td><a href="#" data-open="'+esc(r.user_id)+'">'+esc(r.user_id)+'</a></td><td>'+esc(r.name)+(r.username?' <span class="mut">@'+esc(r.username)+'</span>':'')+'</td><td><b>'+r.best+'</b> phiên</td><td>'+(r.current||'—')+'</td><td>'+money(r.balance)+'</td><td>'+rw+'</td>'
+       +'<td><button class="btn ok skg" data-uid="'+esc(r.user_id)+'" data-name="'+esc(r.name)+'">🎁 Gửi code</button></td></tr>';}).join('')+'</table></div>'
+   +(d.rows.length?'':'<p class="mut">Ngày này chưa có ai đạt dây '+(win?'thắng':'thua')+' từ '+d.min+' phiên.</p>');
+  view.innerHTML=h;
+  var rl=function(){vStreak().catch(function(e){toast(e.message);});};
+  document.getElementById('skw').onclick=function(){SK.kind='win';rl();};
+  document.getElementById('skl').onclick=function(){SK.kind='loss';rl();};
+  document.getElementById('skp').onclick=function(){skShift(-1);rl();};
+  document.getElementById('skn').onclick=function(){skShift(1);rl();};
+  document.getElementById('skt').onclick=function(){SK.day='';rl();};
+  document.getElementById('skd').onchange=function(){if(this.value){SK.day=this.value;rl();}};
+  document.getElementById('skm').onchange=function(){SK.min=parseInt(this.value,10)||3;rl();};
+  var defType=win?'DAYTHANG':'DAYTHUA';
+  view.querySelectorAll('.skg').forEach(function(b){b.onclick=function(){
+    var uid=b.getAttribute('data-uid'),nm=b.getAttribute('data-name');
+    document.getElementById('skform').innerHTML='<div class="item"><b>🎁 Gửi code cho ID '+esc(uid)+(nm?' · '+esc(nm):'')+'</b>'
+     +'<div class="inl" style="margin-top:8px"><input id="sfu" value="'+esc(uid)+'" inputmode="numeric" placeholder="ID người nhận"><select id="sft">'+ty.types.map(function(t){return '<option value="'+esc(t.type)+'"'+(t.type===defType?' selected':'')+'>'+esc(t.name)+'</option>';}).join('')+'</select></div>'
+     +'<div class="inl" style="margin-top:8px"><input id="sfr" value="20k" placeholder="Giá trị (vd 20k)"><input id="sfw" value="3" inputmode="numeric" placeholder="Vòng cược"><input id="sfh" value="24" inputmode="numeric" placeholder="Hạn dùng (giờ)"></div>'
+     +'<div class="inl" style="margin-top:8px"><input id="sfn" placeholder="Lời nhắn kèm theo (không bắt buộc)"></div>'
+     +'<div class="acts" style="margin-top:8px"><button class="btn ok" id="sfs">Gửi code</button><button class="btn gray" id="sfc">Đóng</button></div><p class="mut" id="sfo" style="margin:8px 0 0"></p></div>';
+    document.getElementById('sfc').onclick=function(){document.getElementById('skform').innerHTML='';};
+    document.getElementById('sfs').onclick=async function(){
+      var sb=this;var u2=document.getElementById('sfu').value.trim(),ct=document.getElementById('sft').value,rw=pmoney(document.getElementById('sfr').value),wg=parseInt(document.getElementById('sfw').value,10)||0,hr=parseFloat(document.getElementById('sfh').value)||0;
+      if(!u2||!rw){toast('Nhập ID và giá trị code');return;}
+      if(!confirm('Gửi 1 code '+ct+' trị giá '+money(rw)+' (vòng cược x'+wg+') cho ID '+u2+'?'))return;
+      sb.disabled=true;
+      try{var r=await post('gift/streak-send',{user_id:u2,ctype:ct,reward:rw,wager:wg,minutes:Math.round(hr*60),note:document.getElementById('sfn').value});
+        document.getElementById('sfo').innerHTML=esc(r.msg)+'<br>Code: <b>'+esc(r.code)+'</b> · hạn đến '+esc(r.expiry);toast(r.msg);}
+      catch(e){toast(e.message);}
+      sb.disabled=false;};
+    document.getElementById('skform').scrollIntoView({behavior:'smooth',block:'start'});
+  };});
+}
+'''
+
+
 def _awp_patch_js(js):
     reps = [
         ("var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];",
          "var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];"),
         ("({stats:vStats,wd:vWd,dep:vDep,user:vUser,gift:vGift,log:vLog})[cur]()",
          "({stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog})[cur]()"),
-        ("['gift','Giftcode'],", "['gift','Giftcode'],['unused','Code chưa dùng'],"),
-        ("allowed[t[0]]", "allowed[t[0]==='unused'?'gift':t[0]]"),
-        ("gift:vGift2,", "gift:vGift2,unused:vUnused,"),
+        ("['gift','Giftcode'],", "['gift','Giftcode'],['unused','Code chưa dùng'],['streak','Top dây thắng/thua'],"),
+        ("allowed[t[0]]", "allowed[(t[0]==='unused'||t[0]==='streak')?'gift':t[0]]"),
+        ("gift:vGift2,", "gift:vGift2,unused:vUnused,streak:vStreak,"),
         ("""'<nav id="snav"></nav><div id="sbody"></div>'""",
          """'<div id="uplus"></div><nav id="snav"></nav><div id="sbody"></div>'"""),
         ("document.getElementById('bk').onclick=", "uPlus(id,p);document.getElementById('bk').onclick="),
-        ("document.getElementById('out').onclick=", _AWP_JS + "\ndocument.getElementById('out').onclick="),
+        ("document.getElementById('out').onclick=", _AWP_JS + _AWP_JS_STREAK + "\ndocument.getElementById('out').onclick="),
     ]
     for old, new in reps:
         if old not in js:
@@ -15433,10 +15593,10 @@ _ADM_CATS = [
         ("use", "taocode", "Tạo code thường", "x", "/taocode [số tiền] [lượt dùng]", "/taocode 10000 50"),
         ("use", "taocodeall", "Tạo nhiều code 1 lượt", "x", "/taocodeall [số tiền] [số lượng]", "/taocodeall 5000 20"),
         ("use", "xoacode", "Xoá code thường", "x", "/xoacode [mã]", "/xoacode ABC12345"),
-        ("use", "xoagift", "Xoá giftcode", "x", "/xoagift [mã]", "/xoagift XOCLO88-TANTHU-XXXXXXX"),
+        ("use", "xoagift", "Xoá giftcode", "x", "/xoagift [mã]", "/xoagift CAVOIXANH-TANTHU-XXXXXXX"),
         ("run", "dsnaphomnay", "Danh sách người đã nạp thành công hôm nay", "dsnaphomnay", None, None),
         ("use", "tangcodenap", "Tặng code thủ công cho người đã nạp", "x", "/tangcodenap [giá trị] [vòng cược] [hạn] [homnay|all|id1,id2] [nạp tối thiểu]", "/tangcodenap 20k 1 1n homnay"),
-        ("use", "yccode", "Thêm / gỡ yêu cầu nhập code (nạp trong ngày, tổng nạp)", "x", "/yccode [mã] nap|tongnap [số tiền] | off", "/yccode XOCLO88-TRIAN-ABC1234 nap 100k"),
+        ("use", "yccode", "Thêm / gỡ yêu cầu nhập code (nạp trong ngày, tổng nạp)", "x", "/yccode [mã] nap|tongnap [số tiền] | off", "/yccode CAVOIXANH-TRIAN-ABC1234 nap 100k"),
     ]),
     ("tk", "📊", "THỐNG KÊ & XUẤT FILE", "Thống kê hệ thống và xuất file Excel đẹp nhiều sheet.", [
         ("run", "thongke", "Bảng thống kê hôm nay / tháng / tổng", "thongke", None, None),
@@ -15470,7 +15630,7 @@ _ADM_CATS.append((
         ("use", "resetall", "Lệnh reset toàn bộ số dư (bí danh)", "x", "/resetall", "/resetall"),
         ("use", "xoalsall", "Xoá toàn bộ lịch sử", "x", "/xoalsall", "/xoalsall"),
         ("use", "xoals", "Xoá lịch sử một user", "x", "/xoals [ID]", "/xoals 123456789"),
-        ("use", "setname", "Đổi tên bot", "x", "/setname [tên mới]", "/setname XOCLO88"),
+        ("use", "setname", "Đổi tên bot", "x", "/setname [tên mới]", "/setname CAVOIXANH"),
         ("use", "kmnapvc", "Tặng khuyến mãi theo vòng cược", "x", "/kmnapvc [ID] [số tiền]", "/kmnapvc 123456789 20000"),
         ("use", "lsnap", "Lịch sử nạp của user", "x", "/lsnap [ID]", "/lsnap 123456789"),
         ("use", "lsrut", "Lịch sử rút kèm thông tin + QR", "x", "/lsrut [ID]", "/lsrut 123456789"),
@@ -16310,7 +16470,7 @@ async def yccode_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'<code>/yccode [mã] tongnap [số tiền]</code> — phải có <b>tổng nạp</b> đủ mức này\n'
         f'<code>/yccode [mã] off</code> — gỡ toàn bộ yêu cầu\n'
         f'<code>/yccode [mã]</code> — xem yêu cầu hiện tại\n\n'
-        f'{ce("💡")} VD: <code>/yccode XOCLO88-TRIAN-ABC1234 nap 100k</code>')
+        f'{ce("💡")} VD: <code>/yccode CAVOIXANH-TRIAN-ABC1234 nap 100k</code>')
     if not args:
         return await msg.reply_text(usage, parse_mode=ParseMode.HTML)
     code = args[0].strip().upper()
