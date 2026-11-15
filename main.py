@@ -5930,7 +5930,25 @@ class FakeCtx:
         self.chat_data = chat_data
         self.message = message
 
+async def _try_xuctele_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Chơi Xúc Xắc Tele bằng tin nhắn thường: 'XXC 10000' (cả chat riêng lẫn nhóm). Trả True nếu đã xử lý."""
+    msg = update.effective_message
+    txt = (msg.text or "").strip() if msg else ""
+    parts = txt.split()
+    if len(parts) != 2 or parts[0].lower() not in TELE_DICE_CHOICES:
+        return False
+    uid = update.effective_user.id
+    if is_banned(uid):
+        return True
+    if is_total_maintenance() and uid not in ADMIN_IDS:
+        return True
+    await xuctele_cmd(update, FakeCtx(ctx.bot, [parts[0].lower(), parts[1]], ctx.user_data, ctx.chat_data, msg))
+    return True
+
+
 async def handle_group_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if await _try_xuctele_text(update, ctx):
+        return
     if update.effective_chat.type == "private":
         await main_handler(update, ctx)
         return
@@ -8425,8 +8443,16 @@ async def xuctele_cmd(update, ctx):
             'Tỷ lệ x1.95 · Min 5.000đ · Max 100.000đ\n'
             'Cú pháp: <code>/xuctele xxc 10000</code>',
             parse_mode=ParseMode.HTML)
+    _a = args[1].lower().replace(",", "").replace(".", "")
     try:
-        amount = int(args[1].replace(",", "").replace(".", ""))
+        if _a in ("max", "all"):
+            amount = min(get_balance(update.effective_user.id), 100000)
+        elif _a.endswith("k"):
+            amount = int(float(_a[:-1]) * 1000)
+        elif _a.endswith("m"):
+            amount = int(float(_a[:-1]) * 1000000)
+        else:
+            amount = int(_a)
     except ValueError:
         return await update.effective_message.reply_text("Số tiền không hợp lệ.")
     if not 5000 <= amount <= 100000:
@@ -8442,8 +8468,10 @@ async def xuctele_cmd(update, ctx):
     before = bal_pre(uid)
     status = await update.effective_message.reply_text(f'{ce("🎲")} Đang tung xúc xắc...', parse_mode=ParseMode.HTML)
     try:
-        dice = await ctx.bot.send_dice(chat_id=update.effective_chat.id, emoji="🎲")
+        dice = await ctx.bot.send_dice(chat_id=update.effective_chat.id, emoji="🎲",
+                                       reply_to_message_id=update.effective_message.message_id)
         face, choice = dice.dice.value, args[0].lower()
+        await asyncio.sleep(3.5)   # chờ xúc xắc lăn xong rồi mới báo kết quả
         if face in TELE_DICE_CHOICES[choice]:
             prize = int(amount * 1.95)
             add_money(uid, prize, f"Thắng Xúc Xắc Tele {choice.upper()}")
