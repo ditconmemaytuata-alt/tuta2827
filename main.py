@@ -28,12 +28,12 @@ from aiohttp import web
 # ============================================================
 # CẤU HÌNH CHUNG
 # ============================================================
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = "9284968126:AAFRrDEizl0kCufDdImdQQyCR-noag_b3LY"
 DATABASE_URL = os.getenv("DATABASE_URL")
 SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằng biến môi trường; không hardcode khóa bí mật
 
 ADMIN_IDS = [5633649201, 7884394252]
-BOT_USERNAME = "xoclo88dtbot"
+BOT_USERNAME = "cavoixanh_cvxbot"
 SESSION_HISTORY_GROUP_ID = -1004464587619
 SESSION_HISTORY_URL = "https://t.me/lsphiencavoixanh"
 ROOM_LINK = "https://t.me/hocviencbm"
@@ -9648,20 +9648,22 @@ def _aw_hash_password(password: str, salt: bytes = None, iters: int = 200_000) -
     return f"pbkdf2_sha256${iters}${salt.hex()}${dk.hex()}"
 
 
-# Tài khoản SUPER ADMIN mặc định do chủ bot yêu cầu.
-# Tự đồng bộ mỗi lần khởi động để tránh mất quyền đăng nhập do /taoadmin trước đó.
+# Tài khoản SUPER ADMIN mặc định: CHỈ tạo khi bảng chưa có tài khoản nào.
+# Tuyệt đối không ghi đè mật khẩu / quyền của tài khoản đã tồn tại (tránh báo sai mật khẩu mỗi lần đổi code).
 def _aw_bootstrap_super_admin():
     try:
-        _super_hash = _aw_hash_password("123123123")
-        _super_perms = json.dumps({k: True for k in _AW_FEATURES})
-        # Chuyển quyền owner duy nhất sang username admin.
-        query("UPDATE admin_web_users SET is_owner=0 WHERE username<>%s", ("admin",))
+        if query("SELECT 1 FROM admin_web_users LIMIT 1"):
+            # Đảm bảo luôn còn ít nhất 1 chủ sở hữu đang hoạt động (không đụng tới mật khẩu)
+            if not query("SELECT 1 FROM admin_web_users WHERE is_owner=1 AND active=1 LIMIT 1"):
+                query("UPDATE admin_web_users SET is_owner=1, active=1, permissions=%s "
+                      "WHERE username=(SELECT username FROM admin_web_users ORDER BY created_at LIMIT 1)",
+                      (json.dumps({k: True for k in _AW_FEATURES}),))
+            return
         query("""INSERT INTO admin_web_users(username,pw_hash,created_by,created_at,active,is_owner,permissions)
-                 VALUES(%s,%s,%s,%s,1,1,%s)
-                 ON CONFLICT(username) DO UPDATE SET pw_hash=EXCLUDED.pw_hash, active=1,
-                 is_owner=1, permissions=EXCLUDED.permissions""",
-              ("admin", _super_hash, 0, get_vietnam_datetime_db(), _super_perms))
-        print("✅ SUPER ADMIN Web đã đồng bộ: admin")
+                 VALUES(%s,%s,%s,%s,1,1,%s) ON CONFLICT(username) DO NOTHING""",
+              ("admin", _aw_hash_password("123123123"), 0, get_vietnam_datetime_db(),
+               json.dumps({k: True for k in _AW_FEATURES})))
+        print("✅ Đã tạo SUPER ADMIN Web mặc định: admin")
     except Exception as _e:
         print(f"⚠️ Không thể khởi tạo SUPER ADMIN Web: {_e}")
 
@@ -17107,7 +17109,7 @@ async def auto_settle_tich_luy_loop(bot):
 async def main():
     global _bot_instance
     await application.initialize()
-    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @xoclo88dtbot.
+    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @cavoixanh_cvxbot.
     _identity = await application.bot.get_me()
     if (_identity.username or "").lower() != BOT_USERNAME.lower():
         raise RuntimeError(
