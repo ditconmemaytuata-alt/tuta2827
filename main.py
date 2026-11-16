@@ -515,13 +515,30 @@ class InlineKeyboardButton(_PTBInlineKeyboardButton):
 def _top_medal(rank: int) -> str:
     return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "🏅")
 
-def fmt_tx_status(status):
-    """Trạng thái giao dịch thống nhất: hoàn tất ✓, đang xử lý xoay, từ chối ✕."""
+def fmt_tx_status(status, completed_label="Đã hoàn thành"):
+    """Hiển thị trạng thái giao dịch bằng emoji Premium và nhãn tiếng Việt."""
     s = str(status or "").strip().lower()
-    if s in ("success", "successful", "completed", "approved", "done"):
-        return f'{ce("✅")} Đã hoàn thành'
-    if s in ("rejected", "failed", "cancelled", "declined"):
+    # Chấp nhận cả trạng thái tiếng Anh lẫn tiếng Việt lưu trong database.
+    success_values = (
+        "success", "successful", "completed", "approved", "done",
+        "paid", "đã hoàn thành", "da hoan thanh", "đã thanh toán",
+        "da thanh toan", "thành công", "thanh cong", "hoàn tất", "hoan tat"
+    )
+    rejected_values = (
+        "rejected", "failed", "cancelled", "canceled", "declined",
+        "từ chối", "tu choi", "bị từ chối", "bi tu choi"
+    )
+    pending_values = (
+        "pending", "processing", "waiting", "đang xử lý", "dang xu ly",
+        "chờ duyệt", "cho duyet", "chưa hoàn thành", "chua hoan thanh"
+    )
+    if s in success_values or any(v in s for v in ("đã thanh toán", "đã hoàn thành", "thành công")):
+        # Dùng ID Premium đã gán cho dấu tích trong CUSTOM_EMOJI.
+        return f'{ce("✅")} {completed_label}'
+    if s in rejected_values or any(v in s for v in ("từ chối", "thất bại", "that bai")):
         return f'{ce("❌")} Từ chối'
+    if s in pending_values or not s:
+        return f'{ce("🔄")} Đang xử lý'
     return f'{ce("🔄")} Đang xử lý'
 
 def fmt_money(amount: int) -> str:
@@ -5706,31 +5723,36 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         tong_rut = rut_res[0][0] if rut_res and rut_res[0][0] else 0
         cuoc_hom_nay, cuoc_tuan = get_bet_stats(uid)
 
+        # Trung tâm tài khoản: nhóm thao tác theo chức năng, dễ nhìn trên Telegram.
         kb = InlineKeyboardMarkup([
+            [btn("Nhận thưởng", "💰", callback_data="acc_nhan_thuong"), btn("Kho quà / Giftcode", "🎁", callback_data="acc_nhap_gift")],
+            [btn("Mua giftcode", "🎁", callback_data="acc_mua_gift"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("Lịch sử nạp", "📥", callback_data="acc_ls_nap"), btn("Lịch sử rút", "📤", callback_data="acc_ls_rut")],
             [btn("Lịch sử game", "🎮", callback_data="acc_ls_choi"), btn("Lịch sử Room TX", "🎲", callback_data="acc_ls_tx")],
-            [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "🛒", callback_data="acc_mua_gift")],
-            [btn("Nhận thưởng", "🏆", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
-            [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
-            [btn("Tích lũy nạp", "🪙", callback_data="acc_tich_luy")],
+            [btn("Hạng VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
+            [btn("Tích lũy nạp", "🎁", callback_data="acc_tich_luy")],
             [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
         ])
 
         msg = (
-            f'{ce("👤")} <b>THÔNG TIN TÀI KHOẢN</b>\n'
+            f'{ce("👤")} <b>TRUNG TÂM TÀI KHOẢN</b>\n'
+            f'╭━━━━━━━━━━━━━━━━━━━━╮\n'
+            f'   {ce("💰")} <b>SỐ DƯ HIỆN TẠI</b>\n'
+            f'   <code>{fmt_money(u[0])}đ</code>\n'
+            f'╰━━━━━━━━━━━━━━━━━━━━╯\n'
+            f'{ce("🆔")} Mã tài khoản: <code>{uid}</code>\n'
+            f'{ce("👑")} Danh hiệu: <b>{vip_name}</b>\n'
             f'━━━━━━━━━━━━━━━━━━━━\n'
-            f'{ce("🆔")} ID: <code>{uid}</code>\n'
-            f'{ce("💰")} Số dư: <code>{fmt_money(u[0])}đ</code>\n'
-            f'{ce("👑")} Cấp VIP: <code>{vip_name}</code>\n\n'
-            f'{ce("📊")} <b>THỐNG KÊ HOẠT ĐỘNG</b>\n'
-            f'{ce("🎯")} Cược hôm nay: <code>{fmt_money(cuoc_hom_nay)}đ</code>\n'
-            f'{ce("📅")} Cược tuần này: <code>{fmt_money(cuoc_tuan)}đ</code>\n'
-            f'{ce("🎮")} Tổng cược: <code>{fmt_money(u[5] or 0)}đ</code>\n'
+            f'{ce("📊")} <b>TỔNG QUAN GIAO DỊCH</b>\n'
             f'{ce("📥")} Tổng nạp: <code>{fmt_money(tong_nap)}đ</code>\n'
             f'{ce("📤")} Tổng rút: <code>{fmt_money(tong_rut)}đ</code>\n'
             f'━━━━━━━━━━━━━━━━━━━━\n'
-            f'{ce("🗓")} <b>{today_str}</b>\n'
-            f'{ce("🔥")} Chuỗi thắng: <b>0</b>  |  {ce("📉")} Chuỗi thua: <b>0</b>'
+            f'{ce("🎮")} <b>HOẠT ĐỘNG CHƠI GAME</b>\n'
+            f'{ce("🎯")} Cược hôm nay: <code>{fmt_money(cuoc_hom_nay)}đ</code>\n'
+            f'{ce("📅")} Cược tuần này: <code>{fmt_money(cuoc_tuan)}đ</code>\n'
+            f'{ce("🏆")} Tổng cược: <code>{fmt_money(u[5] or 0)}đ</code>\n'
+            f'━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("🗓")} <b>{today_str}</b>  ·  {ce("✨")} Chúc bạn may mắn!'
         )
         return await user_reply.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -9113,7 +9135,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = fmt_tx_status(row[1])
+                status_icon = fmt_tx_status(row[1], "Đã Thanh Toán")
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -9376,7 +9398,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = fmt_tx_status(row[1])
+                status_icon = fmt_tx_status(row[1], "Đã Thanh Toán")
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
