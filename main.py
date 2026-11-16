@@ -650,7 +650,7 @@ class InlineKeyboardButton(_PTBInlineKeyboardButton):
 def _top_medal(rank: int) -> str:
     return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "🏅")
 
-def fmt_tx_status(status, completed_label="Đã hoàn thành"):
+def fmt_tx_status(status, completed_label="Đã hoàn thành", success_emoji="✅"):
     """Hiển thị trạng thái giao dịch bằng emoji Premium và nhãn tiếng Việt."""
     s = str(status or "").strip().lower()
     # Chấp nhận cả trạng thái tiếng Anh lẫn tiếng Việt lưu trong database.
@@ -669,7 +669,7 @@ def fmt_tx_status(status, completed_label="Đã hoàn thành"):
     )
     if s in success_values or any(v in s for v in ("đã thanh toán", "đã hoàn thành", "thành công")):
         # Dùng ID Premium đã gán cho dấu tích trong CUSTOM_EMOJI.
-        return f'{ce("✅")} {completed_label}'
+        return f'{ce(success_emoji)} {completed_label}'
     if s in rejected_values or any(v in s for v in ("từ chối", "thất bại", "that bai")):
         return f'{ce("❌")} Từ chối'
     if s in pending_values or not s:
@@ -9265,7 +9265,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = fmt_tx_status(row[1], "Đã Thanh Toán")
+                status_icon = fmt_tx_status(row[1], "Đã Thanh Toán", "✔️")
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -9528,7 +9528,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not data: text += "Trống."
         else:
             for row in data:
-                status_icon = fmt_tx_status(row[1], "Đã Thanh Toán")
+                status_icon = fmt_tx_status(row[1], "Đã Thanh Toán", "✔️")
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
