@@ -5723,36 +5723,31 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         tong_rut = rut_res[0][0] if rut_res and rut_res[0][0] else 0
         cuoc_hom_nay, cuoc_tuan = get_bet_stats(uid)
 
-        # Trung tâm tài khoản: nhóm thao tác theo chức năng, dễ nhìn trên Telegram.
         kb = InlineKeyboardMarkup([
-            [btn("Nhận thưởng", "💰", callback_data="acc_nhan_thuong"), btn("Kho quà / Giftcode", "🎁", callback_data="acc_nhap_gift")],
-            [btn("Mua giftcode", "🎁", callback_data="acc_mua_gift"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("Lịch sử nạp", "📥", callback_data="acc_ls_nap"), btn("Lịch sử rút", "📤", callback_data="acc_ls_rut")],
             [btn("Lịch sử game", "🎮", callback_data="acc_ls_choi"), btn("Lịch sử Room TX", "🎲", callback_data="acc_ls_tx")],
-            [btn("Hạng VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
-            [btn("Tích lũy nạp", "🎁", callback_data="acc_tich_luy")],
+            [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "💳", callback_data="acc_mua_gift")],
+            [btn("Nhận thưởng", "💰", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
+            [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
+            [btn("Tích lũy nạp", "🪙", callback_data="acc_tich_luy")],
             [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
         ])
 
         msg = (
-            f'{ce("👤")} <b>TRUNG TÂM TÀI KHOẢN</b>\n'
-            f'╭━━━━━━━━━━━━━━━━━━━━╮\n'
-            f'   {ce("💰")} <b>SỐ DƯ HIỆN TẠI</b>\n'
-            f'   <code>{fmt_money(u[0])}đ</code>\n'
-            f'╰━━━━━━━━━━━━━━━━━━━━╯\n'
-            f'{ce("🆔")} Mã tài khoản: <code>{uid}</code>\n'
-            f'{ce("👑")} Danh hiệu: <b>{vip_name}</b>\n'
+            f'{ce("👤")} <b>THÔNG TIN TÀI KHOẢN</b>\n'
             f'━━━━━━━━━━━━━━━━━━━━\n'
-            f'{ce("📊")} <b>TỔNG QUAN GIAO DỊCH</b>\n'
+            f'{ce("🆔")} ID: <code>{uid}</code>\n'
+            f'{ce("💰")} Số dư: <code>{fmt_money(u[0])}đ</code>\n'
+            f'{ce("👑")} Cấp VIP: <code>{vip_name}</code>\n\n'
+            f'{ce("📊")} <b>THỐNG KÊ HOẠT ĐỘNG</b>\n'
+            f'{ce("🎯")} Cược hôm nay: <code>{fmt_money(cuoc_hom_nay)}đ</code>\n'
+            f'{ce("📅")} Cược tuần này: <code>{fmt_money(cuoc_tuan)}đ</code>\n'
+            f'{ce("🎮")} Tổng cược: <code>{fmt_money(u[5] or 0)}đ</code>\n'
             f'{ce("📥")} Tổng nạp: <code>{fmt_money(tong_nap)}đ</code>\n'
             f'{ce("📤")} Tổng rút: <code>{fmt_money(tong_rut)}đ</code>\n'
             f'━━━━━━━━━━━━━━━━━━━━\n'
-            f'{ce("🎮")} <b>HOẠT ĐỘNG CHƠI GAME</b>\n'
-            f'{ce("🎯")} Cược hôm nay: <code>{fmt_money(cuoc_hom_nay)}đ</code>\n'
-            f'{ce("📅")} Cược tuần này: <code>{fmt_money(cuoc_tuan)}đ</code>\n'
-            f'{ce("🏆")} Tổng cược: <code>{fmt_money(u[5] or 0)}đ</code>\n'
-            f'━━━━━━━━━━━━━━━━━━━━\n'
-            f'{ce("🗓")} <b>{today_str}</b>  ·  {ce("✨")} Chúc bạn may mắn!'
+            f'{ce("🗓")} <b>{today_str}</b>\n'
+            f'{ce("🔥")} Chuỗi thắng: <b>0</b>  |  {ce("📉")} Chuỗi thua: <b>0</b>'
         )
         return await user_reply.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
 
