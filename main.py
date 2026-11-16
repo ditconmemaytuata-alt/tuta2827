@@ -19,7 +19,7 @@ import psycopg2
 from psycopg2 import extras
 import pytz
 from telegram import (Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, WebAppInfo, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ApplicationHandlerStop
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ApplicationHandlerStop, TypeHandler
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter
 import aiohttp
@@ -1126,6 +1126,13 @@ def get_setting(key, default=None):
 def set_setting(key, value):
     query("INSERT INTO settings(key, value) VALUES(%s, %s) "
           "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (key, str(value)))
+
+# CÔNG TẮC "TẮT HỆ THỐNG" (web admin): True = bot như chết hoàn toàn (không nhận lệnh, không gửi tin,
+# không chạy game, không tính tương tác). Lưu trong settings nên giữ nguyên sau khi restart.
+try:
+    SYSTEM_KILLED = (get_setting("system_killed", "0") == "1")
+except Exception:
+    SYSTEM_KILLED = False
 
 try:
     _session_counter_row = query("SELECT value FROM settings WHERE key='dice_session_counter'")
@@ -2645,6 +2652,9 @@ async def settle_due(bot):
 
 async def reward_settle_loop(bot):
     while True:
+        if SYSTEM_KILLED:
+            await asyncio.sleep(5)
+            continue
         try:
             await settle_due(bot)
         except Exception as e:
@@ -3222,19 +3232,23 @@ async def dsgift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 backfill_bet_daily()
 
 INTERACTION_MILESTONES = [
-    (50, 3333),
-    (100, 6666),
-    (200, 11111),
-    (500, 15555),
-    (1000, 22222),
-    (2000, 25555),
+    (50, 2222),
+    (100, 3333),
+    (200, 6666),
+    (500, 11111),
+    (1000, 15555),
+    (2000, 22222),
     (3000, 33333),
-    (4000, 37777),
-    (5000, 55556),
-    (6000, 88888),
+    (4000, 44444),
+    (5000, 55555),
+    (6000, 66666),
+    (7000, 77777),
 ]
-TOP_INTERACTION_PRIZES = {1: 22222, 2: 18888, 3: 15000, 4: 13333,
-                          5: 10000, 6: 10000, 7: 10000, 8: 10000, 9: 10000, 10: 10000}
+INTERACTION_CYCLE_MAX = 7000   # đủ 7.000 tin thì reset bộ đếm về 0, bắt đầu chu kỳ mới
+INTERACTION_WAGER = 5          # code mốc tương tác: x5 vòng cược
+TOP_INTERACTION_WAGER = 7      # code Top ngày: giữ nguyên x7
+TOP_INTERACTION_PRIZES = {1: 20000, 2: 15000, 3: 10000,
+                          4: 5000, 5: 5000, 6: 5000, 7: 5000, 8: 5000, 9: 5000, 10: 5000}
 # Chống spam: mỗi người, mỗi nhóm, trong 10 giây chỉ tính TỐI ĐA 1 tin hợp lệ.
 # (gửi 2-4 tin liên tiếp trong 10 giây vẫn chỉ được cộng 1 tin)
 INTERACTION_WINDOW_SECONDS = 10
@@ -3275,6 +3289,11 @@ def _parse_db_date(value):
 
 # Cột delivered: NULL = code cũ (coi như đã gửi), 0 = chưa gửi được, 1 = đã gửi riêng thành công.
 query("ALTER TABLE interaction_reward_claims ADD COLUMN IF NOT EXISTS delivered INTEGER")
+query("ALTER TABLE group_interactions ADD COLUMN IF NOT EXISTS cycle_no INTEGER DEFAULT 1")
+
+def _cycle_key(cycle_no):
+    """Khoá lưu mốc đã nhận theo CHU KỲ (cột date của interaction_reward_claims), không reset theo ngày."""
+    return f"C{int(cycle_no or 1)}"
 
 async def _deliver_interaction_code(bot, uid, milestone, reward, code):
     """Gửi code vào tin nhắn riêng. Trả về True nếu gửi được."""
@@ -3284,7 +3303,7 @@ async def _deliver_interaction_code(bot, uid, milestone, reward, code):
             f"🎁 <b>QUÀ TƯƠNG TÁC NHÓM</b>\n"
             f"Bạn đã đạt mốc <b>{milestone:,}</b> tin nhắn hợp lệ.\n"
             f"Mã giftcode: <code>{code}</code>\n"
-            f"Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược: <b>x7</b>\n"
+            f"Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược: <b>x{INTERACTION_WAGER}</b>\n"
             f"Nhập bằng lệnh <code>/code {code}</code> hoặc gửi thẳng mã cho bot.",
             parse_mode=ParseMode.HTML
         )
@@ -3300,7 +3319,7 @@ async def _send_interaction_code(bot, uid, group_id, milestone, reward, date_tex
     inserted = query(
         "INSERT INTO giftcodes (code, ctype, reward, wager, expiry, require_deposit, required_amount, "
         "bound_user, used, created_by, created_at) "
-        "VALUES (%s,'INTERACT',%s,7,%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
+        f"VALUES (%s,'INTERACT',%s,{INTERACTION_WAGER},%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
         (code, reward, expiry, uid, get_vietnam_datetime_db())
     )
     if not inserted:
@@ -3349,15 +3368,15 @@ async def _resend_undelivered(bot, uid, group_id, date_text):
     rows = query(
         "SELECT c.milestone, c.code, c.reward_amount FROM interaction_reward_claims c "
         "JOIN giftcodes g ON g.code=c.code "
-        "WHERE c.user_id=%s AND c.group_id=%s AND c.date=%s AND c.delivered=0 "
+        "WHERE c.user_id=%s AND c.group_id=%s AND c.delivered=0 "
         "AND g.used=0 AND (g.expiry IS NULL OR g.expiry > NOW()) ORDER BY c.milestone",
-        (uid, group_id, date_text)
+        (uid, group_id)
     ) or []
     ok_n = fail_n = 0
     for milestone, code, reward in rows:
         if await _deliver_interaction_code(bot, uid, int(milestone), int(reward or 0), code):
-            query("UPDATE interaction_reward_claims SET delivered=1 WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
-                  (uid, group_id, date_text, milestone))
+            query("UPDATE interaction_reward_claims SET delivered=1 WHERE user_id=%s AND group_id=%s AND code=%s",
+                  (uid, group_id, code))
             ok_n += 1
         else:
             fail_n += 1
@@ -3411,19 +3430,15 @@ async def track_interaction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ON CONFLICT (user_id, group_id, date) DO UPDATE SET
             interaction_count = daily_top_interactions.interaction_count + 1
     """, (uid, gid, today))
-    # Bộ đếm dài hạn của /checktt tự bắt đầu chu kỳ mới khi đủ 6.000 tin.
-    cycle_row = query("SELECT interaction_count FROM group_interactions WHERE user_id=%s AND group_id=%s",
-                      (uid, gid))
-    cycle_count = int(cycle_row[0][0] or 0) if cycle_row else 0
-    if cycle_count >= 6000:
-        query("UPDATE group_interactions SET interaction_count=0 WHERE user_id=%s AND group_id=%s",
-              (uid, gid))
-    total = query(
-        "SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
-        (uid, gid, today)
-    )
-    count = int(total[0][0] or 0) if total else 0
-    await _issue_interaction_rewards(ctx.bot, uid, gid, count, today)
+    # Bộ đếm cộng dồn qua nhiều ngày (KHÔNG reset 00:00). Chỉ reset về 0 khi đủ 7.000 tin.
+    cyc = query("SELECT interaction_count, COALESCE(cycle_no,1) FROM group_interactions WHERE user_id=%s AND group_id=%s",
+                (uid, gid))
+    cycle_count = int(cyc[0][0] or 0) if cyc else 0
+    cycle_no = int(cyc[0][1] or 1) if cyc else 1
+    await _issue_interaction_rewards(ctx.bot, uid, gid, cycle_count, _cycle_key(cycle_no))
+    if cycle_count >= INTERACTION_CYCLE_MAX:
+        query("UPDATE group_interactions SET interaction_count=0, cycle_no=COALESCE(cycle_no,1)+1 "
+              "WHERE user_id=%s AND group_id=%s", (uid, gid))
 
 
 JACKPOT_RATE = 0.018   # 1,8% tiền thua của phiên được trích cộng vào hũ jackpot
@@ -6937,6 +6952,9 @@ async def promo_golden_loop(bot):
     """Tự động thông báo bật/tắt giờ vàng vào nhóm + gửi báo cáo cuối ngày cho admin."""
     last = None
     while True:
+        if SYSTEM_KILLED:
+            await asyncio.sleep(5)
+            continue
         try:
             active = promo_is_active()
             if last is None:
@@ -7410,7 +7428,7 @@ async def _tx3d_user(uid, fresh=False):
 
 
 def _tx3d_load_flags():
-    rows = query("SELECT key, value FROM settings WHERE key IN (%s, 'mt_tongbao', 'system_maintenance')", (TX3D_MT_KEY,)) or []
+    rows = query("SELECT key, value FROM settings WHERE key IN (%s, 'mt_tongbao', 'system_maintenance', 'system_killed')", (TX3D_MT_KEY,)) or []
     return {k: v for k, v in rows}
 
 
@@ -7588,6 +7606,9 @@ async def tx3d_loop():
     print(f"✅ Miniapp {TX3D_NAME}: sẵn sàng (hũ {G.pot:,}đ, phiên kế tiếp #{G.round_id + 1})")
     test = False
     while True:
+        if SYSTEM_KILLED:
+            await asyncio.sleep(3)
+            continue
         try:
             async with _tx3d_lock():
                 G.round_id += 1
@@ -7674,6 +7695,8 @@ async def tx3d_api_state(request):
     is_admin = uid in ADMIN_IDS
     if (banned or gban) and not is_admin:
         return _tx3d_json({"err": 1, "msg": "Tài khoản của bạn đã bị khóa"})
+    if SYSTEM_KILLED or flags.get("system_killed") == "1":
+        return _tx3d_json({"err": 1, "msg": "Hệ thống đã tắt"})
     if (flags.get("mt_tongbao") == "1" or flags.get("system_maintenance") == "1") and not is_admin:
         return _tx3d_json({"err": 1, "msg": "Hệ thống đang bảo trì, vui lòng quay lại sau"})
     mt = flags.get(TX3D_MT_KEY) == "1" and not is_admin
@@ -7701,6 +7724,8 @@ async def tx3d_api_bet(request):
         return _tx3d_json({"err": "Game đang khởi động, thử lại sau vài giây"})
     flags = await _tx3d_flags()
     is_admin = uid in ADMIN_IDS
+    if SYSTEM_KILLED or flags.get("system_killed") == "1":
+        return _tx3d_json({"err": "Hệ thống đã tắt"})
     if not is_admin:
         if flags.get(TX3D_MT_KEY) == "1":
             return _tx3d_json({"err": "Game Tài Xỉu 3D đang bảo trì"})
@@ -9410,7 +9435,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if rows:
             for rank, (player_id, best, _t) in enumerate(rows, 1):
                 medal = _top_medal(rank)
-                prize = DAY_STREAK_PRIZES.get(rank)
+                prize = _streak_prize(streak_type, rank) or None
                 reward_text = f' | thưởng <b>{fmt_money(prize)}đ</b>' if prize else ''
                 lines.append(f'{medal} Top {rank}: <code>{mask_user_id(player_id)}</code> | '
                              f'<b>{int(best or 0)} phiên {word} liên tiếp</b>{reward_text}')
@@ -11399,7 +11424,7 @@ def _awp_control_sync():
     rooms = [{"id": g, "muted": _is_room_muted(g), "bet": bool(room_betting_enabled.get(g, True))} for g in GROUP_IDS]
     return {
         "games": games, "features": feats, "rooms": rooms,
-        "system": is_system_maintenance(), "total": is_total_maintenance(),
+        "system": is_system_maintenance(), "total": is_total_maintenance(), "killed": bool(SYSTEM_KILLED),
         "promo_mode": promo_mode(), "promo_active": promo_is_active(), "promo_windows": promo_windows_text(),
         "rebate_ngay": get_rebate_pct("ngay"), "rebate_tuan": get_rebate_pct("tuan"),
         "jackpot": int(get_jackpot()), "tx3d_pot": int(TX3D.pot), "bot_name": get_bot_name(),
@@ -11420,7 +11445,7 @@ async def awp_api_control(request):
 
 def _awp_mt_keys():
     keys = {v[0] for v in ADMIN_GAMES.values()} | {v[0] for v in ADMIN_FEATURES.values()}
-    return keys | {"system_maintenance", "mt_tongbao", "mt_rut_momo", "mt_rut_zalopay", "mt_rut_banking"}
+    return keys | {"system_killed", "system_maintenance", "mt_tongbao", "mt_rut_momo", "mt_rut_zalopay", "mt_rut_banking"}
 
 
 async def awp_api_mt(request):
@@ -11430,7 +11455,9 @@ async def awp_api_mt(request):
     if key not in _awp_mt_keys():
         return _aw_json({"err": "Khoá bảo trì không hợp lệ"}, 400)
     await asyncio.to_thread(set_setting, key, val)
-    await asyncio.to_thread(_aw_log, s["user"], "MAINTENANCE", f"{key}={val}", _aw_ip(request))
+    if key == "system_killed":
+        globals()["SYSTEM_KILLED"] = (val == "1")
+    await asyncio.to_thread(_aw_log, s["user"], "SYSTEM_KILL" if key == "system_killed" else "MAINTENANCE", f"{key}={val}", _aw_ip(request))
     return _aw_json({"ok": True})
 
 
@@ -12546,7 +12573,8 @@ async function udetail(g){
 
 async function vCtl(){
   var d=await api('control');
-  var h='<div class="item"><b>🛠 Bảo trì</b><p class="mut" style="margin:4px 0 8px">Xanh = hoạt động · đỏ = đang bảo trì (admin vẫn chơi được). Bấm để đổi.</p><div class="acts">'+sw('Toàn hệ thống','system_maintenance',d.system)+sw('Toàn bộ (kể cả menu)','mt_tongbao',d.total)+'</div></div>';
+  var h='<div class="item" style="border:1px solid #ff4d4d"><b>⏻ Tắt hệ thống</b><p class="mut" style="margin:4px 0 8px">Khi TẮT: bot như chết hẳn — không nhận lệnh, không gửi tin, không chạy game, không tính tương tác ở nhóm. Cược phiên đang mở được hoàn lại. Web admin vẫn hoạt động để bật lại.</p><div class="acts">'+(d.killed?'<button class="btn ok" data-x="mt" data-key="system_killed" data-v="0" data-cf="Bật lại toàn bộ hệ thống bot?">🟢 BẬT LẠI HỆ THỐNG (đang TẮT)</button>':'<button class="btn bad" data-x="mt" data-key="system_killed" data-v="1" data-cf="TẮT TOÀN BỘ hệ thống bot? Bot sẽ như chết hoàn toàn cho tới khi bật lại.">🔴 TẮT HỆ THỐNG (đang chạy)</button>')+'</div></div>';
+  h+='<div class="item"><b>🛠 Bảo trì</b><p class="mut" style="margin:4px 0 8px">Xanh = hoạt động · đỏ = đang bảo trì (admin vẫn chơi được). Bấm để đổi.</p><div class="acts">'+sw('Toàn hệ thống','system_maintenance',d.system)+sw('Toàn bộ (kể cả menu)','mt_tongbao',d.total)+'</div></div>';
   h+='<div class="item"><b>🎮 Game</b><div class="acts">'+d.games.map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div><div class="acts"><button class="btn bad" data-x="mtall" data-v="1" data-scope="games" data-cf="Bảo trì TẤT CẢ game?">Bảo trì tất cả game</button><button class="btn ok" data-x="mtall" data-v="0" data-scope="games">Mở tất cả game</button></div></div>';
   h+='<div class="item"><b>💳 Nạp / Rút tổng</b><div class="acts">'+d.features.filter(function(g){return g.key==='mt_nap'||g.key==='mt_rut';}).map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div></div>';
   h+='<div class="item"><b>🏧 Bảo trì riêng từng cổng rút</b><p class="mut">Tắt một cổng không ảnh hưởng các cổng còn lại.</p><div class="acts">'+d.payout_channels.map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div></div>';
@@ -13052,7 +13080,7 @@ async def _interaction_top_text(bot, group_id, date_text, limit=10):
     lines += [
         "",
         "⏱ Chốt bảng lúc 00:00; giftcode Top 10 được gửi riêng qua bot.",
-        "🎁 Giftcode thưởng yêu cầu x7 vòng cược và hết hạn sau 24 giờ.",
+        f"🎁 Giftcode thưởng yêu cầu x{TOP_INTERACTION_WAGER} vòng cược và hết hạn sau 24 giờ.",
         "",
         f"⚠️ Mỗi {INTERACTION_WINDOW_SECONDS} giây chỉ tính tối đa 1 tin. Không spam, flood, gửi lặp ký tự hoặc dùng bot/farm tương tác; nội dung quảng cáo/spam không được tính.",
         "💡 Gõ /checktt để xem tiến trình của bạn."
@@ -13132,14 +13160,11 @@ async def topsodu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
 def _interaction_reward_table(count, claimed):
-    """Bảng mốc thưởng tin nhắn: ✅ đã đạt, ❌ chưa đạt."""
+    """Bảng mốc thưởng tin nhắn (cộng dồn): ✅ đã đạt, ❌ chưa đạt."""
     rows = []
     for m, reward in INTERACTION_MILESTONES:
         if count >= m:
-            if count < 200:
-                tag = "đạt mốc; cần đủ 200 tin/ngày mới nhận code"
-            else:
-                tag = "đã nhận code" if m in claimed else "đạt mốc, gõ /checktt để nhận"
+            tag = "đã nhận code" if m in claimed else "đạt mốc, gõ /checktt để nhận"
             rows.append(f"✅ <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>{tag}</i>")
         else:
             rows.append(f"❌ <b>{fmt_money(m)}</b> tin → <b>{fmt_money(reward)}đ</b> · <i>còn {fmt_money(m-count)} tin</i>")
@@ -13148,9 +13173,9 @@ def _interaction_reward_table(count, claimed):
 def _interaction_top_prize_table():
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = []
-    for rank in (1, 2, 3, 4):
-        lines.append(f"{medals.get(rank, '🔝')} Top {rank} → <b>{fmt_money(TOP_INTERACTION_PRIZES[rank])}đ</b>")
-    lines.append(f"⭐️ Top 5 - 10 → <b>{fmt_money(TOP_INTERACTION_PRIZES[5])}đ</b> / người")
+    for rank in (1, 2, 3):
+        lines.append(f"{medals[rank]} Top {rank} → <b>{fmt_money(TOP_INTERACTION_PRIZES[rank])}đ</b>")
+    lines.append(f"⭐️ Top 4 - 10 → <b>{fmt_money(TOP_INTERACTION_PRIZES[4])}đ</b> / người")
     return "\n".join(lines)
 
 async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -13165,21 +13190,24 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.effective_message.reply_text("Chưa cấu hình nhóm tương tác.")
     today = get_vietnam_date()
 
-    # Số tin HÔM NAY: đây là số dùng để xét mốc thưởng (khớp với lúc phát code).
+    # Số tin HÔM NAY: chỉ dùng cho xếp hạng Top ngày.
     daily_row = query("SELECT interaction_count FROM daily_top_interactions WHERE user_id=%s AND group_id=%s AND date=%s",
                       (user.id, group_id, today))
-    count = int(daily_row[0][0] or 0) if daily_row else 0
-    cycle_row = query("SELECT interaction_count FROM group_interactions WHERE user_id=%s AND group_id=%s",
+    daily_count = int(daily_row[0][0] or 0) if daily_row else 0
+    # Số tin CỘNG DỒN (không reset theo ngày, chỉ reset khi đủ 7.000): dùng để xét mốc thưởng.
+    cycle_row = query("SELECT interaction_count, COALESCE(cycle_no,1) FROM group_interactions WHERE user_id=%s AND group_id=%s",
                       (user.id, group_id))
-    cycle_count = int(cycle_row[0][0] or 0) if cycle_row else 0
+    count = int(cycle_row[0][0] or 0) if cycle_row else 0
+    cycle_no = int(cycle_row[0][1] or 1) if cycle_row else 1
+    claim_key = _cycle_key(cycle_no)
 
     # Phát code trực tiếp qua bot: gửi lại code lỗi cũ trước, rồi phát các mốc mới đủ điều kiện.
     resent_ok = resent_fail = 0
     new_items = []
     try:
-        resent_ok, resent_fail = await _resend_undelivered(ctx.bot, user.id, group_id, today)
-        if count >= 200:
-            new_items = await _issue_interaction_rewards(ctx.bot, user.id, group_id, count, today, notify_group=False)
+        resent_ok, resent_fail = await _resend_undelivered(ctx.bot, user.id, group_id, claim_key)
+        if count >= INTERACTION_MILESTONES[0][0]:
+            new_items = await _issue_interaction_rewards(ctx.bot, user.id, group_id, count, claim_key, notify_group=False)
     except Exception as e:
         print(f"Lỗi phát code /checktt cho {user.id}: {e}")
         traceback.print_exc()
@@ -13188,20 +13216,18 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     rank_rows = query(
         "SELECT COUNT(*) + 1 FROM daily_top_interactions WHERE group_id=%s AND date=%s AND interaction_count > %s",
-        (group_id, today, count)
+        (group_id, today, daily_count)
     ) or []
     rank = int(rank_rows[0][0] or 1) if rank_rows else 1
     claimed_rows = query("SELECT milestone FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s ORDER BY milestone",
-                         (user.id, group_id, today)) or []
+                         (user.id, group_id, claim_key)) or []
     claimed = {int(r[0]) for r in claimed_rows}
     next_milestone = next(((m, reward) for m, reward in INTERACTION_MILESTONES if count < m), None)
-    if count < 200:
-        progress = f"🔒 Cần tối thiểu 200 tin hợp lệ/ngày để nhận giftcode. Bạn còn <b>{200-count}</b> tin."
-    elif next_milestone:
+    if next_milestone:
         m, reward = next_milestone
         progress = f"🎯 Mốc tiếp theo: <b>{fmt_money(m)}</b> tin — còn <b>{fmt_money(m-count)}</b> tin để nhận <b>{fmt_money(reward)}đ</b>."
     else:
-        progress = "👑 Bạn đã đạt toàn bộ mốc tương tác trong ngày!"
+        progress = "👑 Bạn đã đạt toàn bộ mốc của chu kỳ này!"
     total_reward = sum(r for _, r in INTERACTION_MILESTONES)
     earned_total = sum(r for m, r in INTERACTION_MILESTONES if count >= m)
 
@@ -13215,16 +13241,16 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         notice += "\n"
 
     await update.effective_message.reply_text(
-        f"📊 <b>THỐNG KÊ TƯƠNG TÁC HÔM NAY</b>\n"
+        f"📊 <b>THỐNG KÊ TƯƠNG TÁC</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 {html.escape(user.full_name or 'Thành viên')} · ID {mask_user_id(user.id)}\n"
-        f"💬 Tin hợp lệ hôm nay: <b>{fmt_money(count)}</b>\n"
-        f"🔁 Tích lũy chu kỳ: <b>{fmt_money(cycle_count)}</b>/6.000\n"
-        f"🏆 Thứ hạng hiện tại: <b>{('#' + str(rank)) if count else 'Chưa có hạng'}</b>\n"
+        f"💬 Tin hợp lệ hôm nay: <b>{fmt_money(daily_count)}</b>\n"
+        f"🔁 Tích lũy chu kỳ: <b>{fmt_money(count)}</b>/{fmt_money(INTERACTION_CYCLE_MAX)} <i>(không reset theo ngày)</i>\n"
+        f"🏆 Thứ hạng hôm nay: <b>{('#' + str(rank)) if daily_count else 'Chưa có hạng'}</b>\n"
         f"💰 Đã đạt: <b>{fmt_money(earned_total)}đ</b> / {fmt_money(total_reward)}đ\n\n"
         f"{notice}"
         f"{progress}\n\n"
-        f"🎁 <b>BẢNG MỐC THƯỞNG TIN NHẮN</b>\n"
+        f"🎁 <b>BẢNG MỐC THƯỞNG TIN NHẮN</b> <i>(x{INTERACTION_WAGER} vòng cược)</i>\n"
         f"{_interaction_reward_table(count, claimed)}\n\n"
         f"👑 <b>THƯỞNG TOP 10 TƯƠNG TÁC NGÀY</b> <i>(chốt 00:00)</i>\n"
         f"{_interaction_top_prize_table()}\n\n"
@@ -13235,7 +13261,7 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def interaction_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🎁 <b>HỆ THỐNG TƯƠNG TÁC NHÓM</b>\n\n"
-        "• /checktt — xem tiến trình, bảng mốc và tiền thưởng hôm nay\n"
+        "• /checktt — xem tiến trình cộng dồn, bảng mốc và tiền thưởng\n"
         "• /top — Top 10 tương tác hôm nay\n"
         "• /topnap — Top 10 nạp tiền\n"
         "• /topcuoc — Top 10 tổng cược\n"
@@ -13246,12 +13272,16 @@ async def interaction_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         + _interaction_top_prize_table() +
         f"\n\nChỉ tính tin nhắn văn bản tự nhiên. Mỗi {INTERACTION_WINDOW_SECONDS} giây tối đa 1 tin (gửi 2-4 tin liên tiếp chỉ tính 1); "
         "lệnh bot, tin lặp và flood không được tính.\n"
-        "Giftcode được gửi riêng, yêu cầu x7 vòng cược, hạn dùng 24 giờ.",
+        f"Giftcode mốc tin nhắn: x{INTERACTION_WAGER} vòng cược; giftcode Top ngày: x{TOP_INTERACTION_WAGER} vòng cược. Gửi riêng, hạn dùng 24 giờ.\n"
+        f"Tin nhắn được cộng dồn qua các ngày, đủ {fmt_money(INTERACTION_CYCLE_MAX)} tin mới reset về 0.",
         parse_mode=ParseMode.HTML
     )
 
 async def settle_interaction_top_loop(bot):
     while True:
+        if SYSTEM_KILLED:
+            await asyncio.sleep(5)
+            continue
         try:
             yesterday_date = get_vietnam_time().date() - timedelta(days=1)
             date_text = yesterday_date.strftime("%d/%m/%Y")
@@ -13272,7 +13302,7 @@ async def settle_interaction_top_loop(bot):
                     expiry = get_vietnam_time() + timedelta(hours=24)
                     created = query(
                         "INSERT INTO giftcodes (code,ctype,reward,wager,expiry,require_deposit,required_amount,bound_user,used,created_by,created_at) "
-                        "VALUES (%s,'INTERACT',%s,7,%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
+                        f"VALUES (%s,'INTERACT',%s,{TOP_INTERACTION_WAGER},%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
                         (code, reward, expiry, user_id, get_vietnam_datetime_db())
                     )
                     if created:
@@ -13288,7 +13318,7 @@ async def settle_interaction_top_loop(bot):
                                     f"🏆 <b>BẠN ĐẠT TOP {rank} TƯƠNG TÁC NGÀY {date_text}!</b>\n"
                                     f"💬 Tin hợp lệ: <b>{int(count):,}</b>\n"
                                     f"🎁 Giftcode: <code>{code}</code>\n"
-                                    f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược x7\n"
+                                    f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược x{TOP_INTERACTION_WAGER}\n"
                                     f"⏰ Hạn dùng 24 giờ. Nhập bằng <code>/code {code}</code>.",
                                     parse_mode=ParseMode.HTML
                                 )
@@ -13344,8 +13374,15 @@ def _tbl_render(headers, rows, aligns):
 # ===== /daythang  /daythua : TOP ĐU DÂY TRONG NGÀY (top 3 + thưởng giftcode tự động) =====
 # ============================================================
 DAY_STREAK_MIN = 3                         # dây tối thiểu (số phiên liên tiếp) mới tính là "dây hợp lệ"
-DAY_STREAK_PRIZES = {1: 50000, 2: 30000, 3: 20000}   # thưởng Top 1/2/3 (đ) - chỉnh tại đây
-DAY_STREAK_WAGER = 3                       # yêu cầu vòng cược x3
+DAY_STREAK_PRIZES_BY_KIND = {
+    "win":  {1: 25555, 2: 18888, 3: 12222},   # dây THẮNG: Top 1/2/3
+    "loss": {1: 33333, 2: 22222, 3: 15555},   # dây THUA : Top 1/2/3
+}
+DAY_STREAK_PRIZES = DAY_STREAK_PRIZES_BY_KIND["win"]   # giữ tên cũ để code khác không lỗi
+DAY_STREAK_WAGER = 1                       # yêu cầu vòng cược x1
+
+def _streak_prize(kind, rank):
+    return DAY_STREAK_PRIZES_BY_KIND.get(kind, {}).get(rank, 0)
 DAY_STREAK_EXPIRE_HOURS = 24               # hạn dùng giftcode: 1 ngày
 DAY_STREAK_KIND = {
     "win":  {"ctype": "DAYTHANG", "label": "THẮNG", "col": "max_win",  "at": "win_at",  "icon": "🔥"},
@@ -13390,8 +13427,8 @@ def _day_streak_top(group_id, day, kind, limit=3):
         f"ORDER BY {k['col']} DESC, {k['at']} ASC, user_id ASC LIMIT {int(limit)}",
         (group_id, day, DAY_STREAK_MIN)) or []
 
-def _day_streak_prize_text(rank):
-    return fmt_money(DAY_STREAK_PRIZES.get(rank, 0))
+def _day_streak_prize_text(kind, rank):
+    return fmt_money(_streak_prize(kind, rank))
 
 async def _streak_top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, streak_type: str):
     group = update.effective_chat
@@ -13405,9 +13442,9 @@ async def _streak_top_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, streak
     for rank in (1, 2, 3):
         if rank <= len(rows):
             uid, best = rows[rank - 1]
-            lines.append(f"Top {rank}: <code>{mask_user_id(uid)}</code> | {int(best)} trận | thưởng {_day_streak_prize_text(rank)}")
+            lines.append(f"Top {rank}: <code>{mask_user_id(uid)}</code> | {int(best)} trận | thưởng {_day_streak_prize_text(streak_type, rank)}")
         else:
-            lines.append(f"Top {rank}: — | thưởng {_day_streak_prize_text(rank)}")
+            lines.append(f"Top {rank}: — | thưởng {_day_streak_prize_text(streak_type, rank)}")
     lines.append("")
     me = update.effective_user.id
     own = query(f"SELECT {k['col']}, current_type, current_count FROM daily_streaks "
@@ -13454,6 +13491,9 @@ async def _send_day_streak_code(bot, user_id, kind, rank, streak, reward, code, 
 async def settle_day_streak_loop(bot):
     """00:00 mỗi ngày: chốt Top 3 dây thắng/thua của hôm qua, tự tạo giftcode và gửi riêng cho từng người."""
     while True:
+        if SYSTEM_KILLED:
+            await asyncio.sleep(5)
+            continue
         try:
             y = get_vietnam_time().date() - timedelta(days=1)
             day = y.strftime("%Y-%m-%d")
@@ -13467,7 +13507,7 @@ async def settle_day_streak_loop(bot):
                     rows = _day_streak_top(group_id, day, kind, 3)
                     public = [f"🏆 <b>CHỐT TOP ĐU DÂY {k['label']} NGÀY {day_text}</b>"]
                     for rank, (uid, best) in enumerate(rows, 1):
-                        reward = DAY_STREAK_PRIZES.get(rank, 0)
+                        reward = _streak_prize(kind, rank)
                         if reward <= 0:
                             continue
                         code = gen_gift_code(k["ctype"])
@@ -13608,6 +13648,8 @@ async def reply_group_notice(msg, *args, **kwargs):
         _ROOM_MUTE_BYPASS.reset(tok)
 
 def _is_room_muted(chat_id):
+    if SYSTEM_KILLED:
+        return True
     try:
         cid = int(chat_id)
     except (TypeError, ValueError):
@@ -13695,6 +13737,8 @@ def _guard_room_mute(method_name, text_kw=None, allow_prefix=False):
     @functools.wraps(orig)
     async def guarded(self, *args, **kwargs):
         chat_id = kwargs.get("chat_id", args[0] if args else None)
+        if SYSTEM_KILLED:
+            return None
         try:
             numeric = int(chat_id)
         except (TypeError, ValueError):
@@ -17307,6 +17351,11 @@ async def _early_checktt_cmd(update, ctx):
         await update.effective_message.reply_text("Không tải được thống kê tương tác. Vui lòng thử lại.")
     raise ApplicationHandlerStop
 
+async def _kill_gate(update, ctx):
+    if SYSTEM_KILLED:
+        raise ApplicationHandlerStop
+
+application.add_handler(TypeHandler(Update, _kill_gate), group=-100)
 application.add_handler(CommandHandler("daythang", daythang_cmd), group=-3)
 application.add_handler(CommandHandler("daythua", daythua_cmd), group=-3)
 application.add_handler(CommandHandler("top", _early_top_cmd), group=-3)
@@ -17345,6 +17394,9 @@ _bg_tasks = []
 
 async def auto_settle_tich_luy_loop(bot):
     while True:
+        if SYSTEM_KILLED:
+            await asyncio.sleep(5)
+            continue
         try:
             # Chạy liên tục mỗi 60s để check và gửi code tích lũy ngay khi đạt mốc
             await auto_gen_tich_luy_codes()
