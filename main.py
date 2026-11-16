@@ -17177,16 +17177,14 @@ async def _on_error(update, context):
 
 
 # ============================================================
-# CHỐNG SPAM TIN NHẮN + LỆNH /START
-# Quá 5 tin nhắn trong 3 giây (tin thứ 6), hoặc 5 lệnh /start trong 3 giây => khóa vĩnh viễn.
+# CHỐNG SPAM TIN NHẮN
+# Quá 5 tin nhắn trong 3 giây (tin thứ 6) => khóa vĩnh viễn. Lệnh /start được miễn bộ đếm.
 # Khóa lưu PostgreSQL; tài khoản bị khóa sẽ không nhận bất kỳ phản hồi nào từ bot.
 # Chỉ áp dụng chat riêng; album ảnh tính là một tin nhắn.
 # ============================================================
 _SPAM_ACTIVITY = collections.defaultdict(collections.deque)
-_START_ACTIVITY = collections.defaultdict(collections.deque)
 _SPAM_WINDOW_SECONDS = 3.0
 _SPAM_MAX_EVENTS = 5
-_START_MAX_EVENTS = 5
 _SPAM_LAST_ALBUM = {}
 
 def _load_spam_banned():
@@ -17203,7 +17201,7 @@ def _spam_ban_db(uid: int):
     query(
         "INSERT INTO spam_permanent_bans(user_id, reason) VALUES(%s,%s) "
         "ON CONFLICT(user_id) DO NOTHING",
-        (uid, "Spam: quá 5 tin nhắn/3 giây hoặc 5 lệnh /start/3 giây")
+        (uid, "Spam: quá 5 tin nhắn/3 giây")
     )
 
 # ============================================================
@@ -17384,23 +17382,9 @@ async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text_value = (msg.text or msg.caption or "").strip()
     command = text_value.split(maxsplit=1)[0].split("@", 1)[0].lower() if text_value else ""
 
-    # Riêng /start: lần thứ 5 trong 3 giây là khóa vĩnh viễn.
+    # Không áp dụng chống spam đối với /start; người dùng có thể bấm lại tùy ý.
     if command == "/start":
-        starts = _START_ACTIVITY[uid]
-        while starts and now - starts[0] > _SPAM_WINDOW_SECONDS:
-            starts.popleft()
-        starts.append(now)
-        if len(starts) >= _START_MAX_EVENTS:
-            _SPAM_BANNED.add(uid)
-            _SPAM_ACTIVITY.pop(uid, None)
-            _START_ACTIVITY.pop(uid, None)
-            _SPAM_LAST_ALBUM.pop(uid, None)
-            print(f"[spam-guard] permanently blocked /start spam user_id={uid}")
-            try:
-                await asyncio.to_thread(_spam_ban_db, uid)
-            except Exception as e:
-                print(f"[spam-guard] db error: {e}")
-            raise ApplicationHandlerStop
+        return
 
     # Tất cả tin nhắn: tin thứ 6 trong 3 giây sẽ khóa vĩnh viễn.
     events = _SPAM_ACTIVITY[uid]
@@ -17410,7 +17394,6 @@ async def spam_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(events) > _SPAM_MAX_EVENTS:
         _SPAM_BANNED.add(uid)
         _SPAM_ACTIVITY.pop(uid, None)
-        _START_ACTIVITY.pop(uid, None)
         _SPAM_LAST_ALBUM.pop(uid, None)
         print(f"[spam-guard] permanently blocked message spam user_id={uid}")
         try:
@@ -17432,7 +17415,6 @@ async def unban_spam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _SPAM_BANNED.discard(uid)
     _NAP_BANNED.discard(uid)
     _SPAM_ACTIVITY.pop(uid, None)
-    _START_ACTIVITY.pop(uid, None)
     _SPAM_LAST_ALBUM.pop(uid, None)
     await update.effective_message.reply_text(f"Đã gỡ khóa chống spam cho user {uid}.")
 
