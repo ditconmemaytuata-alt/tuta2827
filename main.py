@@ -942,6 +942,17 @@ CREATE TABLE IF NOT EXISTS daily_streak_no_code (
     PRIMARY KEY (group_id, day, kind)
 )
 """)
+query("""
+CREATE TABLE IF NOT EXISTS daily_streak_user_no_code (
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT,
+    PRIMARY KEY (user_id, group_id, day, kind)
+)
+""")
 
 query("""
 CREATE TABLE IF NOT EXISTS daily_top_interactions (
@@ -12364,13 +12375,19 @@ def _awp_streak_top_sync(day, kind, min_len, limit=50):
         for r in query("SELECT user_id, rank, code, sent FROM daily_streak_rewards "
                        "WHERE day=%s AND kind=%s AND group_id = ANY(%s)", (day, kind, list(GROUP_IDS))) or []:
             rewards[int(r[0])] = {"rank": int(r[1] or 0), "code": r[2] or "", "sent": int(r[3] or 0)}
+    user_no_code = set()
+    if ids:
+        for nr in query("SELECT DISTINCT user_id FROM daily_streak_user_no_code "
+                        "WHERE user_id = ANY(%s) AND day=%s AND kind=%s AND enabled=1 AND group_id=ANY(%s)",
+                        (ids, day, kind, list(GROUP_IDS))) or []:
+            user_no_code.add(int(nr[0]))
     out = []
     for i, r in enumerate(rows, 1):
         uid = int(r[0])
         u = info.get(uid, {})
         out.append({"rank": i, "user_id": uid, "name": u.get("name") or "", "username": unames.get(uid, ""),
                     "best": int(r[1] or 0), "at": str(r[2] or ""), "current": int(r[3] or 0),
-                    "balance": int(u.get("balance", 0)), "reward": rewards.get(uid)})
+                    "balance": int(u.get("balance", 0)), "reward": rewards.get(uid), "no_code": uid in user_no_code})
     days = [str(r[0]) for r in (query("SELECT DISTINCT day FROM daily_streaks ORDER BY day DESC LIMIT 60") or [])]
     no_code_rows = query("SELECT COALESCE(BOOL_OR(enabled=1),FALSE) FROM daily_streak_no_code "
                          "WHERE day=%s AND kind=%s AND group_id=ANY(%s)", (day, kind, list(GROUP_IDS))) or []
@@ -12388,7 +12405,7 @@ async def awp_api_streak_top(request):
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
         day = _today_key()
     try:
-        min_len = max(1, min(50, int(request.query.get("min", DAY_STREAK_MIN))))
+        min_len = max(DAY_STREAK_MIN, min(50, int(request.query.get("min", DAY_STREAK_MIN))))
     except ValueError:
         min_len = DAY_STREAK_MIN
     data = await asyncio.to_thread(_awp_streak_top_sync, day, kind, min_len)
@@ -12559,6 +12576,39 @@ async def awp_api_streak_no_code(request):
     return _aw_json({"ok":True,"msg":"Đã bật chế độ không gửi code cho ngày này." if enabled else "Đã tắt chế độ không gửi code."})
 
 
+
+async def awp_api_streak_user_no_code(request):
+    _tok, session = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    day, kind = str(b.get("day", "")), str(b.get("kind", ""))
+    try:
+        uid = int(b.get("user_id"))
+    except (TypeError, ValueError):
+        return _aw_json({"err":"ID thành viên không hợp lệ"}, 400)
+    enabled = bool(b.get("enabled"))
+    if uid <= 0 or not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", day) or kind not in DAY_STREAK_KIND:
+        return _aw_json({"err":"Thông tin ngày, loại dây hoặc ID không hợp lệ"}, 400)
+    for gid in GROUP_IDS:
+        await asyncio.to_thread(query,
+            "INSERT INTO daily_streak_user_no_code(user_id,group_id,day,kind,enabled,updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(user_id,group_id,day,kind) "
+            "DO UPDATE SET enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at",
+            (uid, gid, day, kind, 1 if enabled else 0, get_vietnam_datetime_db()))
+        if enabled:
+            pending = await asyncio.to_thread(query,
+                "SELECT code FROM daily_streak_rewards WHERE user_id=%s AND group_id=%s AND day=%s AND kind=%s AND sent=0",
+                (uid, gid, day, kind)) or []
+            for (pending_code,) in pending:
+                if pending_code:
+                    await asyncio.to_thread(query, "DELETE FROM giftcodes WHERE code=%s AND used=0", (pending_code,))
+            await asyncio.to_thread(query,
+                "UPDATE daily_streak_rewards SET sent=1,tries=GREATEST(tries,10) "
+                "WHERE user_id=%s AND group_id=%s AND day=%s AND kind=%s AND sent=0",
+                (uid, gid, day, kind))
+    await asyncio.to_thread(_aw_log, session["user"], "STREAK_USER_NO_CODE",
+                            f"{uid} {day} {kind}: {'không gửi code' if enabled else 'cho phép gửi code'}", _aw_ip(request))
+    return _aw_json({"ok":True,"msg":("Đã bật không gửi code riêng cho user này." if enabled else "Đã cho phép gửi code riêng cho user này.")})
+
 def admin_web_plus_register(app):
     r = app.router
     r.add_get("/admin/api/chart", awp_api_chart)
@@ -12580,6 +12630,7 @@ def admin_web_plus_register(app):
     r.add_post("/admin/api/gift/create", awp_api_gift_create)
     r.add_get("/admin/api/gift/streak-top", awp_api_streak_top)
     r.add_post("/admin/api/gift/streak-no-code", awp_api_streak_no_code)
+    r.add_post("/admin/api/gift/streak-user-no-code", awp_api_streak_user_no_code)
     r.add_get("/admin/api/interactions", awp_api_interactions)
     r.add_post("/admin/api/interactions/reset", awp_api_interaction_reset)
     r.add_post("/admin/api/gift/streak-send", awp_api_streak_send)
@@ -12897,7 +12948,7 @@ async function vStreak(){
   var win=SK.kind==='win';
   var h='<div class="item"><div class="acts"><button class="btn '+(win?'':'gray')+'" id="skw">🔥 Top dây thắng</button><button class="btn '+(win?'gray':'')+'" id="skl">😭 Top dây thua</button></div>'
    +'<div class="inl" style="margin-top:10px"><button class="btn gray" id="skp">◀</button><input type="date" id="skd" value="'+esc(d.day)+'"><button class="btn gray" id="skn">▶</button><button class="btn gray" id="skt">Hôm nay</button>'
-   +'<select id="skm" style="max-width:160px">'+[1,2,3,5,7,10].map(function(m){return '<option value="'+m+'"'+(m===d.min?' selected':'')+'>Dây từ '+m+' phiên</option>';}).join('')+'</select></div>'
+   +'<select id="skm" style="max-width:160px">'+[3,5,7,10].map(function(m){return '<option value="'+m+'"'+(m===d.min?' selected':'')+'>Dây từ '+m+' phiên</option>';}).join('')+'</select></div>'
    +'<p class="mut" style="margin:8px 0 0">Ngày <b>'+esc(d.day)+'</b>'+(d.day===d.today?' (hôm nay · đang cập nhật theo từng phiên)':'')+' · '+d.rows.length+' người · dữ liệu từ Tài Xỉu Room, reset 00:00 mỗi ngày</p>'
     +'<div class="acts" style="margin-top:10px"><button class="btn '+(d.no_code?'bad':'gray')+'" id="skNoCode">'+(d.no_code?'🚫 ĐANG BẬT: KHÔNG GỬI CODE':'🚫 Không gửi code ngày này')+'</button></div>'
     +'<p class="mut">Áp dụng cho loại dây đang chọn và ngày đang xem. Nếu code đã gửi trước đó thì không thể thu hồi.</p></div>';
@@ -12906,7 +12957,8 @@ async function vStreak(){
    +d.rows.map(function(r){
      var rw=r.reward?('Top '+r.rank+' → '+esc(r.reward.code)+(r.reward.sent?' ✅':' ⏳')):'—';
      return '<tr><td>'+r.rank+'</td><td><a href="#" data-open="'+esc(r.user_id)+'">'+esc(r.user_id)+'</a></td><td>'+esc(r.name)+(r.username?' <span class="mut">@'+esc(r.username)+'</span>':'')+'</td><td><b>'+r.best+'</b> phiên</td><td>'+(r.current||'—')+'</td><td>'+money(r.balance)+'</td><td>'+rw+'</td>'
-       +'<td><button class="btn ok skg" data-uid="'+esc(r.user_id)+'" data-name="'+esc(r.name)+'">🎁 Gửi code</button></td></tr>';}).join('')+'</table></div>'
+       +'<td><button class="btn ok skg" data-uid="'+esc(r.user_id)+'" data-name="'+esc(r.name)+'">🎁 Gửi code</button> '
+       +'<button class="btn '+(r.no_code?'bad':'gray')+' skuNoCode" data-uid="'+esc(r.user_id)+'" data-enabled="'+(r.no_code?'1':'0')+'">'+(r.no_code?'🚫 Đang chặn code':'🚫 Không gửi code')+'</button></td></tr>';}).join('')+'</table></div>'
    +(d.rows.length?'':'<p class="mut">Ngày này chưa có ai đạt dây '+(win?'thắng':'thua')+' từ '+d.min+' phiên.</p>');
   view.innerHTML=h;
   var rl=function(){vStreak().catch(function(e){toast(e.message);});};
@@ -12922,6 +12974,12 @@ async function vStreak(){
      if(!confirm((enable?'Bật KHÔNG GỬI CODE':'Cho phép gửi code')+' cho dây '+(win?'THẮNG':'THUA')+' ngày '+d.day+'?'))return;
      try{var r=await post('gift/streak-no-code',{day:d.day,kind:SK.kind,enabled:enable});toast(r.msg);rl();}catch(e){toast(e.message);}
    };
+  view.querySelectorAll('.skuNoCode').forEach(function(b){b.onclick=async function(){
+    var uid=b.getAttribute('data-uid'), enabled=b.getAttribute('data-enabled')!=='1';
+    if(!confirm((enabled?'Bật KHÔNG GỬI CODE':'Cho phép gửi code')+' riêng cho user '+uid+' trong ngày '+d.day+' ('+(win?'dây thắng':'dây thua')+')?'))return;
+    try{var r=await post('gift/streak-user-no-code',{user_id:uid,day:d.day,kind:SK.kind,enabled:enabled});toast(r.msg);rl();}
+    catch(e){toast(e.message);}
+  };});
   var defType=win?'DAYTHANG':'DAYTHUA';
   view.querySelectorAll('.skg').forEach(function(b){b.onclick=function(){
     var uid=b.getAttribute('data-uid'),nm=b.getAttribute('data-name');
@@ -13690,9 +13748,14 @@ async def settle_day_streak_loop(bot):
                         reward = _streak_prize(kind, rank)
                         if reward <= 0:
                             continue
-                        if no_code:
+                        user_no_code_row = query(
+                            "SELECT enabled FROM daily_streak_user_no_code WHERE user_id=%s AND group_id=%s AND day=%s AND kind=%s",
+                            (uid, group_id, day, kind)) or []
+                        user_no_code = bool(user_no_code_row and int(user_no_code_row[0][0] or 0) == 1)
+                        if no_code or user_no_code:
+                            reason = "cài đặt admin" if no_code else "cài đặt riêng cho thành viên"
                             public.append(f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉'} Top {rank}: "
-                                          f"<code>{mask_user_id(uid)}</code> | {int(best)} trận | không gửi code theo cài đặt admin")
+                                          f"<code>{mask_user_id(uid)}</code> | {int(best)} trận | không gửi code ({reason})")
                             continue
                         code = gen_gift_code(k["ctype"])
                         expiry = get_vietnam_time() + timedelta(hours=DAY_STREAK_EXPIRE_HOURS)
