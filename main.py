@@ -372,6 +372,7 @@ CUSTOM_EMOJI.update({
 
 # Emoji nhận thưởng: dùng đồng xu/túi tiền nhất quán, không trộn nhiều biểu tượng tiền.
 REWARD_COIN_EMOJI = CUSTOM_EMOJI["🪙"]
+CUSTOM_EMOJI["✔️"] = "5206607081334906820"
 REWARD_BAG_EMOJI = CUSTOM_EMOJI["💰"]
 
 _PLAIN_EMOJI = set()
@@ -5504,7 +5505,7 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
         await msg_obj.reply_text(
-            f'{ce("✅")} <b>GỬI YÊU CẦU RÚT THÀNH CÔNG!</b>\n\n'
+            f'{ce("✔️")} <b>GỬI YÊU CẦU RÚT THÀNH CÔNG!</b>\n\n'
             f'{ce("💰")} Số tiền rút: <code>{fmt_money(amount)}đ</code>\n'
             f'{bal_block(uid)}\n'
             f'{ce("⏰")} Vui lòng chờ Admin duyệt (1-5 phút).',
@@ -9672,7 +9673,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _skip = (q.message.chat_id, q.message.message_id) if q.message else None
         if act == "ok":
             query("UPDATE withdraw_history SET status='success', admin_id=%s WHERE id=%s", (uid, wid))
-            try: await send_group_notice(ctx.bot, chat_id=LOG_GROUP_ID, text=f'{ce("📤")} <b>RÚT TIỀN THÀNH CÔNG</b>\n{ce("🆔")} ID: <code>{mask_user_id(u_id)}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✅")} Trạng thái: Thành công\n{ce("⏰")} {get_vietnam_datetime_db()}', parse_mode=ParseMode.HTML)
+            try: await send_group_notice(ctx.bot, chat_id=LOG_GROUP_ID, text=f'{ce("✔️")} <b>RÚT TIỀN THÀNH CÔNG</b>\n{ce("🆔")} ID: <code>{mask_user_id(u_id)}</code>\n{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✔️")} Trạng thái: Thành công\n{ce("⏰")} {get_vietnam_datetime_db()}', parse_mode=ParseMode.HTML)
             except Exception as e: pass
             try: await ctx.bot.send_message(u_id, f'{ce("✅")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> đã được duyệt!\n{ce("💰")} Số dư hiện tại: <code>{fmt_money(get_balance(u_id))}đ</code>', parse_mode=ParseMode.HTML)
             except: pass
@@ -10623,8 +10624,8 @@ async def aw_api_withdraw_act(request):
     if act == "approve":
         try:
             await send_group_notice(bot, chat_id=LOG_GROUP_ID, text=(
-                f'{ce("📤")} <b>RÚT TIỀN THÀNH CÔNG</b>\n{ce("🆔")} ID: <code>{mask_user_id(u_id)}</code>\n'
-                f'{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✅")} Trạng thái: Thành công\n{ce("⏰")} {get_vietnam_datetime_db()}'),
+                f'{ce("✔️")} <b>RÚT TIỀN THÀNH CÔNG</b>\n{ce("🆔")} ID: <code>{mask_user_id(u_id)}</code>\n'
+                f'{ce("💰")} Số tiền: <code>{fmt_money(amt)}đ</code>\n{ce("✔️")} Trạng thái: Thành công\n{ce("⏰")} {get_vietnam_datetime_db()}'),
                 parse_mode=ParseMode.HTML)
         except Exception:
             pass
