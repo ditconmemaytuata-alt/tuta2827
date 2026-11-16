@@ -222,11 +222,18 @@ CUSTOM_EMOJI.update({
 })
 
 # ---- DẤU TÍCH / DẤU X PREMIUM (đặt cuối cùng để không bị ghi đè) ----
-PREMIUM_TICK_ID = "5197387964098813812"   # ✅ dấu tích
+PREMIUM_TICK_ID = "6160937630411264715"   # ✅ dấu tích (đổi nếu chưa đúng: dùng /idemoji để xem)
 PREMIUM_CROSS_ID = "5445267414562389170"  # ❌ dấu X
 CUSTOM_EMOJI["✅"] = PREMIUM_TICK_ID
 CUSTOM_EMOJI["✔️"] = PREMIUM_TICK_ID
 CUSTOM_EMOJI["☑️"] = PREMIUM_TICK_ID
+CUSTOM_EMOJI["🎁"] = "5445355530111437729"   # hộp quà
+# Emoji game: dùng đúng ID premium của từng game (cùng bộ với GAME_ICON)
+CUSTOM_EMOJI.update({
+    "🏀": "5242677827299450340", "⚽": "5235650728227251200", "🥅": "5235871588330512091",
+    "🎳": "5240141073585544010", "⚔️": "5235714190664016775", "✊": "5235520345905046381",
+    "🆚": "5240175914360250771", "🦀": "5460895061090771853",
+})
 CUSTOM_EMOJI["❌"] = PREMIUM_CROSS_ID
 CUSTOM_EMOJI["✖️"] = PREMIUM_CROSS_ID
 # Đảm bảo ID cũ không còn xuất hiện ở bất kỳ emoji nào
@@ -252,7 +259,7 @@ ICON_ALIAS = {
     "🔐": "🔒", "🧑‍🤝‍🧑": "👥", "₿": "💸", "⚫": "🔒", "🔵": "🔝",
 }
 
-_PLAIN_EMOJI = {"❎"}
+_PLAIN_EMOJI = set()
 
 def _find_image(name):
     """Tìm file ảnh cạnh main.py; chịu được tên bị thừa đuôi (vd: abc.jpg.jpg) hoặc khác đuôi."""
@@ -383,7 +390,7 @@ for _plain in ("🔵", "🔴", "⚪", "⚫"):
     _PREMIUM_MAP.pop(_norm_emoji(_plain), None)
 
 # ✅ và ❌ dùng emoji Premium theo CUSTOM_EMOJI; ❎ giữ emoji thường
-_PREMIUM_MAP.pop(_norm_emoji("❎"), None)
+pass  # ❎ cũng đổi sang X premium
 
 def _emoji_pattern(key: str) -> str:
     # Cho phép (tuỳ chọn) ký tự variation selector U+FE0F sau từng ký tự.
@@ -5736,10 +5743,10 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cuoc_hom_nay, cuoc_tuan = get_bet_stats(uid)
 
         kb = InlineKeyboardMarkup([
-            [btn("Lịch sử nạp", "💰", callback_data="acc_ls_nap"), btn("Lịch sử rút", "📤", callback_data="acc_ls_rut")],
+            [btn("Lịch sử nạp", "📥", callback_data="acc_ls_nap"), btn("Lịch sử rút", "📤", callback_data="acc_ls_rut")],
             [btn("Lịch sử game", "🎮", callback_data="acc_ls_choi"), btn("Lịch sử Room TX", "🎲", callback_data="acc_ls_tx")],
             [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "🛒", callback_data="acc_mua_gift")],
-            [btn("Nhận thưởng", "🎁", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💰", callback_data="acc_chuyen_tien")],
+            [btn("Nhận thưởng", "💰", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
             [btn("Tích lũy nạp", "🪙", callback_data="acc_tich_luy")],
             [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
@@ -13996,7 +14003,7 @@ async def _rp_render_card(bot, uid):
          btn("Lịch sử rút", "📤", callback_data=f"ar:{uid}:pick:rut:-:x")],
         [btn("Cược & thắng", "🎲", callback_data=f"ar:{uid}:pick:cuoc:-:x"),
          btn("Biến động số dư", "💳", callback_data=f"ar:{uid}:pick:his:-:x")],
-        [btn("Code đã nhập", "🎁", callback_data=f"ar:{uid}:pick:code:-:x"),
+        [btn("Code đã nhập", "🎟", callback_data=f"ar:{uid}:pick:code:-:x"),
          btn("Gift đã dùng", "🎁", callback_data=f"ar:{uid}:pick:gift:-:x")],
         [btn("Gift đã mua", "🛒", callback_data=f"ar:{uid}:pick:mua:-:x"),
          btn("Làm mới", "🔄", callback_data=f"ar:{uid}:home:-:-:-")],
@@ -17109,6 +17116,24 @@ application.add_handler(CallbackQueryHandler(txdel_callback, pattern=r"^txdel_")
 application.add_handler(CommandHandler("fulluser", fulluser_cmd))
 application.add_handler(CommandHandler("lsuser", lsuser_cmd))
 application.add_handler(CommandHandler("lsnap", lsnap_cmd))
+@admin_only
+async def idemoji_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/idemoji [trang] - xem trước toàn bộ emoji premium trong code để chọn đúng ID."""
+    ids = []
+    for _v in list(CUSTOM_EMOJI.values()) + list(PREMIUM_SUPPLIED_IDS):
+        if _v not in ids:
+            ids.append(_v)
+    per = 30
+    page = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 1
+    total = (len(ids) + per - 1) // per
+    page = max(1, min(page, total))
+    chunk = ids[(page - 1) * per: page * per]
+    lines = [f"<b>EMOJI PREMIUM - trang {page}/{total}</b> (gõ <code>/idemoji số_trang</code>)\n"]
+    for i, eid in enumerate(chunk, (page - 1) * per + 1):
+        lines.append(f'{i}. <tg-emoji emoji-id="{eid}">⭐</tg-emoji> <code>{eid}</code>')
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+application.add_handler(CommandHandler("idemoji", idemoji_cmd))
 application.add_handler(CommandHandler("lsrut", lsrut_cmd))
 application.add_handler(CommandHandler("lsrutky", lsrut_report_cmd))
 application.add_handler(CommandHandler("lscuoc", lscuoc_cmd))
