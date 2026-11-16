@@ -933,6 +933,17 @@ CREATE TABLE IF NOT EXISTS daily_streak_settlements (
 """)
 
 query("""
+CREATE TABLE IF NOT EXISTS daily_streak_no_code (
+    group_id BIGINT NOT NULL,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT,
+    PRIMARY KEY (group_id, day, kind)
+)
+""")
+
+query("""
 CREATE TABLE IF NOT EXISTS daily_top_interactions (
     user_id BIGINT,
     group_id BIGINT,
@@ -3313,7 +3324,15 @@ async def _deliver_interaction_code(bot, uid, milestone, reward, code):
         return False
 
 async def _send_interaction_code(bot, uid, group_id, milestone, reward, date_text, notify_group=True):
-    """Tạo + gửi code cho 1 mốc. Trả về True nếu đã gửi riêng thành công."""
+    """Đặt chỗ mốc trước khi tạo code; PK của claims là khóa chống phát trùng."""
+    claim = query(
+        "INSERT INTO interaction_reward_claims (user_id,group_id,date,milestone,code,reward_amount,created_at,delivered) "
+        "VALUES (%s,%s,%s,%s,NULL,%s,%s,0) ON CONFLICT DO NOTHING RETURNING milestone",
+        (uid, group_id, date_text, milestone, reward, get_vietnam_datetime_db())
+    )
+    if not claim:
+        return False
+
     code = gen_gift_code("TT")
     expiry = get_vietnam_time() + timedelta(hours=24)
     inserted = query(
@@ -3323,15 +3342,13 @@ async def _send_interaction_code(bot, uid, group_id, milestone, reward, date_tex
         (code, reward, expiry, uid, get_vietnam_datetime_db())
     )
     if not inserted:
+        query("DELETE FROM interaction_reward_claims WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s AND code IS NULL",
+              (uid, group_id, date_text, milestone))
         return False
-    claim = query(
-        "INSERT INTO interaction_reward_claims (user_id,group_id,date,milestone,code,reward_amount,created_at,delivered) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,0) ON CONFLICT DO NOTHING RETURNING milestone",
-        (uid, group_id, date_text, milestone, code, reward, get_vietnam_datetime_db())
+    query(
+        "UPDATE interaction_reward_claims SET code=%s WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
+        (code, uid, group_id, date_text, milestone)
     )
-    if not claim:
-        query("DELETE FROM giftcodes WHERE code=%s AND used=0", (code,))
-        return False
     ok = await _deliver_interaction_code(bot, uid, milestone, reward, code)
     if ok:
         query("UPDATE interaction_reward_claims SET delivered=1 WHERE user_id=%s AND group_id=%s AND date=%s AND milestone=%s",
@@ -3368,9 +3385,9 @@ async def _resend_undelivered(bot, uid, group_id, date_text):
     rows = query(
         "SELECT c.milestone, c.code, c.reward_amount FROM interaction_reward_claims c "
         "JOIN giftcodes g ON g.code=c.code "
-        "WHERE c.user_id=%s AND c.group_id=%s AND c.delivered=0 "
-        "AND g.used=0 AND (g.expiry IS NULL OR g.expiry > NOW()) ORDER BY c.milestone",
-        (uid, group_id)
+        "WHERE c.user_id=%s AND c.group_id=%s AND c.date=%s AND c.delivered=0 "
+        "AND c.code IS NOT NULL AND g.used=0 AND (g.expiry IS NULL OR g.expiry > NOW()) ORDER BY c.milestone",
+        (uid, group_id, date_text)
     ) or []
     ok_n = fail_n = 0
     for milestone, code, reward in rows:
@@ -10080,10 +10097,10 @@ async function api(path,opt){
   var j;try{j=await r.json();}catch(e){throw new Error('Máy chủ lỗi ('+r.status+'), xem log Railway');}if(j.err){throw new Error(j.err);}return j;
 }
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
-var tabs=[['stats','Tổng quan'],['room','Room'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin'],['fan','Duyệt Fan']];
+var tabs=[['stats','Tổng quan'],['room','Room'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['interaction','Tương tác'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin'],['fan','Duyệt Fan']];
 var cur='stats',view=document.getElementById('view'),isOwner=false,allowed={};
 function nav(){var n=document.getElementById('nav');n.innerHTML='';tabs.filter(function(t){return t[0]==='admins'?isOwner:(isOwner||allowed[t[0]]);}).forEach(function(t){var b=document.createElement('button');b.textContent=t[1];if(t[0]===cur)b.className='on';b.onclick=function(){cur=t[0];nav();load();};n.appendChild(b);});}
-function load(){if(cur!=='room'&&vRoom.timer){clearInterval(vRoom.timer);vRoom.timer=null;}view.innerHTML='<p class="mut">Đang tải…</p>';var pages={stats:vStats2,room:vRoom,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog,admins:vAdmins,fan:vFan};var fn=pages[cur];if(!fn){view.innerHTML='<p class="err">Mục này chưa được cấu hình.</p>';return;}fn().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
+function load(){if(cur!=='room'&&vRoom.timer){clearInterval(vRoom.timer);vRoom.timer=null;}view.innerHTML='<p class="mut">Đang tải…</p>';var pages={stats:vStats2,room:vRoom,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,interaction:vInteraction,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog,admins:vAdmins,fan:vFan};var fn=pages[cur];if(!fn){view.innerHTML='<p class="err">Mục này chưa được cấu hình.</p>';return;}fn().catch(function(e){view.innerHTML='<p class="err">'+esc(e.message)+'</p>';});}
 
 
 async function vFan(){
@@ -12355,7 +12372,11 @@ def _awp_streak_top_sync(day, kind, min_len, limit=50):
                     "best": int(r[1] or 0), "at": str(r[2] or ""), "current": int(r[3] or 0),
                     "balance": int(u.get("balance", 0)), "reward": rewards.get(uid)})
     days = [str(r[0]) for r in (query("SELECT DISTINCT day FROM daily_streaks ORDER BY day DESC LIMIT 60") or [])]
-    return {"day": day, "kind": kind, "min": int(min_len), "rows": out, "days": days, "today": _today_key()}
+    no_code_rows = query("SELECT COALESCE(BOOL_OR(enabled=1),FALSE) FROM daily_streak_no_code "
+                         "WHERE day=%s AND kind=%s AND group_id=ANY(%s)", (day, kind, list(GROUP_IDS))) or []
+    no_code = bool(no_code_rows[0][0]) if no_code_rows else False
+    return {"day": day, "kind": kind, "min": int(min_len), "rows": out, "days": days,
+            "today": _today_key(), "no_code": no_code}
 
 
 async def awp_api_streak_top(request):
@@ -12419,6 +12440,125 @@ async def awp_api_streak_send(request):
                              "Đã tạo code nhưng chưa nhắn được (người chơi chưa /start bot). Hãy copy code gửi tay.")})
 
 
+
+def _awp_interaction_members_sync(qtext=""):
+    qtext = (qtext or "").strip()
+    where = ""
+    args = []
+    if qtext:
+        like = "%" + qtext.replace("%", r"\%").replace("_", r"\_") + "%"
+        where = ("WHERE CAST(u.user_id AS TEXT) ILIKE %s OR COALESCE(u.name,'') ILIKE %s "
+                 "OR COALESCE(u.tg_username,'') ILIKE %s OR COALESCE(u.tg_full_name,'') ILIKE %s")
+        args = [like, like, like, like]
+    rows = query(
+        "SELECT u.user_id,COALESCE(u.name,''),COALESCE(u.tg_username,''),"
+        "COALESCE(gi.interaction_count,0),COALESCE(dt.cnt,0) "
+        "FROM users u LEFT JOIN group_interactions gi ON gi.user_id=u.user_id AND gi.group_id=ANY(%s) "
+        "LEFT JOIN (SELECT user_id,SUM(interaction_count) AS cnt FROM daily_top_interactions "
+        "WHERE group_id=ANY(%s) GROUP BY user_id) dt ON dt.user_id=u.user_id "
+        + where + " ORDER BY COALESCE(gi.interaction_count,0) DESC,u.user_id DESC LIMIT 100",
+        [list(GROUP_IDS), list(GROUP_IDS)] + args
+    ) or []
+    return [{"user_id":int(r[0]),"name":r[1],"username":r[2],
+             "total":int(r[3] or 0),"daily_total":int(r[4] or 0)} for r in rows]
+
+
+async def awp_api_interactions(request):
+    await asyncio.to_thread(_aw_auth, request)
+    qtext = str(request.query.get("q", ""))[:100]
+    rows = await asyncio.to_thread(_awp_interaction_members_sync, qtext)
+    total = await asyncio.to_thread(
+        query, "SELECT COUNT(DISTINCT user_id) FROM group_interactions WHERE group_id=ANY(%s)",
+        (list(GROUP_IDS),))
+    return _aw_json({"rows":rows,"members":int((total or [(0,)])[0][0] or 0)})
+
+
+async def awp_api_interaction_reset(request):
+    _tok, session = await asyncio.to_thread(_aw_auth, request, True)
+    body = await _awp_body(request)
+    scope = str(body.get("scope", ""))
+    if scope == "all":
+        uid = None
+        detail = "Reset toàn bộ bộ đếm tương tác nhóm"
+    elif scope == "user":
+        try:
+            uid = int(str(body.get("user_id", "")).strip())
+        except (ValueError, TypeError):
+            return _aw_json({"err":"ID thành viên không hợp lệ"}, 400)
+        detail = f"Reset bộ đếm tương tác của user {uid}"
+    else:
+        return _aw_json({"err":"Phạm vi reset không hợp lệ"}, 400)
+
+    try:
+        if uid is None:
+            # Reset toàn bộ: xoá các code tương tác CHƯA dùng gắn với claim cũ,
+            # rồi xoá claim để mọi người có thể cày lại từ 0 và nhận mốc thưởng mới.
+            await asyncio.to_thread(query,
+                "DELETE FROM giftcodes WHERE ctype='INTERACT' AND used=0 AND code IN "
+                "(SELECT code FROM interaction_reward_claims WHERE group_id=ANY(%s) AND code IS NOT NULL)",
+                (list(GROUP_IDS),))
+            await asyncio.to_thread(query,
+                "DELETE FROM interaction_reward_claims WHERE group_id=ANY(%s)", (list(GROUP_IDS),))
+            for table in ("group_interactions", "daily_top_interactions", "interaction_message_guard"):
+                await asyncio.to_thread(query, f"DELETE FROM {table} WHERE group_id=ANY(%s)", (list(GROUP_IDS),))
+            _interaction_seen.clear()
+            msg = "Đã reset tương tác toàn bộ thành viên về 0. Mọi người có thể cày lại và nhận giftcode từ đầu."
+        else:
+            # Reset riêng user: cũng mở lại quyền nhận các mốc sau khi cày lại.
+            await asyncio.to_thread(query,
+                "DELETE FROM giftcodes WHERE ctype='INTERACT' AND used=0 AND code IN "
+                "(SELECT code FROM interaction_reward_claims WHERE user_id=%s AND group_id=ANY(%s) AND code IS NOT NULL)",
+                (uid, list(GROUP_IDS)))
+            await asyncio.to_thread(query,
+                "DELETE FROM interaction_reward_claims WHERE user_id=%s AND group_id=ANY(%s)",
+                (uid, list(GROUP_IDS)))
+            for table in ("group_interactions", "daily_top_interactions", "interaction_message_guard"):
+                await asyncio.to_thread(query, f"DELETE FROM {table} WHERE user_id=%s AND group_id=ANY(%s)",
+                                        (uid, list(GROUP_IDS)))
+            for key in list(_interaction_seen):
+                if key[0] == uid and key[1] in GROUP_IDS:
+                    _interaction_seen.pop(key, None)
+            msg = f"Đã reset tương tác ID {uid} về 0. Thành viên có thể cày lại và nhận giftcode từ đầu."
+        await asyncio.to_thread(_aw_log, session["user"], "INTERACTION_RESET", detail, _aw_ip(request))
+        return _aw_json({"ok":True,"msg":msg})
+    except Exception as e:
+        print(f"Lỗi reset tương tác: {e}")
+        return _aw_json({"err":"Không thể reset tương tác. Kiểm tra log máy chủ."}, 500)
+
+
+def _awp_set_streak_no_code_sync(day, kind, enabled):
+    for gid in GROUP_IDS:
+        query(
+            "INSERT INTO daily_streak_no_code(group_id,day,kind,enabled,updated_at) VALUES(%s,%s,%s,%s,%s) "
+            "ON CONFLICT(group_id,day,kind) DO UPDATE SET enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at",
+            (gid, day, kind, 1 if enabled else 0, get_vietnam_datetime_db()))
+        if enabled:
+            # Thu hồi code chưa dùng/chưa gửi của ngày đó; code đã gửi/đã dùng không thể thu hồi.
+            codes = query(
+                "SELECT code FROM daily_streak_rewards WHERE group_id=%s AND day=%s AND kind=%s AND sent=0",
+                (gid, day, kind)) or []
+            for (code,) in codes:
+                if code:
+                    query("DELETE FROM giftcodes WHERE code=%s AND used=0", (code,))
+            query("UPDATE daily_streak_rewards SET sent=1,tries=GREATEST(tries,10) "
+                  "WHERE group_id=%s AND day=%s AND kind=%s AND sent=0", (gid, day, kind))
+    return True
+
+
+async def awp_api_streak_no_code(request):
+    _tok, session = await asyncio.to_thread(_aw_auth, request, True)
+    b = await _awp_body(request)
+    day = str(b.get("day", ""))
+    kind = str(b.get("kind", ""))
+    enabled = bool(b.get("enabled"))
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or kind not in DAY_STREAK_KIND:
+        return _aw_json({"err":"Ngày hoặc loại dây không hợp lệ"}, 400)
+    await asyncio.to_thread(_awp_set_streak_no_code_sync, day, kind, enabled)
+    await asyncio.to_thread(_aw_log, session["user"], "STREAK_NO_CODE",
+                            f"{day} {kind}: {'không gửi code' if enabled else 'cho phép gửi code'}", _aw_ip(request))
+    return _aw_json({"ok":True,"msg":"Đã bật chế độ không gửi code cho ngày này." if enabled else "Đã tắt chế độ không gửi code."})
+
+
 def admin_web_plus_register(app):
     r = app.router
     r.add_get("/admin/api/chart", awp_api_chart)
@@ -12439,6 +12579,9 @@ def admin_web_plus_register(app):
     r.add_get("/admin/api/gift/types", awp_api_gift_types)
     r.add_post("/admin/api/gift/create", awp_api_gift_create)
     r.add_get("/admin/api/gift/streak-top", awp_api_streak_top)
+    r.add_post("/admin/api/gift/streak-no-code", awp_api_streak_no_code)
+    r.add_get("/admin/api/interactions", awp_api_interactions)
+    r.add_post("/admin/api/interactions/reset", awp_api_interaction_reset)
     r.add_post("/admin/api/gift/streak-send", awp_api_streak_send)
     r.add_post("/admin/api/gift/delete", awp_api_gift_delete)
     r.add_get("/admin/api/gifts/unused", awp_api_unused)
@@ -12717,6 +12860,33 @@ view.addEventListener('click',async function(ev){
 '''
 
 
+_AWP_JS += r'''
+async function vInteraction(){
+  var q=(vInteraction.q||'');
+  var d=await api('interactions?q='+encodeURIComponent(q));
+  var h='<div class="item"><b>💬 QUẢN LÝ TƯƠNG TÁC</b>'
+   +'<p class="mut">Đang có '+d.members+' thành viên có dữ liệu tương tác. Reset chỉ xóa bộ đếm cộng dồn, thống kê ngày và bộ lọc spam; lịch sử đã phát giftcode được giữ lại để chống nhận thưởng trùng.</p>'
+   +'<div class="inl" style="margin-top:8px"><input id="itq" value="'+esc(q)+'" placeholder="Tìm ID / username / tên thành viên"><button class="btn" id="itsearch">Tìm</button></div>'
+   +'<div class="acts" style="margin-top:10px"><button class="btn bad" id="itall">🗑 RESET TƯƠNG TÁC TOÀN BỘ</button></div></div>'
+   +'<div class="item tw"><table><tr><th>ID</th><th>Thành viên</th><th>Tương tác cộng dồn</th><th>Thống kê ngày</th><th></th></tr>'
+   +d.rows.map(function(r){return '<tr><td>'+esc(r.user_id)+'</td><td>'+esc(r.name||'—')+(r.username?' <span class="mut">@'+esc(r.username)+'</span>':'')+'</td><td>'+money(r.total)+'</td><td>'+money(r.daily_total)+'</td><td><button class="btn bad itone" data-uid="'+esc(r.user_id)+'">Xóa riêng</button></td></tr>';}).join('')
+   +'</table></div>'+(d.rows.length?'':'<p class="mut">Không tìm thấy thành viên.</p>');
+  view.innerHTML=h;
+  document.getElementById('itsearch').onclick=function(){vInteraction.q=document.getElementById('itq').value.trim();vInteraction();};
+  document.getElementById('itq').onkeydown=function(e){if(e.key==='Enter'){vInteraction.q=this.value.trim();vInteraction();}};
+  document.getElementById('itall').onclick=async function(){
+    if(!confirm('RESET bộ đếm tương tác của TẤT CẢ thành viên? Không thể khôi phục bộ đếm.'))return;
+    this.disabled=true;try{var r=await post('interactions/reset',{scope:'all'});toast(r.msg);vInteraction();}catch(e){toast(e.message);this.disabled=false;}
+  };
+  view.querySelectorAll('.itone').forEach(function(b){b.onclick=async function(){
+    var uid=b.getAttribute('data-uid');
+    if(!confirm('Xóa bộ đếm tương tác riêng của ID '+uid+'?'))return;
+    b.disabled=true;try{var r=await post('interactions/reset',{scope:'user',user_id:uid});toast(r.msg);vInteraction();}catch(e){toast(e.message);b.disabled=false;}
+  };});
+}
+
+'''
+
 _AWP_JS_STREAK = r'''
 var SK={kind:'win',day:'',min:3};
 function skShift(n){var p=(SK.day||'').split('-');if(p.length!==3)return;var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]+n));SK.day=dt.getUTCFullYear()+'-'+('0'+(dt.getUTCMonth()+1)).slice(-2)+'-'+('0'+dt.getUTCDate()).slice(-2);}
@@ -12728,7 +12898,9 @@ async function vStreak(){
   var h='<div class="item"><div class="acts"><button class="btn '+(win?'':'gray')+'" id="skw">🔥 Top dây thắng</button><button class="btn '+(win?'gray':'')+'" id="skl">😭 Top dây thua</button></div>'
    +'<div class="inl" style="margin-top:10px"><button class="btn gray" id="skp">◀</button><input type="date" id="skd" value="'+esc(d.day)+'"><button class="btn gray" id="skn">▶</button><button class="btn gray" id="skt">Hôm nay</button>'
    +'<select id="skm" style="max-width:160px">'+[1,2,3,5,7,10].map(function(m){return '<option value="'+m+'"'+(m===d.min?' selected':'')+'>Dây từ '+m+' phiên</option>';}).join('')+'</select></div>'
-   +'<p class="mut" style="margin:8px 0 0">Ngày <b>'+esc(d.day)+'</b>'+(d.day===d.today?' (hôm nay · đang cập nhật theo từng phiên)':'')+' · '+d.rows.length+' người · dữ liệu từ Tài Xỉu Room, reset 00:00 mỗi ngày.</p></div>';
+   +'<p class="mut" style="margin:8px 0 0">Ngày <b>'+esc(d.day)+'</b>'+(d.day===d.today?' (hôm nay · đang cập nhật theo từng phiên)':'')+' · '+d.rows.length+' người · dữ liệu từ Tài Xỉu Room, reset 00:00 mỗi ngày</p>'
+    +'<div class="acts" style="margin-top:10px"><button class="btn '+(d.no_code?'bad':'gray')+'" id="skNoCode">'+(d.no_code?'🚫 ĐANG BẬT: KHÔNG GỬI CODE':'🚫 Không gửi code ngày này')+'</button></div>'
+    +'<p class="mut">Áp dụng cho loại dây đang chọn và ngày đang xem. Nếu code đã gửi trước đó thì không thể thu hồi.</p></div>';
   h+='<div id="skform"></div>';
   h+='<div class="item tw"><table><tr><th>#</th><th>ID</th><th>Tên</th><th>Dây dài nhất</th><th>Đang chạy</th><th>Số dư</th><th>Code tự động</th><th></th></tr>'
    +d.rows.map(function(r){
@@ -12745,6 +12917,11 @@ async function vStreak(){
   document.getElementById('skt').onclick=function(){SK.day='';rl();};
   document.getElementById('skd').onchange=function(){if(this.value){SK.day=this.value;rl();}};
   document.getElementById('skm').onchange=function(){SK.min=parseInt(this.value,10)||3;rl();};
+   document.getElementById('skNoCode').onclick=async function(){
+     var enable=!d.no_code;
+     if(!confirm((enable?'Bật KHÔNG GỬI CODE':'Cho phép gửi code')+' cho dây '+(win?'THẮNG':'THUA')+' ngày '+d.day+'?'))return;
+     try{var r=await post('gift/streak-no-code',{day:d.day,kind:SK.kind,enabled:enable});toast(r.msg);rl();}catch(e){toast(e.message);}
+   };
   var defType=win?'DAYTHANG':'DAYTHUA';
   view.querySelectorAll('.skg').forEach(function(b){b.onclick=function(){
     var uid=b.getAttribute('data-uid'),nm=b.getAttribute('data-name');
@@ -12771,12 +12948,12 @@ async function vStreak(){
 
 def _awp_patch_js(js):
     reps = [
-        ("var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];",
+        ("var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['interaction','Tương tác'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];",
          "var tabs=[['stats','Tổng quan'],['wd','Rút tiền'],['dep','Nạp tiền'],['user','Người dùng'],['dupe','Trùng tên rút tiền'],['gift','Giftcode'],['tx3d','Ép TX3D'],['ctl','Điều khiển'],['bc','Thông báo'],['exp','Xuất file'],['reset','Reset'],['log','Nhật ký'],['admins','Tạo admin']];"),
         ("({stats:vStats,wd:vWd,dep:vDep,user:vUser,gift:vGift,log:vLog})[cur]()",
-         "({stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog})[cur]()"),
+         "({stats:vStats2,wd:vWd,dep:vDep2,user:vUser,dupe:vPayoutDuplicates,gift:vGift2,interaction:vInteraction,tx3d:vTx3d,ctl:vCtl,bc:vBc,exp:vExp,reset:vReset,log:vLog})[cur]()"),
         ("['gift','Giftcode'],", "['gift','Giftcode'],['unused','Code chưa dùng'],['streak','Top dây thắng/thua'],"),
-        ("allowed[t[0]]", "allowed[(t[0]==='unused'||t[0]==='streak')?'gift':t[0]]"),
+        ("allowed[t[0]]", "allowed[(t[0]==='unused'||t[0]==='streak'||t[0]==='interaction')?'gift':t[0]]"),
         ("gift:vGift2,", "gift:vGift2,unused:vUnused,streak:vStreak,"),
         ("""'<nav id="snav"></nav><div id="sbody"></div>'""",
          """'<div id="uplus"></div><nav id="snav"></nav><div id="sbody"></div>'"""),
@@ -13505,10 +13682,17 @@ async def settle_day_streak_loop(bot):
                     if done:
                         continue
                     rows = _day_streak_top(group_id, day, kind, 3)
+                    no_code_row = query("SELECT enabled FROM daily_streak_no_code WHERE group_id=%s AND day=%s AND kind=%s",
+                                        (group_id, day, kind)) or []
+                    no_code = bool(no_code_row and int(no_code_row[0][0] or 0) == 1)
                     public = [f"🏆 <b>CHỐT TOP ĐU DÂY {k['label']} NGÀY {day_text}</b>"]
                     for rank, (uid, best) in enumerate(rows, 1):
                         reward = _streak_prize(kind, rank)
                         if reward <= 0:
+                            continue
+                        if no_code:
+                            public.append(f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉'} Top {rank}: "
+                                          f"<code>{mask_user_id(uid)}</code> | {int(best)} trận | không gửi code theo cài đặt admin")
                             continue
                         code = gen_gift_code(k["ctype"])
                         expiry = get_vietnam_time() + timedelta(hours=DAY_STREAK_EXPIRE_HOURS)
@@ -13532,9 +13716,11 @@ async def settle_day_streak_loop(bot):
                                           (uid, group_id, day, kind))
                         public.append(f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉'} Top {rank}: "
                                       f"<code>{mask_user_id(uid)}</code> | {int(best)} trận | thưởng {fmt_money(reward)}")
-                    if rows:
+                    if rows and not no_code:
                         public.append("\n🎁 Giftcode đã gửi riêng qua bot (x%d vòng cược, hạn 1 ngày). "
                                       "Ai chưa nhận được hãy mở bot bấm /start." % DAY_STREAK_WAGER)
+                    elif rows and no_code:
+                        public.append("\n🚫 Admin đã bật chế độ KHÔNG GỬI CODE cho ngày này.")
                         try:
                             await bot.send_message(group_id, "\n".join(public), parse_mode=ParseMode.HTML)
                         except Exception as e:
