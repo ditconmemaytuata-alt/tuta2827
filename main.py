@@ -220,6 +220,20 @@ CUSTOM_EMOJI.update({
     "😇": "6195191910152279859", "🚊": "6208671312823456804",
     "🤨": "6208304964998010180",
 })
+
+# 100 ID emoji Premium bổ sung do chủ bot cung cấp (giữ nguyên, không gán đè emoji cũ).
+PREMIUM_SUPPLIED_IDS = tuple(('5456140674028019486', '5224607267797606837', '5229064374403998351', '5260293700088511294', '5240241223632954241', '5274099962655816924', '5440660757194744323', '5436113877181941026', '5447644880824181073', '5420323339723881652', '5447410659077661506', '5449683594425410231', '5447183459602669338', '5451882707875276247', '5244837092042750681', '5246762912428603768', '5206607081334906820', '5210952531676504517', '5409048419211682843', '5397782960512444700', '5231449120635370684', '5231005931550030290', '5233326571099534068', '5416117059207572332', '5424972470023104089', '5251203410396458957', '5375338737028841420', '5415655814079723871', '5382357040008021292', '5397916757333654639', '5427168083074628963', '5341715473882955310', '5361741454685256344', '5386367538735104399', '5388632425314140043', '5393512611968995988', '5406745015365943482', '5422439311196834318', '5440539497383087970', '5447203607294265305', '5453902265922376865', '5461151367559141950', '5460755126761312667', '6307395821931335527', '6309824960944673394', '6309898817202295364', '6066579956287148786', '6066445429321504756', '6075743256128263137', '6118372219585302405', '6134311203998011378', '6136685818401526660', '6260348015731544669', '6260461407163126795', '6269196846657182682', '6300537218721125925', '6314247072157538306', '6242231474309830253', '6240218285699242572', '6212898076038797235', '6221893124831057477', '6273634436932179409', '6282565984632970119', '5255850496291259327', '5442939099906325301', '5422516277010774456', '5440833702642857683', '5204063760616013585', '5208902681225083086', '5206642759628241872', '5382164415019768638', '5463424023734014980', '5377336227533969892', '5417924076503062111', '5440410042773824003', '5188344996356448758', '5238132025323444613', '5417831807720642261', '5424746623462823358', '5298609030321691620', '5202106638508512484', '5461152608804689572', '5213179235996294999', '5188481279963715781', '5472250091332993630', '5235989279024373566', '5215420556089776398', '5204242830687494041', '5381975814415866082', '5197161121106123533', '5197434882321567830', '5202064723922670546', '5445353829304387411', '5443127283898405358', '5197371802136892976', '5445355530111437729', '5201691993775818138', '5303138782004924588', '5294167145079395967', '5444856076954520455'))
+
+# 59 ID đã được dùng sẵn ở mapping/nút menu; chỉ đưa 41 ID mới vào pool để tránh trùng.
+PREMIUM_EXTRA_IDS = tuple(i for i in PREMIUM_SUPPLIED_IDS if i not in set(CUSTOM_EMOJI.values()) and i != "5472250091332993630")
+
+def ce_extra(index: int, fallback: str = "✨") -> str:
+    """Lấy ID Premium mới chưa trùng mapping hiện có (index 0-40)."""
+    try:
+        return f'<tg-emoji emoji-id="{PREMIUM_EXTRA_IDS[int(index)]}">{fallback}</tg-emoji>'
+    except (IndexError, ValueError, TypeError):
+        return fallback
+
 # Emoji chưa có ID premium riêng -> dùng tạm emoji premium gần nghĩa nhất cho ICON NÚT BẤM
 ICON_ALIAS = {
     "🌸": "🌷", "🍕": "🍭", "🔍": "👀", "🔴": "🚩", "⚪": "🏳️", "⚪️": "🏳️",
@@ -502,12 +516,13 @@ def _top_medal(rank: int) -> str:
     return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "🏅")
 
 def fmt_tx_status(status):
-    s = str(status or "").lower()
-    if s == "success":
-        return f'{ce("✅")} Thành công'
-    if s in ("rejected", "failed", "cancelled"):
-        return f'{ce("❌")} Từ chối' 
-    return f'{ce("❌")} Chờ duyệt'
+    """Trạng thái giao dịch thống nhất: hoàn tất ✓, đang xử lý xoay, từ chối ✕."""
+    s = str(status or "").strip().lower()
+    if s in ("success", "successful", "completed", "approved", "done"):
+        return f'{ce("✅")} Đã hoàn thành'
+    if s in ("rejected", "failed", "cancelled", "declined"):
+        return f'{ce("❌")} Từ chối'
+    return f'{ce("🔄")} Đang xử lý'
 
 def fmt_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".")
@@ -5564,28 +5579,33 @@ async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         msg = f'{title_icon} <b>LỊCH SỬ CHI TIẾT:</b>\n'
         msg += f'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
-        # Trạng thái các lệnh rút gần đây: thành công -> ✅ premium; chưa hoàn thành (từ chối / đang chờ) -> ❌ premium.
+        # Tra trạng thái theo từng loại giao dịch; tránh gán nhầm khi nhiều giao dịch cùng số tiền.
         _wd_status = {}
-        for _a, _s in (query("SELECT amount, status FROM withdraw_history WHERE user_id=%s ORDER BY id DESC LIMIT 60", (uid,)) or []):
-            _wd_status.setdefault(int(_a or 0), []).append(_s)
+        for _a, _s in (query("SELECT amount, status FROM withdraw_history WHERE user_id=%s ORDER BY id DESC LIMIT 100", (uid,)) or []):
+            _wd_status.setdefault(abs(int(_a or 0)), []).append(_s)
+        _dp_status = {}
+        for _a, _s in (query("SELECT amount, status FROM deposit_history WHERE user_id=%s AND status='success' ORDER BY id DESC LIMIT 100", (uid,)) or []):
+            _dp_status.setdefault(abs(int(_a or 0)), []).append(_s)
         for d in data:
             note = str(d[1] or "")
             if note == "Rút tiền":
-                _lst = _wd_status.get(abs(int(d[0])))
+                _lst = _wd_status.get(abs(int(d[0])), [])
                 _st = _lst.pop(0) if _lst else "success"
-                icon = ce("✅") if _st == "success" else ce("❌")
-            elif note.startswith("Hoàn"):
-                icon = ce("🔄")
+                icon = fmt_tx_status(_st)
             elif note.startswith(("Nạp", "Nhận tiền từ")):
-                icon = ce("📥")
+                _lst = _dp_status.get(abs(int(d[0])), [])
+                _st = _lst.pop(0) if _lst else "success"
+                icon = fmt_tx_status(_st)
+            elif note.startswith("Hoàn"):
+                icon = f'{ce("🔄")} Đã hoàn tiền'
             elif note.startswith(("Giftcode", "Code", "Khuyến mãi", "Quà tân thủ", "Nhận thưởng")):
-                icon = ce("🎁")
+                icon = f'{ce("✅")} Đã nhận'
             elif note.startswith("Chuyển tiền"):
-                icon = ce("💸")
+                icon = f'{ce("✅")} Hoàn tất'
             elif note.startswith("Mua giftcode"):
-                icon = ce("🛒")
+                icon = f'{ce("✅")} Hoàn tất'
             else:
-                icon = ce("✅") if d[0] > 0 else ce("❌")
+                icon = fmt_tx_status("success" if d[0] > 0 else "rejected")
             msg += f'{icon} <code>{fmt_money(abs(d[0]))}đ</code> | {html.escape(d[1])}\n'
             msg += f'     <i>{clock_icon} {d[2]}</i>\n'
         msg += f'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
@@ -5687,28 +5707,30 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cuoc_hom_nay, cuoc_tuan = get_bet_stats(uid)
 
         kb = InlineKeyboardMarkup([
-            [btn("LS nạp", "📈", callback_data="acc_ls_nap"), btn("LS rút", "📉", callback_data="acc_ls_rut")],
-            [btn("LS chơi", "🎮", callback_data="acc_ls_choi"), btn("LS Room TX", "🎲", callback_data="acc_ls_tx")],
+            [btn("Lịch sử nạp", "📥", callback_data="acc_ls_nap"), btn("Lịch sử rút", "📤", callback_data="acc_ls_rut")],
+            [btn("Lịch sử game", "🎮", callback_data="acc_ls_choi"), btn("Lịch sử Room TX", "🎲", callback_data="acc_ls_tx")],
             [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "🛒", callback_data="acc_mua_gift")],
-            [btn("Nhận thưởng", "🎉", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
+            [btn("Nhận thưởng", "🏆", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
             [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
-            [btn("Tích lũy nạp", "💰", callback_data="acc_tich_luy")],
+            [btn("Tích lũy nạp", "🪙", callback_data="acc_tich_luy")],
             [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
         ])
 
         msg = (
-            f'{ce("✅")} ID: <code>{uid}</code>\n'
-            f'{ce("💰")} Số dư: <code>{fmt_money(u[0])}</code>\n'
+            f'{ce("👤")} <b>THÔNG TIN TÀI KHOẢN</b>\n'
+            f'━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("🆔")} ID: <code>{uid}</code>\n'
+            f'{ce("💰")} Số dư: <code>{fmt_money(u[0])}đ</code>\n'
             f'{ce("👑")} Cấp VIP: <code>{vip_name}</code>\n\n'
-            f'{ce("📊")} <b>THỐNG KÊ</b>\n'
-            f'• Cược hôm nay: {fmt_money(cuoc_hom_nay)}\n'
-            f'• Cược tuần này: {fmt_money(cuoc_tuan)}\n'
-            f'• Tổng cược: {fmt_money(u[5] or 0)}\n'
-            f'• Tổng nạp: {fmt_money(tong_nap)}\n'
-            f'• Tổng rút: {fmt_money(tong_rut)}\n\n'
-            f'{ce("🗓")} {today_str}\n'
-            f'• Chuỗi thắng: 0\n'
-            f'• Chuỗi thua: 0\n'
+            f'{ce("📊")} <b>THỐNG KÊ HOẠT ĐỘNG</b>\n'
+            f'{ce("🎯")} Cược hôm nay: <code>{fmt_money(cuoc_hom_nay)}đ</code>\n'
+            f'{ce("📅")} Cược tuần này: <code>{fmt_money(cuoc_tuan)}đ</code>\n'
+            f'{ce("🎮")} Tổng cược: <code>{fmt_money(u[5] or 0)}đ</code>\n'
+            f'{ce("📥")} Tổng nạp: <code>{fmt_money(tong_nap)}đ</code>\n'
+            f'{ce("📤")} Tổng rút: <code>{fmt_money(tong_rut)}đ</code>\n'
+            f'━━━━━━━━━━━━━━━━━━━━\n'
+            f'{ce("🗓")} <b>{today_str}</b>\n'
+            f'{ce("🔥")} Chuỗi thắng: <b>0</b>  |  {ce("📉")} Chuỗi thua: <b>0</b>'
         )
         return await user_reply.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -9077,11 +9099,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d == "acc_ls_nap":
         await q.answer()
-        data = query("SELECT amount, time FROM deposit_history WHERE user_id=%s AND status='success' ORDER BY id DESC LIMIT 10", (uid,))
+        data = query("SELECT amount, status, time FROM deposit_history WHERE user_id=%s ORDER BY id DESC LIMIT 10", (uid,))
         text = f'{ce("📥")} <b>10 GIAO DỊCH NẠP GẦN NHẤT:</b>\n\n'
         if not data: text += "Trống."
         else:
-            for row in data: text += f'{ce("✅")} <code>+{fmt_money(row[0])}đ</code> | <i>{row[1]}</i>\n'
+            for row in data: text += f'{fmt_tx_status(row[1])} <code>+{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await q.message.reply_text(text, parse_mode=ParseMode.HTML)
 
     if d == "acc_ls_rut":
@@ -9340,11 +9362,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d == "his_deposit":
         await q.answer()
-        data = query("SELECT amount, time FROM deposit_history WHERE user_id=%s AND status='success' ORDER BY id DESC LIMIT 10", (uid,))
+        data = query("SELECT amount, status, time FROM deposit_history WHERE user_id=%s ORDER BY id DESC LIMIT 10", (uid,))
         text = f'{ce("📥")} <b>10 GIAO DỊCH NẠP GẦN NHẤT:</b>\n\n'
         if not data: text += "Trống."
         else:
-            for row in data: text += f'{ce("✅")} <code>+{fmt_money(row[0])}đ</code> | <i>{row[1]}</i>\n'
+            for row in data: text += f'{fmt_tx_status(row[1])} <code>+{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
     if d == "his_withdraw":
@@ -9490,7 +9512,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not pending:
             _st = query("SELECT status FROM withdraw_history WHERE id=%s", (_wid_in,)) if _wid_in else None
             _st = (_st[0][0] if _st else "")
-            _done = {"success": f'{ce("✅")} ĐÃ DUYỆT', "rejected": f'{ce("❌")} ĐÃ TỪ CHỐI'}.get(_st, f'{ce("⚠️")} ĐÃ XỬ LÝ')
+            _done = fmt_tx_status(_st)
             await q.answer("⚠️ Yêu cầu này đã được xử lý rồi!", show_alert=True)
             try: await _edit_text_or_caption(q, f'{_done} ID <code>{u_id}</code> | <code>{fmt_money(amt)}đ</code>\n{ce("⚠️")} Yêu cầu rút này đã được xử lý trước đó.')
             except: pass
@@ -9511,7 +9533,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             add_money(u_id, amt, "Hoàn tiền rút")
             # Không gửi thông báo rút tiền bị từ chối lên nhóm.
             # Người rút vẫn nhận thông báo riêng bên dưới và tiền được hoàn theo luồng hiện có.
-            try: await ctx.bot.send_message(u_id, f'{ce("❌")} Yêu cầu rút <code>{fmt_money(amt)}đ</code> bị từ chối.\n{ce("🔄")} Tiền đã được hoàn về số dư của bạn.\n{bal_block(u_id)}', parse_mode=ParseMode.HTML)
+            try: await ctx.bot.send_message(u_id, f'{fmt_tx_status("rejected")} yêu cầu rút <code>{fmt_money(amt)}đ</code>.\n{ce("🔄")} Tiền đã được hoàn về số dư của bạn.\n{bal_block(u_id)}', parse_mode=ParseMode.HTML)
             except: pass
             _txt = f'{ce("❌")} <b>ĐÃ TỪ CHỐI</b> ID <code>{u_id}</code> | <code>{fmt_money(amt)}đ</code>'
             await _edit_text_or_caption(q, _txt)
@@ -9893,7 +9915,7 @@ async function vFan(){
   var h='<h2>🌸 Duyệt Fan +30K</h2><p class="mut">Người dùng điểm danh đủ 7 ngày liên tiếp. Duyệt sẽ tạo giftcode thưởng 30.000đ, x3 vòng cược, hạn 3 ngày.</p>';
   if(!rows.length){view.innerHTML=h+'<p class="mut">Chưa có yêu cầu nào.</p>';return;}
   h+=rows.map(function(r){
-    var status=r.status==='pending'?'⏳ Chờ duyệt':(r.status==='approved'?'✅ Đã duyệt':'❌ Từ chối');
+    var status=r.status==='pending'?'🔄 Đang xử lý':(r.status==='approved'?'✅ Đã hoàn thành':'❌ Từ chối');
     return '<div class="item"><div class="row"><b>#'+esc(r.id)+' · User '+esc(r.user_id)+'</b><span>'+status+'</span></div>'+
       '<div class="mut" style="margin:6px 0">Tên: '+esc(r.full_name||'-')+' · @'+esc(r.username||'-')+' · '+esc(r.created_at)+'</div>'+
       (r.gift_code?'<div>Giftcode: <code>'+esc(r.gift_code)+'</code></div>':'')+
@@ -11416,7 +11438,7 @@ async def awp_api_deposit_act(request):
             _awp_credit_deposit_sync, uid, amount, f"Nạp tiền (duyệt web {s['user']}) +{amount:,}đ")
         await _awp_after_deposit(uid, amount, cleared, extra)
     else:
-        await _awp_send(uid, f'{ce("❌")} Yêu cầu nạp <code>{fmt_money(amount)}đ</code> của bạn đã bị từ chối.')
+        await _awp_send(uid, f'{fmt_tx_status("rejected")} yêu cầu nạp <code>{fmt_money(amount)}đ</code> của bạn.')
     await asyncio.to_thread(_aw_log, s["user"], "DEPOSIT_" + act.upper(), f"#{did} ID {uid} {amount}đ", _aw_ip(request))
     return _aw_json({"ok": True})
 
@@ -13671,7 +13693,7 @@ def _rp_status(s):
     return {"success": "Thành công", "pending": "Chờ duyệt", "rejected": "Từ chối"}.get(s, (s or "—"))
 
 def _rp_status_icon(label):
-    return {"Thành công": "✅", "Chờ duyệt": "❌", "Từ chối": "❌"}.get(label, "🔖")
+    return {"Thành công": ce("✅"), "Chờ duyệt": ce("🔄"), "Từ chối": ce("❌")}.get(label, ce("🔖"))
 
 def _rp_admin_label(admin_id):
     try:
@@ -14853,7 +14875,7 @@ async def lsrut_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows = query(sql + "ORDER BY w.id DESC LIMIT %s", (limit,)) or []
     if not rows:
         return await msg.reply_text("Chưa có lịch sử rút.")
-    status_txt = {"pending": f'{ce("❌")} Chờ duyệt', "success": f'{ce("✅")} Đã duyệt', "rejected": f'{ce("❌")} Từ chối'}
+    status_txt = {"pending": fmt_tx_status("pending"), "success": fmt_tx_status("success"), "rejected": fmt_tx_status("rejected")}
     for (wid, uid_, amount, status, time_, code, admin_id, admin_note, method, bank, stk, acc_name,
          qr_fid, memo, u_bank, u_stk, u_name) in rows:
         # Bản ghi cũ chưa lưu snapshot -> dùng thông tin hiện tại của user.
