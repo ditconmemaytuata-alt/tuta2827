@@ -107,8 +107,8 @@ CUSTOM_EMOJI = {
     "🃏": "6163552642724271766", "🎯": "6163198243497841898", "💍": "6185931183273023513",
     "🍬": "6185772003195098128", "🏅": "6167931658235287654", "➖": "6165666080166515915",
     "📈": "6190361691146949084", "📉": "6188266996941985323", "✨": "6185993125291366170",
-    "✅": "6188127633843164094", "🔓": "6186110304884101722", "🔑": "6161101981629814014",
-    "✔️": "6160937630411264715", "🆘": "6161240176497530198", "✏️": "6091654980383545000",
+    "🔓": "6186110304884101722", "🔑": "6161101981629814014",
+    "✔️": "5197387964098813812", "🆘": "6161240176497530198", "✏️": "6091654980383545000",
     "🗓": "5460929352109661725", "🔜": "5238083517962793068", "🚀": "5240037474679398914",
     "☀️": "5461068676553775581", "🌛": "5237759823457556707", "🏆": "5237759703198474072",
     "👑": "5237971457971067970", "🛒": "5195357093107868151", "⏰": "5237968923940364244",
@@ -220,6 +220,18 @@ CUSTOM_EMOJI.update({
     "😇": "6195191910152279859", "🚊": "6208671312823456804",
     "🤨": "6208304964998010180",
 })
+
+# ---- DẤU TÍCH / DẤU X PREMIUM (đặt cuối cùng để không bị ghi đè) ----
+PREMIUM_TICK_ID = "5197387964098813812"   # ✅ dấu tích
+PREMIUM_CROSS_ID = "5445267414562389170"  # ❌ dấu X
+CUSTOM_EMOJI["✅"] = PREMIUM_TICK_ID
+CUSTOM_EMOJI["✔️"] = PREMIUM_TICK_ID
+CUSTOM_EMOJI["☑️"] = PREMIUM_TICK_ID
+CUSTOM_EMOJI["❌"] = PREMIUM_CROSS_ID
+CUSTOM_EMOJI["✖️"] = PREMIUM_CROSS_ID
+# Đảm bảo ID cũ không còn xuất hiện ở bất kỳ emoji nào
+for _k in [k for k, v in CUSTOM_EMOJI.items() if v == "6188127633843164094"]:
+    CUSTOM_EMOJI[_k] = PREMIUM_TICK_ID
 
 # 100 ID emoji Premium bổ sung do chủ bot cung cấp (giữ nguyên, không gán đè emoji cũ).
 PREMIUM_SUPPLIED_IDS = tuple(('5456140674028019486', '5224607267797606837', '5229064374403998351', '5260293700088511294', '5240241223632954241', '5274099962655816924', '5440660757194744323', '5436113877181941026', '5447644880824181073', '5420323339723881652', '5447410659077661506', '5449683594425410231', '5447183459602669338', '5451882707875276247', '5244837092042750681', '5246762912428603768', '5206607081334906820', '5210952531676504517', '5409048419211682843', '5397782960512444700', '5231449120635370684', '5231005931550030290', '5233326571099534068', '5416117059207572332', '5424972470023104089', '5251203410396458957', '5375338737028841420', '5415655814079723871', '5382357040008021292', '5397916757333654639', '5427168083074628963', '5341715473882955310', '5361741454685256344', '5386367538735104399', '5388632425314140043', '5393512611968995988', '5406745015365943482', '5422439311196834318', '5440539497383087970', '5447203607294265305', '5453902265922376865', '5461151367559141950', '5460755126761312667', '6307395821931335527', '6309824960944673394', '6309898817202295364', '6066579956287148786', '6066445429321504756', '6075743256128263137', '6118372219585302405', '6134311203998011378', '6136685818401526660', '6260348015731544669', '6260461407163126795', '6269196846657182682', '6300537218721125925', '6314247072157538306', '6242231474309830253', '6240218285699242572', '6212898076038797235', '6221893124831057477', '6273634436932179409', '6282565984632970119', '5255850496291259327', '5442939099906325301', '5422516277010774456', '5440833702642857683', '5204063760616013585', '5208902681225083086', '5206642759628241872', '5382164415019768638', '5463424023734014980', '5377336227533969892', '5417924076503062111', '5440410042773824003', '5188344996356448758', '5238132025323444613', '5417831807720642261', '5424746623462823358', '5298609030321691620', '5202106638508512484', '5461152608804689572', '5213179235996294999', '5188481279963715781', '5472250091332993630', '5235989279024373566', '5215420556089776398', '5204242830687494041', '5381975814415866082', '5197161121106123533', '5197434882321567830', '5202064723922670546', '5445353829304387411', '5443127283898405358', '5197371802136892976', '5445355530111437729', '5201691993775818138', '5303138782004924588', '5294167145079395967', '5444856076954520455'))
@@ -1700,17 +1712,17 @@ def deposit_menu_content(uid):
     ])
     
     caption = (
-        f'{ce("💵")} <b>CHỌN MỆNH GIÁ NẠP TIỀN</b>\n\n'
-        f'{ce("💎")} Nạp tối thiểu: <b>10.000 đ</b>\n'
-        f'{ce("💎")} Nạp tối đa: <b>100.000.000 đ</b>\n\n'
+        f'{ce("💰")} <b>CHỌN MỆNH GIÁ NẠP TIỀN</b>\n\n'
+        f'{ce("💰")} Nạp tối thiểu: <b>10.000 đ</b>\n'
+        f'{ce("💰")} Nạp tối đa: <b>100.000.000 đ</b>\n\n'
         f'Bấm vào mệnh giá bên dưới để nạp tiền qua <b>Chuyển khoản Ngân hàng</b>.\n\n'
         f'{ce("📌")} <b>CÁCH LẤY THÔNG TIN NẠP:</b>\n\n'
         f'{ce("✍️")} Gõ lệnh: <code>/nap số_tiền</code>\n'
         f'Ví dụ: <code>/nap 100000</code> hoặc <code>/nap 100k</code>\n\n'
         f'{ce("➡️")} Hoặc bấm nút số tiền bên dưới để lấy nhanh.\n\n'
         f'{ce("⚠️")} <b>LƯU Ý:</b>\n\n'
-        f'{ce("✔️")} Chuyển đúng <b>SỐ TIỀN</b> và <b>NỘI DUNG</b> được cung cấp.\n'
-        f'{ce("✔️")} Mỗi lần nạp cần lấy thông tin <b>MỚI</b>.\n'
+        f'{ce("✅")} Chuyển đúng <b>SỐ TIỀN</b> và <b>NỘI DUNG</b> được cung cấp.\n'
+        f'{ce("✅")} Mỗi lần nạp cần lấy thông tin <b>MỚI</b>.\n'
         f'{ce("❌")} Không dùng thông tin cũ cho giao dịch sau.\n'
         f'{ce("💰")} Nạp tối thiểu: <b>10.000 đ</b>'
     )
@@ -2812,7 +2824,7 @@ async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'{ce("⏰")} Hạn dùng: <code>{GIFT_BUY_EXPIRE_DAYS} ngày</code>\n'
         f'━━━━━━━━━━━━━━━━━━━━━\n'
         f'{ce("🔑")} <b>Danh sách code:</b>\n{code_lines}\n\n'
-        f'{ce("📌")} Nhập code bằng lệnh <code>/code [mã]</code> hoặc gửi thẳng mã cho bot.\n'
+        f'{ce("🎁")} Nhập code bằng lệnh <code>/code [mã]</code> hoặc gửi thẳng mã cho bot.\n'
         f'{bal_block(uid)}',
         parse_mode=ParseMode.HTML)
 
@@ -4181,7 +4193,7 @@ async def play_longho(update, ctx, choice, amount):
         if is_win:
             win_amt = int(amount * 1.95)
             add_money(uid, win_amt, f"Thắng Long Hổ {choice.upper()}")
-            status = f'{ce("🎉")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
+            status = f'{ce("✅")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
         else:
             status = f'{ce("❌")} <b>THUA!</b>'
 
@@ -4275,7 +4287,7 @@ async def play_minipoker(update, ctx, amount):
     if multiplier > 0:
         win_amt = int(amount * multiplier)
         add_money(uid, win_amt, f"Thắng Mini Poker {hand_name} x{multiplier}")
-        status = f'{ce("🎉")} <b>THẮNG {hand_name}!</b> x{multiplier}\nNhận: <code>+{fmt_money(win_amt)}đ</code>'
+        status = f'{ce("✅")} <b>THẮNG {hand_name}!</b> x{multiplier}\nNhận: <code>+{fmt_money(win_amt)}đ</code>'
     else:
         status = f'{ce("❌")} <b>THUA!</b> Bài rác'
 
@@ -4345,7 +4357,7 @@ async def play_baccarat(update, ctx, choice, amount):
         multiplier = 9 if choice == "tie" else 2
         win_amt = int(amount * multiplier)
         add_money(uid, win_amt, f"Thắng Baccarat {choice.upper()} x{multiplier}")
-        status = f'{ce("🎉")} <b>THẮNG!</b> x{multiplier}\nNhận: <code>+{fmt_money(win_amt)}đ</code>'
+        status = f'{ce("✅")} <b>THẮNG!</b> x{multiplier}\nNhận: <code>+{fmt_money(win_amt)}đ</code>'
     else:
         status = f'{ce("❌")} <b>THUA!</b>'
 
@@ -4401,7 +4413,7 @@ async def play_xocdia4(update, ctx, choice, amount):
     if win:
         win_amt = int(amount * 1.95)
         add_money(uid, win_amt, f"Thắng Xóc Đĩa 4 Vị {choice.upper()}")
-        status = f'{ce("🎉")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
+        status = f'{ce("✅")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
     else:
         status = f'{ce("❌")} <b>THUA!</b>'
 
@@ -4466,7 +4478,7 @@ async def play_taixiumd5(update, ctx, choice, amount):
     if win:
         win_amt = int(amount * 1.95)
         add_money(uid, win_amt, f"Thắng Tài Xỉu MD5 {choice.upper()}")
-        status = f'{ce("🎉")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
+        status = f'{ce("✅")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
     else:
         status = f'{ce("❌")} <b>THUA!</b>'
 
@@ -4524,7 +4536,7 @@ async def play_baucua(update, ctx, choice, amount):
     if multiplier > 0:
         win_amt = int(amount * multiplier)
         add_money(uid, win_amt, f"Thắng Bầu Cua {choice.upper()}")
-        status = f'{ce("🎉")} <b>THẮNG!</b> x{multiplier}\nNhận: <code>+{fmt_money(win_amt)}đ</code>'
+        status = f'{ce("✅")} <b>THẮNG!</b> x{multiplier}\nNhận: <code>+{fmt_money(win_amt)}đ</code>'
     else:
         status = f'{ce("❌")} <b>THUA!</b>'
 
@@ -4579,7 +4591,7 @@ async def play_xocdia6(update, ctx, choice, amount):
     if win:
         win_amt = int(amount * 1.95)
         add_money(uid, win_amt, f"Thắng Xóc Đĩa 6 Vị {choice.upper()}")
-        status = f'{ce("🎉")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
+        status = f'{ce("✅")} <b>THẮNG!</b> Nhận: <code>+{fmt_money(win_amt)}đ</code>'
     else:
         status = f'{ce("❌")} <b>THUA!</b>'
 
@@ -5580,7 +5592,7 @@ async def nhap_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     success_text = (
         f'{ce("🎉")} <b>NHẬN QUÀ THÀNH CÔNG!</b>\n\n'
         f'{ce("💰")} Bạn nhận được: <code>+{fmt_money(reward)}đ</code>\n'
-        f'{ce("📊")} Hôm nay còn: <code>{remaining}/3</code> lượt nhập code.\n'
+        f'{ce("🎁")} Hôm nay còn: <code>{remaining}/3</code> lượt nhập code.\n'
         f'Mã đã nhập: <code>{code_str}</code>\n\n'
         f'{bal_block(uid)}'
     )
@@ -5616,11 +5628,11 @@ async def history_pro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             elif note.startswith("Hoàn"):
                 icon = f'{ce("🔄")} Đã hoàn tiền'
             elif note.startswith(("Giftcode", "Code", "Khuyến mãi", "Quà tân thủ", "Nhận thưởng")):
-                icon = f'{ce("✅")} Đã nhận'
+                icon = f'{ce("🎁")} Đã nhận'
             elif note.startswith("Chuyển tiền"):
-                icon = f'{ce("✅")} Hoàn tất'
+                icon = f'{ce("💸")} Hoàn tất'
             elif note.startswith("Mua giftcode"):
-                icon = f'{ce("✅")} Hoàn tất'
+                icon = f'{ce("🎁")} Hoàn tất'
             else:
                 icon = fmt_tx_status("success" if d[0] > 0 else "rejected")
             msg += f'{icon} <code>{fmt_money(abs(d[0]))}đ</code> | {html.escape(d[1])}\n'
@@ -5724,10 +5736,10 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cuoc_hom_nay, cuoc_tuan = get_bet_stats(uid)
 
         kb = InlineKeyboardMarkup([
-            [btn("Lịch sử nạp", "📥", callback_data="acc_ls_nap"), btn("Lịch sử rút", "📤", callback_data="acc_ls_rut")],
+            [btn("Lịch sử nạp", "💰", callback_data="acc_ls_nap"), btn("Lịch sử rút", "📤", callback_data="acc_ls_rut")],
             [btn("Lịch sử game", "🎮", callback_data="acc_ls_choi"), btn("Lịch sử Room TX", "🎲", callback_data="acc_ls_tx")],
-            [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "💳", callback_data="acc_mua_gift")],
-            [btn("Nhận thưởng", "💰", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💸", callback_data="acc_chuyen_tien")],
+            [btn("Nhập giftcode", "🎁", callback_data="acc_nhap_gift"), btn("Mua giftcode", "🛒", callback_data="acc_mua_gift")],
+            [btn("Nhận thưởng", "🎁", callback_data="acc_nhan_thuong"), btn("Chuyển tiền", "💰", callback_data="acc_chuyen_tien")],
             [btn("VIP", "👑", callback_data="acc_vip"), btn("Fan cứng +30k", "🔥", callback_data="acc_fan_cung")],
             [btn("Tích lũy nạp", "🪙", callback_data="acc_tich_luy")],
             [btn("Hỗ trợ", "🆘", url="https://t.me/dgfrutil")]
@@ -6647,7 +6659,7 @@ async def taocodeall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         msg = f'{ce("🎁")} <b>TẠO {quantity} CODE THÀNH CÔNG!</b>\n━━━━━━━━━━━━━━━━━━━━━\n{ce("💰")} Mỗi code: <code>{fmt_money(reward)}đ</code>\n\n'
         for i, code in enumerate(codes, 1):
             msg += f'{i}. <code>{code}</code>\n'
-        msg += f'\n{ce("📌")} Dùng lệnh <code>/code [mã]</code> để nhận thưởng!'
+        msg += f'\n{ce("🎁")} Dùng lệnh <code>/code [mã]</code> để nhận thưởng!'
         if len(msg) > 4000:
             bio = BytesIO("\n".join(codes).encode("utf-8"))
             bio.name = "codes.txt"
@@ -7951,7 +7963,7 @@ async def play_tgdice(update, ctx, g, code, amount):
     if outcome == "win":
         win_amt = int(amount * mult)
         add_money(uid, win_amt, f"Thắng {note}")
-        status = (f'{ce("🎉")} <b>THẮNG!</b> Nhận <code>+{fmt_money(win_amt)}đ</code>\n'
+        status = (f'{ce("✅")} <b>THẮNG!</b> Nhận <code>+{fmt_money(win_amt)}đ</code>\n'
                   f'{ce("💎")} Lãi: <code>+{fmt_money(win_amt - amount)}đ</code> · <b>x{mult:g}</b>')
     elif outcome == "push":
         add_money(uid, amount, f"Hoàn tiền Game Telegram - Hòa {c['note']}")
@@ -8258,7 +8270,7 @@ async def _solo_begin(ctx, room_id, room):
                 if winner is None:
                     mine = ""
                 elif pid == winner:
-                    mine = f'\n{ce("🎉")} <b>BẠN THẮNG!</b>'
+                    mine = f'\n{ce("✅")} <b>BẠN THẮNG!</b>'
                 else:
                     mine = f'\n{ce("❌")} <b>BẠN THUA</b>'
                 await bot.send_message(pid, body + mine + f'\n\n{bal_block(pid)}', parse_mode=ParseMode.HTML)
@@ -8326,7 +8338,7 @@ async def _solo_finish_kbb(ctx, room_id, room):
                 if winner is None:
                     mine = ""
                 elif pid == winner:
-                    mine = f'\n{ce("🎉")} <b>BẠN THẮNG!</b>'
+                    mine = f'\n{ce("✅")} <b>BẠN THẮNG!</b>'
                 else:
                     mine = f'\n{ce("❌")} <b>BẠN THUA</b>'
                 await bot.send_message(pid, body + mine + f'\n\n{bal_block(pid)}', parse_mode=ParseMode.HTML)
@@ -8514,7 +8526,7 @@ async def xuctele_cmd(update, ctx):
         if face in TELE_DICE_CHOICES[choice]:
             prize = int(amount * 1.95)
             add_money(uid, prize, f"Thắng Xúc Xắc Tele {choice.upper()}")
-            result = f'{ce("🎉")} THẮNG · Nhận <code>+{fmt_money(prize)}đ</code>'
+            result = f'{ce("✅")} THẮNG · Nhận <code>+{fmt_money(prize)}đ</code>'
         else:
             result = f'{ce("❌")} THUA'
         await status.edit_text(
@@ -13984,7 +13996,7 @@ async def _rp_render_card(bot, uid):
          btn("Lịch sử rút", "📤", callback_data=f"ar:{uid}:pick:rut:-:x")],
         [btn("Cược & thắng", "🎲", callback_data=f"ar:{uid}:pick:cuoc:-:x"),
          btn("Biến động số dư", "💳", callback_data=f"ar:{uid}:pick:his:-:x")],
-        [btn("Code đã nhập", "🎟", callback_data=f"ar:{uid}:pick:code:-:x"),
+        [btn("Code đã nhập", "🎁", callback_data=f"ar:{uid}:pick:code:-:x"),
          btn("Gift đã dùng", "🎁", callback_data=f"ar:{uid}:pick:gift:-:x")],
         [btn("Gift đã mua", "🛒", callback_data=f"ar:{uid}:pick:mua:-:x"),
          btn("Làm mới", "🔄", callback_data=f"ar:{uid}:home:-:-:-")],
@@ -14857,7 +14869,7 @@ async def lsnaptatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         return await update.effective_message.reply_text("Chưa có lịch sử nạp.")
     text = "📥 <b>50 LỊCH SỬ NẠP MỚI NHẤT</b>\n\n" + "\n".join(
-        f"{ {'success': ce('✅'), 'rejected': ce('❌'), 'pending': ce('❌')}.get(str(r[3] or ''), ce('❌')) } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
+        f"{ {'success': ce('✅'), 'rejected': ce('❌'), 'pending': ce('🔄')}.get(str(r[3] or ''), ce('🔄')) } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -14953,7 +14965,7 @@ async def lsruttatca_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         return await update.effective_message.reply_text("Chưa có lịch sử rút.")
     text = "📤 <b>50 LỊCH SỬ RÚT MỚI NHẤT</b>\n\n" + "\n".join(
-        f"{ {'success': ce('✅'), 'rejected': ce('❌'), 'pending': ce('❌')}.get(str(r[3] or ''), ce('❌')) } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
+        f"{ {'success': ce('✅'), 'rejected': ce('❌'), 'pending': ce('🔄')}.get(str(r[3] or ''), ce('🔄')) } #{r[0]} · ID <code>{r[1]}</code> · <code>{fmt_money(int(r[2] or 0))}đ</code> · {html.escape(str(r[4] or ''))}"
         for r in rows)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
