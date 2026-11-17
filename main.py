@@ -21,7 +21,8 @@ import pytz
 from telegram import (Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto, WebAppInfo, ChatPermissions, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, ForceReply)
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ApplicationHandlerStop, TypeHandler
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, TimedOut, NetworkError
+from telegram.request import HTTPXRequest
 import aiohttp
 from aiohttp import web
 
@@ -14009,7 +14010,30 @@ for _m in ("send_photo", "send_animation", "send_video", "send_document", "send_
            "pin_chat_message", "send_dice", "send_video_note"):
     _guard_room_mute(_m)
 
-application = ApplicationBuilder().token(TOKEN).build()
+# HTTPXRequest: tăng timeout để tránh bot chết khi Telegram phản hồi chậm.
+# Tách request polling khỏi request thông thường để long-polling ổn định hơn.
+_telegram_request = HTTPXRequest(
+    connection_pool_size=32,
+    connect_timeout=25.0,
+    read_timeout=60.0,
+    write_timeout=30.0,
+    pool_timeout=25.0,
+)
+_telegram_updates_request = HTTPXRequest(
+    connection_pool_size=8,
+    connect_timeout=25.0,
+    read_timeout=45.0,
+    write_timeout=30.0,
+    pool_timeout=25.0,
+)
+
+application = (
+    ApplicationBuilder()
+    .token(TOKEN)
+    .request(_telegram_request)
+    .get_updates_request(_telegram_updates_request)
+    .build()
+)
 
 # ============================================================
 # BỘ CÔNG CỤ ADMIN V2 — HỒ SƠ + LỊCH SỬ ĐẦY ĐỦ + XUẤT EXCEL
@@ -17649,11 +17673,42 @@ async def auto_settle_tich_luy_loop(bot):
             print(f"Lỗi auto_settle_tich_luy_loop: {e}")
         await asyncio.sleep(60)
 
+async def _telegram_startup_call(label, callback, attempts=10):
+    """Thử lại các lệnh khởi động Telegram khi mạng chập chờn/timeout."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await callback()
+        except (TimedOut, NetworkError, TimeoutError, OSError) as exc:
+            last_error = exc
+            wait_seconds = min(3 * attempt, 20)
+            print(
+                f"⚠️ Telegram {label} bị timeout/lỗi mạng "
+                f"(lần {attempt}/{attempts}): {exc}. Thử lại sau {wait_seconds}s..."
+            )
+            if attempt < attempts:
+                await asyncio.sleep(wait_seconds)
+    raise RuntimeError(
+        f"Không thể hoàn tất bước {label} sau {attempts} lần thử. "
+        f"Kiểm tra kết nối Railway tới api.telegram.org. Lỗi cuối: {last_error}"
+    ) from last_error
+
+
 async def main():
     global _bot_instance
-    await application.initialize()
-    # Chặn chạy nhầm TOKEN của bot khác: chỉ khởi động với @cavoixanh_cvxbot.
-    _identity = await application.bot.get_me()
+
+    if not TOKEN:
+        raise RuntimeError("Thiếu biến môi trường BOT_TOKEN trên Railway.")
+
+    # Khởi tạo bot có retry: Telegram chậm tạm thời sẽ không làm bot dừng ngay.
+    await _telegram_startup_call(
+        "initialize", application.initialize, attempts=10
+    )
+
+    # Chặn chạy nhầm TOKEN của bot khác; retry riêng lệnh get_me.
+    _identity = await _telegram_startup_call(
+        "get_me", application.bot.get_me, attempts=10
+    )
     if (_identity.username or "").lower() != BOT_USERNAME.lower():
         raise RuntimeError(
             f"BOT_TOKEN không thuộc @{BOT_USERNAME}; token hiện tại thuộc @{_identity.username}. "
