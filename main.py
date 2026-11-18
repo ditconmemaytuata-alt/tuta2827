@@ -3191,8 +3191,8 @@ async def handle_gift_flow_text(update: Update, uid: int, st: dict, text: str):
             wager = int(text.lower().replace("x", "").strip())
         except ValueError:
             return await _err('Vui lòng nhập số hợp lệ! VD: <code>2</code>')
-        if wager < 0 or wager > 100:
-            return await _err('Số vòng cược từ 0 đến 100. Nhập lại:')
+        if wager < 0 or wager > 1500:
+            return await _err('Số vòng cược từ 0 đến 1500. Nhập lại:')
         st["wager"] = wager
         st["step"] = "reward"
         return await _ask(f'{ce("✍️")} Nhập <b>giá trị code</b> (VNĐ):\nVD: <code>50000</code> hoặc <code>50k</code>')
@@ -3202,8 +3202,8 @@ async def handle_gift_flow_text(update: Update, uid: int, st: dict, text: str):
             val = parse_money_text(text)
         except ValueError:
             return await _err('Giá trị không hợp lệ! VD: <code>50000</code> hoặc <code>50k</code>')
-        if val < 1000:
-            return await _err('Giá trị tối thiểu là 1.000đ. Nhập lại:')
+        if val < 0:
+            return await _err('Giá trị code không được âm. Nhập lại (có thể nhập 0đ):')
         st["reward"] = val
         st["step"] = "duration"
         return await _ask(
@@ -3215,15 +3215,15 @@ async def handle_gift_flow_text(update: Update, uid: int, st: dict, text: str):
             return await _err('Định dạng không hợp lệ! Nhập <code>1n</code> (ngày), <code>1h</code> (giờ) hoặc <code>1p</code> (phút).')
         st["duration"] = minutes
         st["step"] = "qty"
-        return await _ask(f'{ce("✍️")} Nhập <b>số lượng code</b> cần tạo (1 - 100):')
+        return await _ask(f'{ce("✍️")} Nhập <b>số lượng code</b> cần tạo (1 - 300):')
 
     if step == "qty":
         try:
             qty = int(text.strip())
         except ValueError:
             return await _err('Vui lòng nhập số hợp lệ!')
-        if qty < 1 or qty > 100:
-            return await _err('Số lượng từ 1 đến 100. Nhập lại:')
+        if qty < 1 or qty > 300:
+            return await _err('Số lượng từ 1 đến 300. Nhập lại:')
         st["qty"] = qty
         st["step"] = "ask_bind"
         kb = _cancel_kb([[btn("Tất cả tài khoản", "🔓", callback_data="gcn_bind_0"),
@@ -6851,6 +6851,10 @@ async def sethu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def tao_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         reward, uses = int(ctx.args[0]), int(ctx.args[1])
+        if reward < 0:
+            return await update.effective_message.reply_text(
+                f'{ce("❌")} Giá trị code không được âm (có thể nhập 0đ).',
+                parse_mode=ParseMode.HTML)
         code = gen_code()
         query("INSERT INTO codes (code, reward, uses) VALUES(%s,%s,%s)", (code, reward, uses))
         await update.effective_message.reply_text(
@@ -6869,10 +6873,10 @@ async def taocodeall_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         reward = int(ctx.args[0])
         quantity = int(ctx.args[1])
-        if quantity < 1 or quantity > 100:
-            return await update.effective_message.reply_text(f'{ce("❌")} Số lượng code phải từ 1 đến 100!', parse_mode=ParseMode.HTML)
-        if reward < 1000:
-            return await update.effective_message.reply_text(f'{ce("❌")} Số tiền thưởng tối thiểu là 1,000đ!', parse_mode=ParseMode.HTML)
+        if quantity < 1 or quantity > 300:
+            return await update.effective_message.reply_text(f'{ce("❌")} Số lượng code phải từ 1 đến 300!', parse_mode=ParseMode.HTML)
+        if reward < 0:
+            return await update.effective_message.reply_text(f'{ce("❌")} Giá trị code không được âm (có thể nhập 0đ)!', parse_mode=ParseMode.HTML)
         codes = []
         for i in range(quantity):
             code = gen_code()
@@ -16403,7 +16407,7 @@ _ADM_FLOW = {
     "xoagift": [_TEXT("Mã", "Nhập <b>mã giftcode</b> cần xoá:", norm=_upper)],
     "tangcodenap": [
         _MONEY("Nhập <b>giá trị mỗi code</b> tặng:", name="Giá trị"),
-        _S("num", "Vòng cược", "Nhập <b>số vòng cược</b> (0 = không cần cược):", quick=["0", "1", "2", "3"], lo=0, hi=100),
+        _S("num", "Vòng cược", "Nhập <b>số vòng cược</b> (0 = không cần cược, tối đa 1500):", quick=["0", "1", "2", "3"], lo=0, hi=1500),
         _S("choice", "Hạn", "Nhập <b>hạn dùng</b>: <code>30p</code> (phút) · <code>2h</code> (giờ) · <code>1n</code> (ngày):",
            choices=[("30 phút", "30p"), ("2 giờ", "2h"), ("1 ngày", "1n"), ("3 ngày", "3n")], free=True),
         _S("choice", "Phạm vi", "Tặng cho ai? Chọn nút hoặc gõ danh sách ID cách nhau dấu phẩy (vd: <code>123456,789012</code>):",
@@ -16992,10 +16996,10 @@ async def tangcodenap_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         min_amt = parse_money_text(args[4]) if len(args) > 4 else 0
     except (ValueError, TypeError):
         return await msg.reply_text(f'{ce("❌")} Tham số không hợp lệ.\n\n' + _tgn_usage(), parse_mode=ParseMode.HTML)
-    if reward < 1000 or reward > 100_000_000:
-        return await msg.reply_text(f'{ce("❌")} Giá trị code từ 1.000đ đến 100.000.000đ.', parse_mode=ParseMode.HTML)
-    if wager < 0 or wager > 100:
-        return await msg.reply_text(f'{ce("❌")} Số vòng cược từ 0 đến 100.', parse_mode=ParseMode.HTML)
+    if reward < 0 or reward > 100_000_000:
+        return await msg.reply_text(f'{ce("❌")} Giá trị code từ 0đ đến 100.000.000đ.', parse_mode=ParseMode.HTML)
+    if wager < 0 or wager > 1500:
+        return await msg.reply_text(f'{ce("❌")} Số vòng cược từ 0 đến 1500.', parse_mode=ParseMode.HTML)
     if not minutes or minutes <= 0:
         return await msg.reply_text(f'{ce("❌")} Hạn dùng không hợp lệ (VD: <code>1n</code>, <code>2h</code>, <code>30p</code>).', parse_mode=ParseMode.HTML)
 
