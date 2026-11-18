@@ -1372,7 +1372,7 @@ def add_bonus_with_requirement(user_id, bonus_amount, required_multiplier=None):
 # ============================================================
 # KHUYẾN MÃI NẠP
 #  • 10% mỗi lần nạp, MỖI NGÀY CHỈ NHẬN 1 LẦN (đang có vòng cược khác vẫn nhận, cược được cộng dồn)
-#  • +3% thưởng thêm cho MỖI lệnh nạp (không giới hạn số lần)
+#  • +3% thưởng cho MỖI lệnh nạp (không giới hạn số lần): TỰ ĐỘNG cộng thẳng vào số dư, cược x1 (nạp 100k -> +3k -> cần cược 103k)
 #  • GIỜ VÀNG tự động bật/tắt hằng ngày: 10:00-11:00 và 20:00-21:00 (giờ Việt Nam)
 #  • Admin có thể ép bật/tắt bằng /kmgio on|off|auto
 # ============================================================
@@ -1465,45 +1465,68 @@ def add_promo_bonus(uid, bonus_main, bonus_order=0, note="Khuyến mãi nạp"):
     add_money(uid, total, f"{note} +{total:,}đ (yêu cầu cược {fmt_money(required)}đ)")
     return required
 
+def apply_order_bonus(uid, amount):
+    """Khuyến mãi 3% mỗi lệnh nạp: TỰ ĐỘNG cộng thẳng vào số dư, không cần bấm nhận.
+    Cược x1 chỉ tính trên tiền thưởng 3% (cộng dồn vào cược x1 tiền nạp):
+    nạp 100k -> thưởng 3k -> tổng cược cần = 100k + 3k = 103k.
+    Gọi SAU khi đã cộng tiền nạp (và sau apply_deposit_wager_rule). Trả về số tiền thưởng (0 nếu lỗi)."""
+    try:
+        amount = int(amount)
+        p3 = int(amount * PROMO_ORDER_PCT / 100)
+        if p3 <= 0:
+            return 0
+        req = int(round(p3 * PROMO_ORDER_WAGER_MULT))
+        _t = _BAL_TRACE.get(uid)   # giữ 'số dư trước' của lệnh nạp để hóa đơn hiển thị đúng
+        add_wager_requirement(uid, p3, req)
+        add_money(uid, p3, f"Khuyến mãi nạp {PROMO_ORDER_PCT}% +{p3:,}đ (cược x{PROMO_ORDER_WAGER_MULT})")
+        if _t:
+            _bal_note(uid, _t[0], get_balance(uid))
+        # phần cược 3% nằm trong 'base' của lệnh nạp: nếu sau đó nhận thêm KM 10% (tính cược trên toàn bộ số dư)
+        # thì được gỡ chung với cược x1 tiền nạp, không bị tính trùng.
+        query("UPDATE deposit_base_wager SET base=base+%s WHERE user_id=%s AND amount=%s", (req, uid, amount))
+        return p3
+    except Exception as e:
+        print(f"apply_order_bonus lỗi: {e}")
+        return 0
+
+def order_bonus_line(p3):
+    """Dòng thông báo thưởng 3% đã cộng tự động (kết thúc bằng xuống dòng; rỗng nếu không có)."""
+    if not p3:
+        return ""
+    return (f'{ce("🎁")} Khuyến mãi nạp {PROMO_ORDER_PCT}% (tự động cộng): <code>+{fmt_money(p3)}đ</code> '
+            f'(cược x{PROMO_ORDER_WAGER_MULT})\n')
+
 def promo_build_offer(uid, amount):
-    """Trả về (text, keyboard) của lời mời nhận khuyến mãi sau khi nạp, hoặc None nếu không có gì để tặng."""
-    p3 = int(amount * PROMO_ORDER_PCT / 100)
+    """Trả về (text, keyboard) của lời mời nhận khuyến mãi 10% giờ vàng sau khi nạp, hoặc None nếu không có.
+    (Thưởng 3% mỗi lệnh nạp đã được cộng tự động bởi apply_order_bonus, không còn nằm trong lời mời.)"""
     eligible15 = promo_is_active() and not promo_claimed_today(uid)
-    p15 = int(amount * PROMO_PCT / 100) if eligible15 else 0
-    total = p15 + p3
+    if not eligible15:
+        return None
+    p15 = int(amount * PROMO_PCT / 100)
+    total = p15
     if total <= 0:
         return None
     _bal_now = get_balance(uid)
-    required = promo_required(_bal_now, p15, p3)
+    required = promo_required(_bal_now, p15, 0)
     lines = [
         f'{ce("🎁")} <b>BẠN CÓ MUỐN NHẬN THÊM KHUYẾN MÃI?</b>',
         '━━━━━━━━━━━━━━━━━━━━━',
     ]
     if eligible15 and promo_mode() == "auto" and promo_golden_now():
         lines.append(f'{ce("⏰")} <b>ĐANG LÀ GIỜ VÀNG NẠP!</b>')
-    if eligible15:
-        lines.append(f'{ce("✨")} <b>Thưởng nạp {PROMO_PCT}% (1 lần/ngày):</b> <code>+{fmt_money(p15)}đ</code>')
-    lines.append(f'{ce("➕")} <b>Thưởng thêm mỗi lệnh nạp {PROMO_ORDER_PCT}%:</b> <code>+{fmt_money(p3)}đ</code>')
-    lines.append(f'{ce("💰")} <b>Tổng nhận:</b> <code>+{fmt_money(total)}đ</code>')
-    if eligible15:
-        lines.append(f'{ce("🎯")} <b>Cược {PROMO_PCT}%:</b> x{PROMO_WAGER_MULT} vòng')
-    lines.append(f'{ce("🎯")} <b>Cược {PROMO_ORDER_PCT}%:</b> x{PROMO_ORDER_WAGER_MULT} vòng')
+    lines.append(f'{ce("✨")} <b>Thưởng nạp {PROMO_PCT}% (1 lần/ngày):</b> <code>+{fmt_money(p15)}đ</code>')
+    lines.append(f'{ce("🎯")} <b>Cược {PROMO_PCT}%:</b> x{PROMO_WAGER_MULT} vòng')
     lines.append(f'{ce("💳")} <b>Tính trên toàn bộ số dư + khuyến mãi:</b> <code>{fmt_money(_bal_now + total)}đ</code>')
     lines.append(f'{ce("📊")} <b>Tổng yêu cầu cược:</b> <code>{fmt_money(required)}đ</code>')
     lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> Cược đủ yêu cầu mới được rút. '
                  f'Nếu đang có vòng cược khuyến mãi khác, yêu cầu cược sẽ được cộng dồn.')
     lines.append(f'{ce("❗️")} <b>Phải bấm nhận TRƯỚC khi chơi:</b> nếu bạn đã cược (chơi game) mà chưa nhận, '
                  f'khuyến mãi này coi như từ bỏ và <b>không được nhận lại</b>.')
-    if not eligible15:
-        if promo_claimed_today(uid):
-            lines.append(f'{ce("📌")} <i>Hôm nay bạn đã nhận khuyến mãi {PROMO_PCT}% rồi (mỗi ngày 1 lần).</i>')
-        else:
-            lines.append(f'{ce("📌")} <i>Khuyến mãi {PROMO_PCT}% mở trong giờ vàng {promo_windows_text()} mỗi ngày.</i>')
     lines.append('━━━━━━━━━━━━━━━━━━━━━\n\nVui lòng chọn bên dưới:')
     _offer_id = promo_offer_create(uid, amount)
     _oid_suffix = f"_{_offer_id}" if _offer_id else ""
     kb = InlineKeyboardMarkup([[
-        btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_promo_{uid}_{amount}_{1 if eligible15 else 0}{_oid_suffix}"),
+        btn("NHẬN KHUYẾN MÃI", "🎁", callback_data=f"accept_pm10_{uid}_{amount}{_oid_suffix}"),
         btn("TỪ CHỐI", "❌", callback_data=f"reject_bonus_{uid}{_oid_suffix}")
     ]])
     return "\n".join(lines), kb
@@ -5108,6 +5131,20 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[btn("KÊNH PHÁT CODE", "🎁", url=CHANNEL_CODE_LINK)]]),
         parse_mode=ParseMode.HTML)
 
+MAX_PAYOUT_PER_METHOD = 3   # mỗi người liên kết tối đa 3 tài khoản cho MỖI phương thức (BANKING / MOMO / ZALOPAY)
+
+def count_payout_accounts(uid, method):
+    try:
+        r = query("SELECT COUNT(*) FROM user_payout_accounts WHERE user_id=%s AND method=%s", (uid, method))
+        return int(r[0][0]) if r else 0
+    except Exception as e:
+        print(f"count_payout_accounts lỗi: {e}")
+        return 0
+
+def payout_limit_text(method):
+    return (f"Bạn đã liên kết tối đa {MAX_PAYOUT_PER_METHOD} tài khoản {method}. "
+            f"Mỗi phương thức chỉ được liên kết {MAX_PAYOUT_PER_METHOD} tài khoản.")
+
 async def show_withdraw_methods(message):
     kb = InlineKeyboardMarkup([
         [btn_id("BANKING", "5332455502917949981", callback_data="payout:withdraw:BANKING")],
@@ -5139,7 +5176,8 @@ async def lien_ket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ])
     return await update.effective_message.reply_text(
         f'{ce("💳")} <b>LIÊN KẾT TÀI KHOẢN NHẬN TIỀN</b>\n\n'
-        'Chọn phương thức nhận tiền. Ở bước cuối, bạn cần gửi ảnh QR tương ứng để Admin quét khi xử lý lệnh rút.',
+        'Chọn phương thức nhận tiền. Ở bước cuối, bạn cần gửi ảnh QR tương ứng để Admin quét khi xử lý lệnh rút.\n'
+        f'{ce("📌")} Mỗi phương thức (Banking / MoMo / ZaloPay) liên kết tối đa <b>{MAX_PAYOUT_PER_METHOD}</b> tài khoản.',
         reply_markup=kb, parse_mode=ParseMode.HTML
     )
 
@@ -5220,6 +5258,9 @@ async def payout_link_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     method = data.split(":")[-1]
     if method not in ("BANKING", "MOMO", "ZALOPAY"):
         return await q.answer("Phương thức không hợp lệ.", show_alert=True)
+    if count_payout_accounts(uid, method) >= MAX_PAYOUT_PER_METHOD:
+        ctx.user_data.pop("payout_link", None)
+        return await q.answer(payout_limit_text(method), show_alert=True)
     ctx.user_data["payout_link"] = {"stage": "bank" if method == "BANKING" else "number", "method": method}
     await q.answer()
     prompt = "Nhập tên ngân hàng (VD: MB, BIDV, VCB):" if method == "BANKING" else f"Nhập số điện thoại {method}:"
@@ -5266,6 +5307,10 @@ async def payout_link_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             bank = state.get("bank_code")
             number = state["account_number"]
             name = state["account_name"]
+            if count_payout_accounts(uid, "BANKING") >= MAX_PAYOUT_PER_METHOD:
+                ctx.user_data.pop("payout_link", None)
+                await msg.reply_text(f'{ce("❌")} ' + payout_limit_text("BANKING"), parse_mode=ParseMode.HTML)
+                raise ApplicationHandlerStop
             query("UPDATE user_payout_accounts SET is_default=FALSE WHERE user_id=%s", (uid,))
             saved_account = query(
                 """INSERT INTO user_payout_accounts
@@ -5311,6 +5356,10 @@ async def payout_link_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     bank = state.get("bank_code")
     number = state["account_number"]
     name = state["account_name"]
+    if count_payout_accounts(uid, method) >= MAX_PAYOUT_PER_METHOD:
+        ctx.user_data.pop("payout_link", None)
+        await msg.reply_text(f'{ce("❌")} ' + payout_limit_text(method), parse_mode=ParseMode.HTML)
+        return
     query("UPDATE user_payout_accounts SET is_default=FALSE WHERE user_id=%s", (uid,))
     saved_account = query(
         """INSERT INTO user_payout_accounts
@@ -6278,6 +6327,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query("INSERT INTO deposit_history (user_id, amount, admin_id, status, time) VALUES (%s, %s, %s, %s, %s)", (target_id, amount, update.effective_user.id, 'success', now_str))
         _cleared, _extra = apply_deposit_wager_rule(target_id, get_balance(target_id), amount)
         add_money(target_id, amount, f"Nạp tiền +{amount:,}đ")
+        _p3 = apply_order_bonus(target_id, amount)   # KM 3% tự động cộng thẳng vào số dư (cược x1)
         await notify_deposit_wager(ctx.bot, target_id, _cleared, _extra)
         
         # Chỉ hiển thị 5 số cuối của ID.
@@ -6296,6 +6346,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await ctx.bot.send_message(target_id,
                     f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n'
                     f'{ce("💰")} Số tiền nạp: <code>+{fmt_money(amount)}đ</code>\n'
+                    f'{order_bonus_line(_p3)}'
                     f'{bal_block(target_id)}{deposit_wager_line(target_id)}\n\n'
                     + offer_text,
                     reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -6306,6 +6357,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG</b>\n'
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
                     f'{ce("📥")} <b>Số tiền:</b> <code>+{fmt_money(amount)}đ</code>\n'
+                    f'{order_bonus_line(_p3)}'
                     f'{ce("⏰")} <b>Thời gian:</b> {now_str}\n'
                     f'━━━━━━━━━━━━━━━━━━━━━\n'
                     f'{bal_block(target_id)}{deposit_wager_line(target_id)}'
@@ -6316,6 +6368,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG</b>\n\n'
             f'{ce("🆔")} ID: <code>{target_id}</code>\n'
             f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>\n'
+            f'{order_bonus_line(_p3)}'
             f'{bal_block(target_id)}',
             parse_mode=ParseMode.HTML)
     except (IndexError, ValueError):
@@ -6958,7 +7011,7 @@ async def kmgio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'{ce("⚙️")} <b>Chế độ:</b> {mode_txt}\n'
         f'{ce("🟢") if active else ce("🔴")} <b>Hiện tại:</b> {"ĐANG BẬT" if active else "ĐANG TẮT"}\n'
         f'{ce("🗓")} <b>Khung giờ vàng:</b> <code>{promo_windows_text()}</code> (hằng ngày)\n'
-        f'{ce("➕")} <b>Thưởng thêm mỗi lệnh nạp:</b> {PROMO_ORDER_PCT}%\n'
+        f'{ce("➕")} <b>Thưởng mỗi lệnh nạp (tự động cộng, cược x{PROMO_ORDER_WAGER_MULT}):</b> {PROMO_ORDER_PCT}%\n'
         f'{ce("👥")} <b>Đã nhận {PROMO_PCT}% hôm nay:</b> {claimed[0][0]} người\n'
         f'━━━━━━━━━━━━━━━━━━━━━\n'
         f'<code>/kmgio on</code> bật cả ngày • <code>/kmgio off</code> tắt • <code>/kmgio auto</code> tự động',
@@ -7000,7 +7053,7 @@ async def promo_golden_loop(bot):
                             if custom else
                             (f'{ce("⏰")} <b>GIỜ VÀNG NẠP ĐÃ MỞ!</b> {ce("🎉")}\n'
                              f'{ce("✨")} Nạp ngay nhận khuyến mãi <b>{PROMO_PCT}%</b> (mỗi ngày 1 lần){until}\n'
-                             f'{ce("➕")} Mỗi lệnh nạp được thưởng thêm <b>{PROMO_ORDER_PCT}%</b>\n'
+                             f'{ce("➕")} Mỗi lệnh nạp được tự động cộng thêm <b>{PROMO_ORDER_PCT}%</b> (cược x{PROMO_ORDER_WAGER_MULT})\n'
                              f'{ce("🗓")} Giờ vàng hằng ngày: <code>{promo_windows_text()}</code>'))
                 else:
                     text = (f'{ce("⌛")} <b>Giờ vàng nạp đã kết thúc.</b>\n'
@@ -9586,6 +9639,48 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text += f'{status_icon} <code>{fmt_money(row[0])}đ</code> | <i>{row[2]}</i>\n'
         return await ctx.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
 
+    if d.startswith("accept_pm10_"):
+        # KM 10% giờ vàng (1 lần/ngày). Thưởng 3% mỗi lệnh nạp đã tự động cộng lúc nạp thành công.
+        parts = d.split("_")
+        target_id = int(parts[2])
+        amount = int(parts[3])
+        if q.from_user.id != target_id: return await q.answer("❌ Không phải yêu cầu của bạn!", show_alert=True)
+        done = query("INSERT INTO promo_offer_done (chat_id, message_id) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING chat_id",
+                     (q.message.chat_id, q.message.message_id))
+        if not done:
+            return await q.answer("❌ Khuyến mãi này đã được xử lý rồi!", show_alert=True)
+        offer_id = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else None
+        if offer_id is not None:
+            claimed = query("UPDATE promo_offers SET status='claimed' WHERE id=%s AND user_id=%s AND status='pending' RETURNING id",
+                            (offer_id, target_id))
+            if not claimed:
+                await q.answer("❌ Khuyến mãi đã hết hiệu lực vì bạn đã cược trước khi nhận!", show_alert=True)
+                try:
+                    await q.message.edit_text(
+                        f'{ce("❌")} <b>KHUYẾN MÃI ĐÃ HẾT HIỆU LỰC</b>\n'
+                        f'Bạn đã phát sinh cược trước khi nhận nên khuyến mãi lần nạp này coi như từ bỏ và không được nhận lại.',
+                        parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+                return
+        if not promo_claim_daily(target_id, amount):
+            return await q.answer("❌ Hôm nay bạn đã nhận khuyến mãi này rồi!", show_alert=True)
+        p15 = int(amount * PROMO_PCT / 100)
+        if p15 <= 0:
+            return await q.answer("❌ Không có khuyến mãi để nhận!", show_alert=True)
+        deposit_base_release(target_id, amount)   # đã tính cược trên toàn bộ số dư (gồm tiền nạp + 3%) nên bỏ phần cược cộng trước đó
+        add_promo_bonus(target_id, p15, 0)
+        st = get_bet_progress_status(target_id)
+        lines = [f'{ce("🎁")} <b>ĐÃ NHẬN KHUYẾN MÃI!</b>',
+                 f'{ce("✨")} Thưởng {PROMO_PCT}%: <code>+{fmt_money(p15)}đ</code>',
+                 bal_block(target_id)]
+        if st:
+            lines.append(f'{ce("🎯")} Yêu cầu cược hiện tại: <code>{fmt_money(st["required_bet"])}đ</code> '
+                         f'(đã cược <code>{fmt_money(st["current_bet"])}đ</code>)')
+        lines.append(f'{ce("⚠️")} <b>Lưu ý:</b> {PROMO_PCT}% cược x{PROMO_WAGER_MULT} vòng')
+        await q.message.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        return
+
     if d.startswith("accept_promo_"):
         parts = d.split("_")
         target_id = int(parts[2])
@@ -9809,6 +9904,7 @@ async def sepay_webhook(request):
             print(f"SePay Webhook: không cập nhật được trạng thái lệnh nạp: {_e}")
         _cleared, _extra = apply_deposit_wager_rule(user_id, get_balance(user_id), amount)
         add_money(user_id, amount, f"Nạp tiền tự động (SePay) +{amount:,}đ")
+        _p3 = apply_order_bonus(user_id, amount)   # KM 3% tự động cộng thẳng vào số dư (cược x1)
         await notify_deposit_wager(_bot_instance, user_id, _cleared, _extra)
 
         # Thông báo cho user
@@ -9818,6 +9914,7 @@ async def sepay_webhook(request):
                 f'{ce("✅")} <b>NẠP TIỀN TỰ ĐỘNG THÀNH CÔNG!</b>\n'
                 f'━━━━━━━━━━━━━━━━━━━━━\n'
                 f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>\n'
+                f'{order_bonus_line(_p3)}'
                 f'{ce("📌")} Nội dung: <code>{content}</code>\n'
                 f'{ce("⏰")} Thời gian: {now_str}\n'
                 f'━━━━━━━━━━━━━━━━━━━━━\n'
@@ -11600,14 +11697,15 @@ def _awp_credit_deposit_sync(uid, amount, note):
     prev = get_balance(uid)
     cleared, extra = apply_deposit_wager_rule(uid, prev, amount)
     add_money(uid, amount, note)
+    p3 = apply_order_bonus(uid, amount)   # KM 3% tự động cộng thẳng vào số dư (cược x1)
     try:
         nap_orders_mark_paid(uid)
     except Exception:
         pass
-    return cleared, extra
+    return cleared, extra, p3
 
 
-async def _awp_after_deposit(uid, amount, cleared, extra):
+async def _awp_after_deposit(uid, amount, cleared, extra, p3=0):
     bot = application.bot
     try:
         await notify_deposit_wager(bot, uid, cleared, extra)
@@ -11622,6 +11720,7 @@ async def _awp_after_deposit(uid, amount, cleared, extra):
         pass
     offer = await asyncio.to_thread(promo_build_offer, uid, amount)
     head = (f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n{ce("💰")} Số tiền nạp: <code>+{fmt_money(amount)}đ</code>\n'
+            f'{order_bonus_line(p3)}'
             f'{bal_block(uid)}{deposit_wager_line(uid)}')
     if offer:
         await _awp_send(uid, head + "\n\n" + offer[0], reply_markup=offer[1])
@@ -11642,9 +11741,9 @@ async def awp_api_deposit_act(request):
         return _aw_json({"err": "Đơn nạp đã được xử lý hoặc không tồn tại"}, 409)
     uid, amount = int(r[0][0]), int(r[0][1])
     if act == "approve":
-        cleared, extra = await asyncio.to_thread(
+        cleared, extra, p3 = await asyncio.to_thread(
             _awp_credit_deposit_sync, uid, amount, f"Nạp tiền (duyệt web {s['user']}) +{amount:,}đ")
-        await _awp_after_deposit(uid, amount, cleared, extra)
+        await _awp_after_deposit(uid, amount, cleared, extra, p3)
     else:
         await _awp_send(uid, f'{fmt_tx_status("rejected")} yêu cầu nạp <code>{fmt_money(amount)}đ</code> của bạn.')
     await asyncio.to_thread(_aw_log, s["user"], "DEPOSIT_" + act.upper(), f"#{did} ID {uid} {amount}đ", _aw_ip(request))
@@ -11664,9 +11763,9 @@ async def awp_api_naptien(request):
     await asyncio.to_thread(
         query, "INSERT INTO deposit_history (user_id, amount, admin_id, status, time) VALUES (%s,%s,0,'success',%s)",
         (uid, amount, get_vietnam_datetime_db()))
-    cleared, extra = await asyncio.to_thread(
+    cleared, extra, p3 = await asyncio.to_thread(
         _awp_credit_deposit_sync, uid, amount, f"Nạp tiền +{amount:,}đ (web {s['user']})")
-    await _awp_after_deposit(uid, amount, cleared, extra)
+    await _awp_after_deposit(uid, amount, cleared, extra, p3)
     await asyncio.to_thread(_aw_log, s["user"], "NAPTIEN", f"ID {uid} {amount}đ", _aw_ip(request))
     return _aw_json({"ok": True, "msg": f"Đã nạp {fmt_money(amount)}đ cho {uid}"})
 
