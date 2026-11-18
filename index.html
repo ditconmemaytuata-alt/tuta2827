@@ -327,6 +327,44 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 /* màn tối */
 #app.dk #girl{filter:brightness(.4) saturate(.9)}
 #app.dk{background:#05030a}
+
+/* ===== v7: nút tròn kính vàng y như ảnh mẫu ===== */
+#stage .ico{width:34px;height:34px;border:1.5px solid #ffe3a0b0;overflow:hidden;
+ box-shadow:0 2px 6px #000b,inset 0 -5px 8px #0008,inset 0 0 0 1px #0007;transition:opacity .2s,filter .2s}
+#stage .ico::before{content:"";position:absolute;left:15%;top:7%;width:55%;height:34%;border-radius:50%;background:linear-gradient(#ffffffa8,#fff0);pointer-events:none}
+#stage .ico svg{position:relative;width:19px;height:19px;stroke-width:2.2;filter:drop-shadow(0 1px 1px #000b)}
+#stage .ico.a,#stage .ico.b,#stage .ico.c{color:#ffd978;background:radial-gradient(circle at 50% 125%,#9a6a30aa,#0000 60%),radial-gradient(circle at 35% 25%,#5e3d24,#1c0e06 78%)}
+#stage .ico.f{right:-8px;top:-12px;color:#fff;background:radial-gradient(circle at 35% 28%,#fff2b8,#f2b53e 52%,#b86a10)}
+#stage .ico.f.dk{opacity:1;filter:grayscale(.75) brightness(.6);color:#ddd}
+#stage .ico.e{color:#fff;background:radial-gradient(circle at 35% 28%,#ffffff,#d2d2d2 55%,#8c8c8c);box-shadow:0 2px 6px #000b,inset 0 -5px 8px #0006,inset 0 0 0 1px #0005}
+#stage .ico.e svg{filter:drop-shadow(0 0 1.2px #000a)}
+#stage .ico.e.man{opacity:1;color:#fff}
+#stage .ico.e.auto{opacity:.4;color:#fff}
+#stage .ico.d{width:42px;height:42px;right:-6px;bottom:-12px;color:#fff;background:radial-gradient(circle at 35% 28%,#ffd88a,#e58d24 58%,#8e4c10);border:1.5px solid #ffe3a0b0;box-shadow:0 2px 8px #000b,inset 0 -6px 9px #0007,inset 0 0 0 1px #0006}
+#stage .ico.d svg{width:23px;height:23px;stroke-width:2.4}
+
+/* ===== v8: nút tròn kiểu bong bóng kính, icon đặc như ảnh mẫu ===== */
+#app #stage .ico{width:34px;height:34px;border-radius:50%;overflow:hidden;opacity:1;filter:none;transition:opacity .2s,filter .2s,transform .1s}
+#app #stage .ico:active{transform:scale(.92)}
+#app #stage .ico svg{position:relative;z-index:2;width:22px;height:22px;stroke:none;stroke-width:0;filter:drop-shadow(0 1px 1px #0008)}
+#app #stage .ico::before{content:"";position:absolute;left:14%;top:6%;width:58%;height:30%;border-radius:50%;background:linear-gradient(#ffffffb0,#ffffff10);pointer-events:none;z-index:3;transform:rotate(-12deg)}
+#app #stage .ico::after{content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;z-index:1;
+ background:radial-gradient(circle at 78% 22%,#fff9 0 1.2px,#0000 2px),radial-gradient(circle at 24% 66%,#fff7 0 1px,#0000 1.8px),radial-gradient(circle at 50% 112%,#ffe2a055,#0000 55%)}
+/* 3 nút trái: bóng nâu socola */
+#app #stage .ico.a,#app #stage .ico.b,#app #stage .ico.c{color:#fde7b8;border:1.5px solid #f1dcb6bb;
+ background:radial-gradient(circle at 38% 30%,#6b4630,#2e180d 58%,#150a05 100%);
+ box-shadow:0 3px 7px #000c,inset 0 -6px 9px #000a,inset 0 0 0 1px #00000088}
+/* 3 nút phải: bóng hổ phách */
+#app #stage .ico.d,#app #stage .ico.e,#app #stage .ico.f{color:#fff0cf;border:1.5px solid #ffdfa0cc;
+ background:radial-gradient(circle at 40% 30%,#d9954a,#a85d17 55%,#76400c 100%);
+ box-shadow:0 3px 7px #000b,inset 0 -6px 9px #4a2400aa,inset 0 0 0 1px #5a300888}
+#app #stage .ico.d{width:44px;height:44px;right:-6px;bottom:-12px}
+#app #stage .ico.d svg{width:30px;height:30px}
+#app #stage .ico.e svg{width:23px;height:23px}
+#app #stage .ico.f svg{width:24px;height:24px}
+#app #stage .ico.e.man{opacity:1}
+#app #stage .ico.e.auto{opacity:.45}
+#app #stage .ico.f.dk{filter:grayscale(.8) brightness(.65)}
 </style>
 </head>
 <body>
@@ -390,6 +428,15 @@ const IC={trophy:sv('<path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H5.5A2.5 2.5 0 0 0 8 10
  note:sv('<path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/>'),
  crown:'<svg viewBox="0 0 24 24" fill="url(#gg)" stroke="#7a4a00" stroke-width=".8" stroke-linejoin="round"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>',
  user:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg>'};
+const sf=p=>'<svg viewBox="0 0 24 24" fill="currentColor">'+p+'</svg>';
+const IC2={
+ trophy:sf('<path d="M6.8 3h10.4v5.6a5.2 5.2 0 0 1-10.4 0z"/><path d="M6.8 4.6H3.6v1.8c0 2.3 1.4 3.9 3.6 4.4l.4-1.7C6.4 8.8 5.8 8 5.8 6.8v-.4h1zM17.2 4.6h3.2v1.8c0 2.3-1.4 3.9-3.6 4.4l-.4-1.7c1.2-.3 1.8-1.1 1.8-2.3v-.4h-1z"/><rect x="10.7" y="13.6" width="2.6" height="3.4"/><rect x="7.6" y="16.8" width="8.8" height="2.2" rx=".6"/><rect x="6" y="19.2" width="12" height="2.2" rx=".6"/><path fill="#2e180d" d="M12 4.9l.95 1.95 2.15.3-1.55 1.5.37 2.12L12 9.7l-1.92 1.02.37-2.12L8.9 7.15l2.15-.3z"/>'),
+ help:sf('<path d="M8.8 9.1a3.2 3.2 0 1 1 4.9 2.7c-1 .65-1.7 1.2-1.7 2.5" fill="none" stroke="currentColor" stroke-width="3.3" stroke-linecap="round"/><circle cx="12" cy="19.2" r="2"/>'),
+ clock:sf('<circle cx="12" cy="12" r="10"/><path d="M12 5.8v6.4l-3.8 3.4" fill="none" stroke="#2e180d" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'),
+ chart:sf('<path d="M4.5 17.2l6-6.4 2.4 6.7 6.6-7.3" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="4.5" cy="17.2" r="2.5"/><circle cx="10.5" cy="10.8" r="2.5"/><circle cx="12.9" cy="17.5" r="2.5"/><circle cx="19.5" cy="10.2" r="2.5"/>'),
+ bulb:sf('<path d="M12 5.6a5.2 5.2 0 0 0-3.1 9.4c.5.4.8.9.8 1.5v.5h4.6v-.5c0-.6.3-1.1.8-1.5A5.2 5.2 0 0 0 12 5.6z"/><rect x="9.7" y="18.2" width="4.6" height="1.9" rx=".95"/><path d="M12 1.6v2.2M4.9 4.4l1.5 1.5M19.1 4.4l-1.5 1.5M2.2 10.6h2.2M19.6 10.6h2.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>'),
+ hand:sf('<rect x="6.6" y="4.4" width="2.7" height="9.6" rx="1.35"/><rect x="9.9" y="2.4" width="2.7" height="11.6" rx="1.35"/><rect x="13.2" y="3.4" width="2.7" height="10.6" rx="1.35"/><rect x="16.5" y="6" width="2.6" height="8.4" rx="1.3"/><path d="M6.6 11.2v2.6l-1.9-2.1a1.65 1.65 0 0 0-2.4 2.2l3.4 4.4A7 7 0 0 0 11.2 21h1.4a6.5 6.5 0 0 0 6.5-6.5v-3.3z"/>')};
+Object.assign(IC,IC2);
 document.querySelectorAll('[data-ic]').forEach(e=>e.innerHTML=IC[e.dataset.ic]);
 $('#bowl').innerHTML='<i class="bh">'+IC.hand+'</i>';
 const core=$('#core'),K=d=>({Tài:'T',Xỉu:'X',Bão:'B'}[nm(d)]),sideId=s=>s==='tai'?'#bt':'#bx';
