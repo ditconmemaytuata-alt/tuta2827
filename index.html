@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="vi">
-<head>Địt mẹ mày nhìn cặc à
+<head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>XOCLO88 - ĐỔI THƯỞNG</title>
@@ -29,7 +29,7 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 /* brand */
 #brand{margin:8px auto 0;width:min(86%,360px);text-align:center;z-index:2;filter:drop-shadow(0 6px 10px #000c)}
 #rib{position:relative;padding:8px 0 10px;clip-path:polygon(0 14%,7% 14%,7% 0,93% 0,93% 14%,100% 14%,95% 57%,100% 100%,93% 100%,93% 86%,7% 86%,7% 100%,0 100%,5% 57%);background:linear-gradient(#d33a4a,#8a1228 55%,#5a0a1a)}
-#rib::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 35%,#ffffff55 50%,transparent 65%);background-size:300% 100%;animation:sheen 4.5s ease-in-out infinite}
+#rib::after{display:none;content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 35%,#ffffff55 50%,transparent 65%);background-size:300% 100%;animation:sheen 4.5s ease-in-out infinite}
 @keyframes sheen{0%{background-position:130% 0}100%{background-position:-130% 0}}
 .gd{background:linear-gradient(180deg,#fff6c9 0%,#ffd45a 38%,#d9921a 62%,#fff0a0 100%);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
 #rib b{display:block;font-size:clamp(30px,10vw,42px);line-height:1;font-weight:900;letter-spacing:1px;filter:drop-shadow(0 2px 0 #4a1a00)}
@@ -146,7 +146,7 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 .fly.w{color:#ffe08a;text-shadow:0 0 12px #ffb300,0 3px 0 #7a4a00}.fly.l{color:#ff8da0;text-shadow:0 0 10px #c8324e}
 #jp{position:absolute;inset:0;z-index:50;display:none;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:20px;text-align:center;overflow:hidden;background:radial-gradient(ellipse at 50% 35%,#7a1226f0,#1a0408f5 65%,#080203)}
 #jp.on{display:flex;animation:pi .5s cubic-bezier(.2,1.4,.4,1)}
-#jp .ray{position:absolute;left:50%;top:38%;width:1200px;height:1200px;margin:-600px;background:repeating-conic-gradient(#ffd05a55 0 5deg,#0000 5deg 16deg);-webkit-mask:radial-gradient(circle,#000 5%,#0000 55%);mask:radial-gradient(circle,#000 5%,#0000 55%);animation:spin 16s linear infinite;pointer-events:none}
+#jp .ray{display:none}
 #jp>*:not(.ray){position:relative}
 #jp .t1{font-size:68px;font-weight:900;line-height:1;filter:drop-shadow(0 3px 0 #3d2200) drop-shadow(0 0 18px #ffb300)}
 #jp .t2{font-size:14px;letter-spacing:8px;font-weight:800;color:var(--gold2)}
@@ -162,13 +162,13 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 
 /* ===== hiệu ứng thêm ===== */
 @property --a{syntax:"<angle>";inherits:false;initial-value:0deg}
-#girl::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 40%,#ffffff40 50%,transparent 60%);background-size:300% 100%;animation:sheen 7s ease-in-out infinite;mix-blend-mode:soft-light}
-#girl{animation:sway 6s ease-in-out infinite}
+
+
 @keyframes sway{0%,100%{transform:scale(1.02) translateX(-4px)}50%{transform:scale(1.045) translateX(4px)}}
-#tbl::after{content:"";position:absolute;inset:-3px;border-radius:999px;padding:3px;pointer-events:none;background:conic-gradient(from var(--a),#0000 0 65%,#fff6c9 82%,#ffb300 90%,#0000 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);animation:ang 3.6s linear infinite;filter:drop-shadow(0 0 6px #ffd05a)}
+
 @keyframes ang{to{--a:360deg}}
-#rays{position:absolute;left:50%;top:50%;width:calc(var(--c)*2.6);height:calc(var(--c)*2.6);margin:calc(var(--c)*-1.3);border-radius:50%;pointer-events:none;z-index:-1;background:repeating-conic-gradient(#ffd05a55 0 6deg,#0000 6deg 18deg);-webkit-mask:radial-gradient(circle,#0000 34%,#000 40%,#0000 70%);mask:radial-gradient(circle,#0000 34%,#000 40%,#0000 70%);animation:spin 14s linear infinite reverse;opacity:.7}
-#core::after{content:"";position:absolute;inset:-18px;border-radius:50%;border:2px dashed #f0c66a99;animation:spin 18s linear infinite reverse;pointer-events:none}
+#rays{display:none}
+
 #bowl::after{content:"";position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,#0000 0 70%,#ffffff88 82%,#0000 92%);mix-blend-mode:overlay;animation:spin 3s linear infinite;pointer-events:none}
 [data-ph=cover] #core::before{animation-duration:2s}[data-ph=cover] #rays{animation-duration:6s;opacity:1}
 #app.lock{animation:lk 1s ease-in-out infinite alternate}
@@ -180,7 +180,7 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 #jpbar{animation:jg 1.8s ease-in-out infinite alternate}
 @keyframes jg{to{box-shadow:0 0 28px #ffd05a,0 0 50px #ff8c0066,inset 0 0 10px #000}}
 #jpbar em{animation:fl 2s ease-in-out infinite}
-.cb:not(.off)::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(100deg,transparent 35%,#ffffff99 50%,transparent 65%);background-size:300% 100%;animation:sheen 3s ease-in-out infinite}
+
 .cb{position:relative;overflow:hidden}
 .side h2{animation:fl 3s ease-in-out infinite}#sX h2{animation-delay:.6s}
 /* ===== v2 premium ===== */
@@ -265,7 +265,7 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 #pop b{font-size:clamp(30px,11vw,52px)}
 /* ===== v4: nền cô gái full màn hình, bát + bàn tay, chớp sáng kết quả ===== */
 #bg{display:none}
-#girl{inset:0;top:0;bottom:auto;height:100%;background:var(--girl) center top/cover no-repeat;-webkit-mask-image:none;mask-image:none;opacity:1;transform-origin:50% 50%;animation:sway 8s ease-in-out infinite}
+#girl{inset:0;top:0;bottom:auto;height:100%;background:var(--girl) center top/cover no-repeat;-webkit-mask-image:none;mask-image:none;opacity:1;transform-origin:50% 50%;}
 #girl::before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,#14060dcc 0,#14060d55 20%,#14060d00 40%,#14060d00 58%,#14060d99 100%)}
 #mini{z-index:6;pointer-events:none}
 #core.cvr #mini{color:#4a2a0a;text-shadow:0 1px 0 #fff9}
@@ -303,6 +303,30 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 #ok{background:linear-gradient(#b86bff,#6a28d8 55%,#3c0f94);color:#fff;font-size:15px;border-color:#e3ccff;animation:okp 1.6s ease-in-out infinite alternate}
 @keyframes okp{from{box-shadow:0 3px 0 #1c0650,0 0 12px #9a5cff88,0 6px 12px #000b}to{box-shadow:0 3px 0 #1c0650,0 0 28px #b98aff,0 6px 12px #000b}}
 #no{background:linear-gradient(#a0386a,#5a1038 55%,#34061f);color:#ffd6e6;border-color:#e8a6c4}
+
+/* ===== v6: bát giống ảnh 3, nút bàn tay, nút bóng đèn ===== */
+#bowl{display:block;padding:0;inset:-4px;font-size:0;
+ background:radial-gradient(ellipse 40% 26% at 32% 18%,#fffffff0,#fff0),radial-gradient(circle at 50% 38%,#fff 0,#f6f6f6 40%,#e2e2e2 75%,#c9c9c9 100%);
+ box-shadow:0 0 0 3px #e8c070,0 0 0 5px #7a4410,0 6px 12px #000a,inset 0 -6px 10px #0003,inset 0 0 0 2px #fff}
+#bowl::before{inset:18%;border:3px solid #fff;background:radial-gradient(circle at 50% 35%,#fafafa,#e4e4e4);box-shadow:inset 0 3px 6px #0002,0 0 0 1px #0001}
+#bowl::after{display:none}
+#bowl .bh{position:absolute;left:50%;top:50%;width:32%;height:32%;translate:-50% -52%;color:#8c8c8c;opacity:.85;pointer-events:none}
+#bowl .bh svg{width:100%;height:100%;display:block}
+#bowl.can{animation:none;box-shadow:0 0 0 3px #ffd05a,0 0 0 5px #7a4410,0 0 18px #ffd05acc,0 6px 12px #000a,inset 0 0 0 2px #fff}
+#mini{left:50%;right:auto;translate:-50% 0;bottom:11%;padding:1px 9px;border-radius:6px;background:#000b;color:#fff;font-size:calc(var(--c)*.095);text-shadow:none;letter-spacing:.5px;z-index:7}
+#mini:empty{display:none}
+#core.cvr #mini{color:#fff;text-shadow:none}
+.ico.e{right:-10px;top:56%;width:34px;height:34px;color:#7a7a7a;background:radial-gradient(circle at 32% 25%,#fff,#d8d8d8 70%);box-shadow:0 0 0 1.5px #f3cf7a,0 0 0 3px #150803,0 4px 10px #000c;transition:opacity .2s,color .2s}
+.ico.e svg{width:20px;height:20px}
+.ico.e.man{color:#2a2a2a;opacity:1}
+.ico.e.auto{opacity:.4;color:#9a9a9a}
+.ico.f{right:-8px;top:-12px;color:#ffe9a6}
+.ico.f svg{width:18px;height:18px}
+.ico.f.dk{opacity:.55;color:#b9a67a}
+.ico.f:not(.dk){box-shadow:0 0 0 1.5px #f3cf7a,0 0 0 3px #150803,0 0 14px #ffd05acc,0 4px 10px #000c}
+/* màn tối */
+#app.dk #girl{filter:brightness(.4) saturate(.9)}
+#app.dk{background:#05030a}
 </style>
 </head>
 <body>
@@ -316,6 +340,8 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
   <button class="ib ico a" data-md="top" data-ic="trophy" aria-label="Cao thủ"></button>
   <button class="ib ico b" data-md="rule" data-ic="help" aria-label="Thể lệ"></button>
   <button class="ib ico c" data-md="hist" data-ic="clock" aria-label="Lịch sử"></button>
+  <button class="ib ico f" id="lamp" data-ic="bulb" aria-label="Sáng/Tối"></button>
+  <button class="ib ico e man" id="hnd" data-ic="hand" aria-label="Bàn tay"></button>
   <button class="ib ico d" data-md="cau" data-ic="chart" aria-label="Soi cầu"></button>
   <div id="tbl">
    <div id="num"></div>
@@ -330,7 +356,7 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
  <div id="panel"><div id="ph"></div><div id="chips"></div><div id="acts"><button class="bt" id="allin">TẤT TAY</button><button class="bt" id="ok">ĐỒNG Ý</button><button class="bt" id="no">HUỶ</button></div></div>
  <div class="mask" id="mask"></div>
  <div class="modal" id="md"><div class="mh"><b id="mt2"></b><button class="ib" id="mx2" aria-label="Đóng">✕</button></div><div id="mb"></div></div>
- <canvas id="fx"></canvas><div id="pop"></div><div id="jp"></div>
+ <div id="pop"></div><div id="jp"></div>
 </div>
 <script>
 window.onerror=m=>{const e=document.getElementById('msg');if(e)e.textContent='Lỗi: '+m};
@@ -359,10 +385,13 @@ const sv=p=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-w
 const IC={trophy:sv('<path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H5.5A2.5 2.5 0 0 0 8 10.5M16 6h2.5A2.5 2.5 0 0 1 16 10.5M12 13v4M8.5 20h7M9.5 17h5"/>'),
  help:sv('<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/>'),
  clock:sv('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),chart:sv('<path d="M3 17l5-6 4 3 8-9"/><path d="M15 5h5v5"/>'),
+ bulb:sv('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>'),
+ hand:sv('<path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4a1.5 1.5 0 0 1 3 0v6.5M14 10V5.5a1.5 1.5 0 0 1 3 0V13M8 12l-1.2-1.6a1.5 1.5 0 0 0-2.3 1.9L8 18a6 6 0 0 0 5 3h1.5a4.5 4.5 0 0 0 4.5-4.5V13"/>'),
  note:sv('<path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/>'),
  crown:'<svg viewBox="0 0 24 24" fill="url(#gg)" stroke="#7a4a00" stroke-width=".8" stroke-linejoin="round"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>',
  user:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg>'};
 document.querySelectorAll('[data-ic]').forEach(e=>e.innerHTML=IC[e.dataset.ic]);
+$('#bowl').innerHTML='<i class="bh">'+IC.hand+'</i>';
 const core=$('#core'),K=d=>({Tài:'T',Xỉu:'X',Bão:'B'}[nm(d)]),sideId=s=>s==='tai'?'#bt':'#bx';
 
 /* ===== bát + bàn tay nặn bát =====
@@ -373,7 +402,7 @@ let bowlSt='none',handMode=0,bd={on:0,x:0,y:0,dx:0,dy:0};const bowl=$('#bowl');
 function updHand(){bowl.classList.toggle('can',handMode===1&&bowlSt==='on')}
 function armHand(){if(bowlSt!=='none'||!S||!S.dice)return;bowlSt='idle';startRoll()}
 function startRoll(){if(bowlSt!=='idle'||!S||!S.dice)return;bowlSt='rolling';handMode=1;updHand();hap('medium');shake()}
-function placeBowl(){if(bowlSt==='on'||bowlSt==='off')return;bowlSt='on';bowl.style.cssText='';bowl.className='drop';core.classList.add('cvr');updHand();setTimeout(()=>{if(bowlSt==='on')bowl.classList.remove('drop')},650);window.SFX&&SFX.thump()}
+function placeBowl(){if(bowlSt==='on'||bowlSt==='off')return;bowlSt='on';bowl.style.cssText='';bowl.className='drop';core.classList.add('cvr');updHand();setTimeout(()=>{if(bowlSt==='on')bowl.classList.remove('drop')},650);window.SFX&&SFX.thump();if(typeof autoOpen!=='undefined'&&autoOpen)setTimeout(()=>dropBowl(true),700)}
 function resetBowl(){bowlSt='none';handMode=0;bd.on=0;bowl.style.cssText='';bowl.className='';core.classList.remove('cvr','glowres');$('#dice').classList.remove('land','res');updHand()}
 function dropBowl(auto,dx,dy){if(bowlSt!=='on')return;bowlSt='off';bd.on=0;core.classList.remove('cvr');
  bowl.classList.remove('can','drag','drop');bowl.classList.add('gone');
@@ -385,6 +414,20 @@ bowl.addEventListener('pointermove',e=>{if(!bd.on)return;bd.dx=e.clientX-bd.x;bd
 const endDrag=()=>{if(!bd.on)return;bd.on=0;bowl.classList.remove('drag');
  if(Math.hypot(bd.dx,bd.dy)>core.offsetWidth*.85)dropBowl(false,bd.dx,bd.dy);else{bowl.style.transform='';hap('light')}};
 bowl.addEventListener('pointerup',endDrag);bowl.addEventListener('pointercancel',endDrag);
+
+/* ===== nút bàn tay: đậm = kéo bát · nhạt = lắc xong bát tự mở ===== */
+let autoOpen=false;try{autoOpen=localStorage.getItem('aop')==='1'}catch(e){}
+const hnd=$('#hnd');
+function paintHnd(){hnd.classList.toggle('auto',autoOpen);hnd.classList.toggle('man',!autoOpen)}
+paintHnd();
+hnd.onclick=e=>{e.stopPropagation();autoOpen=!autoOpen;paintHnd();try{localStorage.setItem('aop',autoOpen?'1':'0')}catch(_){}hap('light');window.SFX&&SFX.click();
+ if(autoOpen&&bowlSt==='on')setTimeout(()=>dropBowl(true),350)};
+/* ===== nút bóng đèn: sáng / tối ===== */
+let dark=false;try{dark=localStorage.getItem('dk')==='1'}catch(e){}
+const lamp=$('#lamp');
+function paintLamp(){$('#app').classList.toggle('dk',dark);lamp.classList.toggle('dk',dark)}
+paintLamp();
+lamp.onclick=e=>{e.stopPropagation();dark=!dark;paintLamp();try{localStorage.setItem('dk',dark?'1':'0')}catch(_){}hap('light');window.SFX&&SFX.click()};
 let HX=[];try{HX=JSON.parse(localStorage.getItem('hx'))||[]}catch(e){}
 
 /* ===== đặt cược (bảng tiền chỉ hiện khi bấm CƯỢC) ===== */
@@ -445,7 +488,7 @@ function fx(R,live){
  if(R.jp&&R.jp.total>0)setTimeout(()=>showJP(R.jp),live?1500:400);
  const stake=Object.values(R.my||{}).reduce((a,b)=>a+b,0),net=R.net||0,d=R.dice;
  hold={win:R.win||null,until:Date.now()+(live?4600:6500)};
- if(live){const dc=$('#dice');dc.classList.remove('land','res');void dc.offsetWidth;dc.classList.add('res');core.dataset.w=R.win||'bao';core.classList.remove('glowres');void core.offsetWidth;core.classList.add('glowres');window.SFX&&(SFX.thump(),SFX.sparkle&&SFX.sparkle());burst(90,'win');setTimeout(()=>burst(60,'win'),450);setTimeout(()=>burst(50,'win'),950)}
+ if(live){const dc=$('#dice');dc.classList.remove('land','res');void dc.offsetWidth;dc.classList.add('res');core.dataset.w=R.win||'bao';core.classList.remove('glowres');void core.offsetWidth;core.classList.add('glowres');window.SFX&&(SFX.thump(),SFX.sparkle&&SFX.sparkle());}
  if(!stake)return;
  if(net>0){{const A=$('#app');A.classList.remove('gf');void A.offsetWidth;A.classList.add('gf')}stk={w:stk.w+1,l:0};window.SFX&&SFX.win()}else{stk={w:0,l:stk.l+1};window.SFX&&SFX.lose()}
  try{localStorage.setItem('stk',JSON.stringify(stk))}catch(e){}
@@ -479,7 +522,7 @@ function render(){
  const sec=secLeft(),R=s=>{const st=Object.values(s.my||{}).reduce((a,b)=>a+b,0);return `${s.dice.join(' - ')} = ${s.dice[0]+s.dice[1]+s.dice[2]}, ${s.jp?'NỔ HŨ':nm(s.dice)}. `+(!st?'':s.net>0?'Thắng +'+f(s.net+st):s.net<0?'Thua '+f(s.net):'Hoàn tiền')};
  if(S.mt&&S.phase==='bet'){$('#msg').textContent='Game đang bảo trì - tạm dừng đặt cược';return}
  $('#msg').textContent=S.phase==='bet'?(S.last&&Date.now()<hold.until?`Phiên #${S.last.id}: `+R(S.last):closed()?'Đã đóng cược - đang chờ mở kết quả':'Bấm CƯỢC ở bên Tài hoặc Xỉu để đặt tiền'):
-  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:(bowlSt==='on'?'Kéo bát ra khỏi đĩa để mở · còn '+sec+'s':'Đang tung xúc xắc...')):''}
+  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:(bowlSt==='on'?''+(autoOpen?'Bát tự mở':'Kéo bát ra khỏi đĩa để mở')+' · còn '+sec+'s':'Đang tung xúc xắc...')):''}
 async function tick(){try{const r=await api('/api/state');if(!r.err){S=r;S._t=Date.now();render()}else $('#msg').textContent=r.msg||'Hãy mở từ nút trong bot Telegram'}catch(e){}}
 setInterval(tick,700);tick();
 setInterval(()=>{if(!S)return;if(S.phase==='cover'){if(bowlSt==='on'&&secLeft()<=AUTO)dropBowl(true)}const t=secLeft(),c=$('#core'),cd=$('#cd'),hot=S.phase==='bet'&&t>0&&t<=LOCK,p=n=>String(n).padStart(2,'0');
@@ -500,10 +543,10 @@ function shake(){
  setTimeout(()=>{clearInterval(iv);shaking=false;core.classList.remove('shk');setDice(S.dice||[0,0,0]);diceKey=(S.dice||[0,0,0]).join();window.SFX&&SFX.thump();if(bowlSt==='rolling')placeBowl()},2000)}
 
 /* ===== hạt vàng (chỉ dùng khi NỔ HŨ) ===== */
-const cv=$('#fx'),g=cv.getContext('2d');let P=[],run=false;
+const cv=document.createElement('canvas'),g=cv.getContext('2d');let P=[],run=false;
 function size(){const d=devicePixelRatio||1;cv.width=innerWidth*d;cv.height=innerHeight*d;g.setTransform(d,0,0,d,0,0)}size();addEventListener('resize',size);
 const ctr=()=>{const r=core.getBoundingClientRect();return[r.left+r.width/2,r.top+r.height/2]};
-function go(){if(!run){run=true;let t=performance.now();(function L(n){const dt=Math.min(.05,(n-t)/1000);t=n;g.clearRect(0,0,innerWidth,innerHeight);
+function go(){return;if(!run){run=true;let t=performance.now();(function L(n){const dt=Math.min(.05,(n-t)/1000);t=n;g.clearRect(0,0,innerWidth,innerHeight);
  P=P.filter(p=>(p.l-=dt)>0);for(const p of P){p.vy+=p.gy*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;g.globalAlpha=Math.min(1,p.l/.5);g.fillStyle=p.c;g.beginPath();g.arc(p.x,p.y,p.s,0,6.283);g.fill()}
  P.length?requestAnimationFrame(L):(run=false,g.clearRect(0,0,innerWidth,innerHeight))})(t)}}
 function burst(n,k,at){const[x,y]=at||ctr(),pal=k==='lose'?['#78aaff','#c8dcff','#a08cff']:['#ffd75a','#ff96be','#ffffe6','#ffbe3c'];
@@ -516,7 +559,7 @@ function showJP(j){
  if(!j||jpShown===j.id)return;jpShown=j.id;const el=$('#jp'),med=['🥇','🥈','🥉','④','⑤'];
  const rows=(j.top||[]).map((w,i)=>`<div class="jr${w.me?' me2':''}" style="animation-delay:${1+i*.16}s"><span class="n">${med[i]} ${esc(w.name)}${w.me?' (Bạn)':''}</span><span style="opacity:.7;font-size:11px">cược ${f(w.bet)}</span><span class="a">+${f(w.amt)}</span></div>`).join('');
  el.innerHTML=`<div class="ray"></div><div style="font-size:40px">👑</div><div class="gd t1">NỔ HŨ</div><div class="t2">★ JACKPOT ★</div><div class="tot" id="jtot">0</div><div style="font-size:12px;opacity:.85">Tổng tiền hũ đã nổ · ${j.n} người trúng</div>${j.me>0?`<div class="me">Bạn nhận +${f(j.me)}</div>`:''}<div class="rows">${rows}</div><div class="x">CHẠM ĐỂ ĐÓNG</div>`;
- el.className='on';rain(80);burst(150,'win');
+ el.className='on';
  const tot=j.total,t0=performance.now();(function cu(n){const e=document.getElementById('jtot');if(!e)return;const u=Math.min(1,(n-t0)/2400);e.textContent=f(tot*(1-Math.pow(1-u,3)));if(u<1)requestAnimationFrame(cu)})(t0);
  window.SFX&&(SFX.clang(),SFX.win(),setTimeout(()=>SFX.win(),650));
  try{tg.HapticFeedback&&tg.HapticFeedback.notificationOccurred(j.me>0?'success':'warning')}catch(e){}
