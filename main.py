@@ -11953,10 +11953,10 @@ async def awp_api_gift_create(request):
 
     try:
         st = {"ctype": ctype,
-              "reward": num("reward", 1000, 10 ** 8, "Giá trị mỗi code phải từ 1.000đ đến 100.000.000đ"),
-              "wager": num("wager", 0, 100, "Vòng cược phải từ 0 đến 100", 0),
+              "reward": num("reward", 0, 10 ** 8, "Giá trị mỗi code phải từ 0đ đến 100.000.000đ"),
+              "wager": num("wager", 0, 1500, "Vòng cược phải từ 0 đến 1500", 0),
               "duration": num("minutes", 1, 525600, "Hạn dùng phải từ 1 phút đến 365 ngày"),
-              "qty": num("qty", 1, 100, "Số lượng code phải từ 1 đến 100", 1),
+              "qty": num("qty", 1, 300, "Số lượng code phải từ 1 đến 300", 1),
               "require_deposit": 0, "required_amount": 0, "bound_user": None}
         if str(b.get("req_dep", "")).strip():
             st["required_amount"] = num("req_dep", 1000, 10 ** 10, "Yêu cầu nạp phải từ 1.000đ trở lên")
@@ -12798,9 +12798,9 @@ async function vGift2(){
   function line(label,hint,ctl){return '<div class="gfl"><label>'+label+(hint?'<small>'+hint+'</small>':'')+'</label><div>'+ctl+'</div></div>';}
   var h='<div class="item" id="gform"><b style="font-size:17px">🎁 Tạo giftcode</b>'
    +line('Loại code','Chọn nhóm code cần tạo','<select data-k="ctype">'+t.types.map(function(x){return '<option value="'+esc(x.type)+'">'+esc(x.name)+'</option>';}).join('')+'</select>')
-   +line('Số lượng code','Từ 1 đến 100 code mỗi lần','<input data-k="qty" value="1" inputmode="numeric" placeholder="1">')
-   +line('Giá trị mỗi code (đ)','Ví dụ 20000 hoặc 20k (tối thiểu 1.000đ)','<input data-k="reward" placeholder="20k">')
-   +line('Vòng cược (x)','Số vòng phải cược trước khi rút. Nhập 0 = không yêu cầu','<input data-k="wager" value="1" inputmode="numeric" placeholder="1">')
+   +line('Số lượng code','Từ 1 đến 300 code mỗi lần','<input data-k="qty" value="1" inputmode="numeric" placeholder="1" min="1" max="300">')
+   +line('Giá trị mỗi code (đ)','Ví dụ 20000, 20k hoặc 0đ (cho phép miễn phí)','<input data-k="reward" value="0" placeholder="0">')
+   +line('Vòng cược (x)','Từ 0 đến 1500. Nhập 0 = không yêu cầu','<input data-k="wager" value="1" inputmode="numeric" placeholder="1" min="0" max="1500">')
    +line('Hạn dùng','Tính từ lúc tạo code','<div class="inl"><input data-k="mins" value="1" inputmode="numeric" placeholder="1"><select data-k="unit" style="max-width:140px"><option value="1440">ngày</option><option value="60">giờ</option><option value="1">phút</option></select></div>')
    +line('Chỉ ID này được dùng','Để trống = ai cũng nhập được','<input data-k="bound" placeholder="Tuỳ chọn" inputmode="numeric">')
    +line('Yêu cầu nạp trong ngày (đ)','Để trống = không yêu cầu nạp','<input data-k="req_dep" placeholder="Tuỳ chọn, ví dụ 50k">')
