@@ -1628,9 +1628,11 @@ def apply_deposit_wager_rule(uid, prev_balance, amount):
             add_wager_requirement(uid, 0, base)
             _deposit_base_set(uid, amount, base)
             return cleared, 0
-        extra = amount * DEPOSIT_DIRTY_WAGER_MULT
-        add_wager_requirement(uid, 0, extra)
-        return 0, extra
+        # Còn số dư + còn cược cũ: DỒN thẳng cược mới (x1 tiền nạp) vào cược cũ, không nhân x5.
+        # VD: cược cũ còn 200k, nạp 100k + KM 3% (3k) => 200k + 100k + 3k = 303k.
+        add_wager_requirement(uid, 0, base)
+        _deposit_base_set(uid, amount, base)
+        return 0, 0
     except Exception as e:
         print(f"apply_deposit_wager_rule lỗi: {e}")
         return 0, 0
@@ -6335,7 +6337,7 @@ async def naptien_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         try:
             await send_group_notice(ctx.bot, chat_id=LOG_GROUP_ID,
-                text=f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("🆔")} ID: <code>{masked_id}</code>\n{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>',
+                text=f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG</b>\n{ce("🆔")} ID: <code>{masked_id}</code>\n{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>',
                 parse_mode=ParseMode.HTML)
         except: pass
 
@@ -9930,7 +9932,7 @@ async def sepay_webhook(request):
             await send_group_notice(
                 _bot_instance,
                 LOG_GROUP_ID,
-                f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN TỰ ĐỘNG</b>\n'
+                f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG</b>\n'
                 f'{ce("🆔")} ID: <code>{masked_id}</code>\n'
                 f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>',
                 parse_mode=ParseMode.HTML
@@ -11714,7 +11716,7 @@ async def _awp_after_deposit(uid, amount, cleared, extra, p3=0):
     masked = mask_user_id(uid)
     try:
         await send_group_notice(bot, chat_id=LOG_GROUP_ID, parse_mode=ParseMode.HTML,
-                                text=f'{ce("✅")} <b>THÔNG BÁO NẠP TIỀN</b>\n{ce("🆔")} ID: <code>{masked}</code>\n'
+                                text=f'{ce("✅")} <b>NẠP TIỀN THÀNH CÔNG</b>\n{ce("🆔")} ID: <code>{masked}</code>\n'
                                      f'{ce("💰")} Số tiền: <code>+{fmt_money(amount)}đ</code>')
     except Exception:
         pass
@@ -13974,7 +13976,7 @@ _ROOM_MUTE_CACHE_TTL = 20      # giây
 # Tin xác nhận bật/tắt room (bắt đầu bằng 🔇/🔊) vẫn được gửi vào nhóm.
 _ROOM_MUTE_ALLOW_PREFIX = ("🔇", "🔊")
 # Các thông báo luôn được gửi lên nhóm dù đã tắt room: rút thành công, nạp thành công, nhập code/giftcode thành công.
-_ROOM_MUTE_ALLOW_NOTICES = ("RÚT TIỀN THÀNH CÔNG", "THÔNG BÁO NẠP TIỀN",
+_ROOM_MUTE_ALLOW_NOTICES = ("RÚT TIỀN THÀNH CÔNG", "THÔNG BÁO NẠP TIỀN", "NẠP TIỀN THÀNH CÔNG",
                             "NHẬP CODE THÀNH CÔNG", "NHẬP GIFTCODE THÀNH CÔNG")
 # Thông báo NẠP / RÚT thành công vẫn gửi lên nhóm kể cả khi room đã tắt (gửi qua send_group_notice).
 import contextvars as _contextvars
