@@ -13399,28 +13399,31 @@ async def setsd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(f"Đã cập nhật <code>{target}</code>:\n💳 Số dư trước: <code>{fmt_money(old)}đ</code>\n💰 Số dư sau: <code>{fmt_money(amount)}đ</code>", parse_mode=ParseMode.HTML)
 
 async def _interaction_top_text(bot, group_id, date_text, limit=10):
+    # Hiển thị đủ Top 10; mốc 200 tin chỉ là điều kiện nhận giftcode.
     rows = query(
         "SELECT user_id, interaction_count FROM daily_top_interactions "
-        "WHERE group_id=%s AND date=%s AND interaction_count>=200 ORDER BY interaction_count DESC, user_id ASC LIMIT %s",
+        "WHERE group_id=%s AND date=%s ORDER BY interaction_count DESC, user_id ASC LIMIT %s",
         (group_id, date_text, limit)
     ) or []
     if not rows:
         return "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>\n\nChưa có tin nhắn hợp lệ nào được ghi nhận trong nhóm."
     lines = [
         "🏆 <b>TOP 10 TƯƠNG TÁC HÔM NAY</b>",
-        "📌 Chỉ xếp hạng thành viên đạt từ 200 tin hợp lệ/ngày.",
+        "📌 Hiển thị Top 10 kể cả khi chưa đủ 200 tin; chỉ người đạt từ 200 tin hợp lệ/ngày mới được nhận giftcode.",
         "",
     ]
     medals = ["🥇", "🥈", "🥉"]
     for rank, (user_id, count) in enumerate(rows, 1):
-        prize = TOP_INTERACTION_PRIZES.get(rank, 0)
-        display = await _telegram_name(bot, user_id, {})
-        if not display:
-            display = "Thành viên"
-        lines.append(f"{medals[rank-1] if rank <= 3 else '⭐️'} {rank}. {html.escape(display)} · {int(count)} tin · 🎁 {fmt_money(prize)}đ")
+        count = int(count or 0)
+        display = await _telegram_name(bot, user_id, {}) or "Thành viên"
+        if count >= 200:
+            status = f"🎁 {fmt_money(TOP_INTERACTION_PRIZES.get(rank, 0))}đ"
+        else:
+            status = "🔒 Chưa đủ 200 tin – chưa nhận code"
+        lines.append(f"{medals[rank-1] if rank <= 3 else '⭐️'} {rank}. {html.escape(display)} · {count:,} tin · {status}")
     lines += [
         "",
-        "⏱ Chốt bảng lúc 00:00; giftcode Top 10 được gửi riêng qua bot.",
+        "⏱ Chốt bảng lúc 00:00; chỉ thành viên đạt ít nhất 200 tin hợp lệ mới được gửi giftcode.",
         f"🎁 Giftcode thưởng yêu cầu x{TOP_INTERACTION_WAGER} vòng cược và hết hạn sau 24 giờ.",
         "",
         f"⚠️ Mỗi {INTERACTION_WINDOW_SECONDS} giây chỉ tính tối đa 1 tin. Không spam, flood, gửi lặp ký tự hoặc dùng bot/farm tương tác; nội dung quảng cáo/spam không được tính.",
@@ -13603,7 +13606,7 @@ async def interaction_help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🎁 <b>HỆ THỐNG TƯƠNG TÁC NHÓM</b>\n\n"
         "• /checktt — xem tiến trình cộng dồn, bảng mốc và tiền thưởng\n"
-        "• /top — Top 10 tương tác hôm nay\n"
+        "• /top — Top 10 tương tác hôm nay (đủ 200 tin mới nhận code)\n"
         "• /topnap — Top 10 nạp tiền\n"
         "• /topcuoc — Top 10 tổng cược\n"
         "• /code MÃ_CODE — nhập giftcode\n\n"
@@ -13633,45 +13636,53 @@ async def settle_interaction_top_loop(bot):
                     continue
                 rows = query(
                     "SELECT user_id, interaction_count FROM daily_top_interactions "
-                    "WHERE group_id=%s AND date=%s AND interaction_count>=200 ORDER BY interaction_count DESC, user_id ASC LIMIT 10",
+                    "WHERE group_id=%s AND date=%s ORDER BY interaction_count DESC, user_id ASC LIMIT 10",
                     (group_id, date_text)
                 ) or []
                 public_lines = [f"🏆 <b>TOP TƯƠNG TÁC NGÀY {date_text}</b>"]
                 for rank, (user_id, count) in enumerate(rows, 1):
-                    reward = TOP_INTERACTION_PRIZES.get(rank, 0)
-                    code = gen_gift_code("TOPTT")
-                    expiry = get_vietnam_time() + timedelta(hours=24)
-                    created = query(
-                        "INSERT INTO giftcodes (code,ctype,reward,wager,expiry,require_deposit,required_amount,bound_user,used,created_by,created_at) "
-                        f"VALUES (%s,'INTERACT',%s,{TOP_INTERACTION_WAGER},%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
-                        (code, reward, expiry, user_id, get_vietnam_datetime_db())
-                    )
-                    if created:
-                        claim = query(
-                            "INSERT INTO interaction_top_rewards (user_id,group_id,date,rank,reward_amount,code,created_at) "
-                            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING user_id",
-                            (user_id, group_id, date_text, rank, reward, code, get_vietnam_datetime_db())
+                    count = int(count or 0)
+                    display = await _telegram_name(bot, user_id, {}) or "Thành viên"
+                    medal = '🥇' if rank == 1 else '🥈' if rank == 2 else '🥉' if rank == 3 else '⭐️'
+                    if count >= 200:
+                        reward = TOP_INTERACTION_PRIZES.get(rank, 0)
+                        code = gen_gift_code("TOPTT")
+                        expiry = get_vietnam_time() + timedelta(hours=24)
+                        created = query(
+                            "INSERT INTO giftcodes (code,ctype,reward,wager,expiry,require_deposit,required_amount,bound_user,used,created_by,created_at) "
+                            f"VALUES (%s,'INTERACT',%s,{TOP_INTERACTION_WAGER},%s,0,0,%s,0,0,%s) ON CONFLICT DO NOTHING RETURNING code",
+                            (code, reward, expiry, user_id, get_vietnam_datetime_db())
                         )
-                        if claim:
-                            try:
-                                await bot.send_message(
-                                    user_id,
-                                    f"🏆 <b>BẠN ĐẠT TOP {rank} TƯƠNG TÁC NGÀY {date_text}!</b>\n"
-                                    f"💬 Tin hợp lệ: <b>{int(count):,}</b>\n"
-                                    f"🎁 Giftcode: <code>{code}</code>\n"
-                                    f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược x{TOP_INTERACTION_WAGER}\n"
-                                    f"⏰ Hạn dùng 24 giờ. Nhập bằng <code>/code {code}</code>.",
-                                    parse_mode=ParseMode.HTML
-                                )
-                            except Exception:
-                                pass
-                    display = await _telegram_name(bot, user_id, {})
-                    public_lines.append(
-                        f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉' if rank==3 else '⭐️'} "
-                        f"{rank}. {html.escape(display or 'Thành viên')} · {int(count):,} tin · 🎁 {fmt_money(reward)}đ"
-                    )
-                    query("UPDATE daily_top_interactions SET rank=%s,reward_amount=%s,rewarded=1 WHERE user_id=%s AND group_id=%s AND date=%s",
-                          (rank, reward, user_id, group_id, date_text))
+                        if created:
+                            claim = query(
+                                "INSERT INTO interaction_top_rewards (user_id,group_id,date,rank,reward_amount,code,created_at) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING user_id",
+                                (user_id, group_id, date_text, rank, reward, code, get_vietnam_datetime_db())
+                            )
+                            if claim:
+                                try:
+                                    await bot.send_message(
+                                        user_id,
+                                        f"🏆 <b>BẠN ĐẠT TOP {rank} TƯƠNG TÁC NGÀY {date_text}!</b>\n"
+                                        f"💬 Tin hợp lệ: <b>{count:,}</b>\n"
+                                        f"🎁 Giftcode: <code>{code}</code>\n"
+                                        f"💰 Giá trị: <b>{fmt_money(reward)}đ</b> · Vòng cược x{TOP_INTERACTION_WAGER}\n"
+                                        f"⏰ Hạn dùng 24 giờ. Nhập bằng <code>/code {code}</code>.",
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                except Exception:
+                                    pass
+                        public_lines.append(
+                            f"{medal} {rank}. {html.escape(display)} · {count:,} tin · 🎁 {fmt_money(reward)}đ"
+                        )
+                        query("UPDATE daily_top_interactions SET rank=%s,reward_amount=%s,rewarded=1 WHERE user_id=%s AND group_id=%s AND date=%s",
+                              (rank, reward, user_id, group_id, date_text))
+                    else:
+                        public_lines.append(
+                            f"{medal} {rank}. {html.escape(display)} · {count:,} tin · 🔒 Chưa đủ 200 tin, không nhận code"
+                        )
+                        query("UPDATE daily_top_interactions SET rank=%s,reward_amount=0,rewarded=0 WHERE user_id=%s AND group_id=%s AND date=%s",
+                              (rank, user_id, group_id, date_text))
                 public_lines.append("\n🎁 Giftcode Top 10 đã gửi riêng qua bot; không đăng mã trong nhóm.")
                 try:
                     await bot.send_message(group_id, "\n".join(public_lines), parse_mode=ParseMode.HTML)
