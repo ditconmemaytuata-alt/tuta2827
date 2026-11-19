@@ -1133,6 +1133,15 @@ query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS milestone INTEGER")
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS claim_date DATE")
 query("ALTER TABLE giftcodes ADD COLUMN IF NOT EXISTS require_total_dep BIGINT DEFAULT 0")
 query("CREATE UNIQUE INDEX IF NOT EXISTS uq_tichluy_user_milestone_day ON giftcodes(bound_user, milestone, claim_date) WHERE ctype='TICHLUY' AND bound_user IS NOT NULL AND milestone IS NOT NULL AND claim_date IS NOT NULL")
+query("""CREATE TABLE IF NOT EXISTS tichluy_claims (
+    user_id BIGINT NOT NULL, milestone INTEGER NOT NULL, claim_date DATE NOT NULL,
+    code TEXT, created_at TEXT,
+    PRIMARY KEY (user_id, milestone, claim_date))""")
+# Ghi nhớ các mốc đã phát từ trước để không phát lại sau khi cập nhật code
+query("""INSERT INTO tichluy_claims(user_id,milestone,claim_date,code,created_at)
+         SELECT bound_user,milestone,claim_date,code,created_at FROM giftcodes
+         WHERE ctype='TICHLUY' AND bound_user IS NOT NULL AND milestone IS NOT NULL AND claim_date IS NOT NULL
+         ON CONFLICT DO NOTHING""")
 query("""CREATE TABLE IF NOT EXISTS tanthu_claims (user_id BIGINT PRIMARY KEY, code TEXT, claimed_at TEXT)""")
 
 query("CREATE TABLE IF NOT EXISTS history (user_id BIGINT, amount BIGINT, note TEXT, time TEXT)")
@@ -2111,6 +2120,7 @@ async def auto_gen_tich_luy_codes():
     # Code tích lũy chưa dùng sẽ hết hạn và bị dọn sau 00:00 giờ Việt Nam.
     query("DELETE FROM giftcodes WHERE ctype='TICHLUY' AND used=0 AND expiry IS NOT NULL AND expiry <= %s",
           (get_vietnam_time(),))
+    query("DELETE FROM tichluy_claims WHERE claim_date < %s", (today - timedelta(days=7),))
 
     users = query(
         'SELECT DISTINCT user_id FROM deposit_history '
@@ -2125,20 +2135,31 @@ async def auto_gen_tich_luy_codes():
             if dep_today < m["nap"] or bet_today < m["cuoc"]:
                 continue
 
-            # Chống race condition: unique index + ON CONFLICT đảm bảo mỗi mốc chỉ tạo 1 code/ngày.
+            # Đặt chỗ mốc TRƯỚC; bảng claims không bị xoá khi admin xoá code
+            claim = query(
+                "INSERT INTO tichluy_claims (user_id,milestone,claim_date,created_at) "
+                "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING milestone",
+                (uid, m["moc"], today, get_vietnam_datetime_db()))
+            if not claim:
+                continue
+
             code = gen_gift_code("TICHLUY")
             expiry = (get_vietnam_time() + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
+                hour=0, minute=0, second=0, microsecond=0)
             inserted = query(
                 "INSERT INTO giftcodes "
                 "(code, ctype, reward, wager, expiry, bound_user, used, created_by, created_at, milestone, claim_date) "
                 "VALUES (%s,'TICHLUY',%s,3,%s,%s,0,0,%s,%s,%s) "
                 "ON CONFLICT DO NOTHING RETURNING code",
-                (code, m["gift"], expiry, uid, get_vietnam_datetime_db(), m["moc"], today)
-            )
+                (code, m["gift"], expiry, uid, get_vietnam_datetime_db(), m["moc"], today))
+            if inserted is None:      # lỗi DB thật sự -> trả lại chỗ để thử lại lần sau
+                query("DELETE FROM tichluy_claims WHERE user_id=%s AND milestone=%s AND claim_date=%s",
+                      (uid, m["moc"], today))
+                continue
             if not inserted:
                 continue
+            query("UPDATE tichluy_claims SET code=%s WHERE user_id=%s AND milestone=%s AND claim_date=%s",
+                  (code, uid, m["moc"], today))
             try:
                 if _bot_instance:
                     await _bot_instance.send_message(
@@ -2147,8 +2168,7 @@ async def auto_gen_tich_luy_codes():
                         f'Mã code của bạn: <code>{code}</code>\n'
                         f'Giá trị: <b>{fmt_money(m["gift"])}đ</b> (Yêu cầu x3 vòng cược)\n'
                         f'Code hết hạn lúc 00:00 ngày mai theo giờ Việt Nam.',
-                        parse_mode=ParseMode.HTML
-                    )
+                        parse_mode=ParseMode.HTML)
             except Exception as e:
                 print(f"Không gửi được code tích lũy cho {uid}: {e}")
 
@@ -2740,6 +2760,7 @@ GIFT_TYPES = {
     "TRIAN":   {"name": "Code Tri Ân",   "icon": "🎉", "fmt": "CAVOIXANH-TRIAN-xxxxxxx"},
     "TICHLUY": {"name": "Code Tích Lũy", "icon": "🏆", "fmt": "CAVOIXANH-TICHLUY-xxxxxxx"},
     "INTERACT": {"name": "Code Tương Tác / CHECKTT", "icon": "💬", "fmt": "CAVOIXANH-INTERACT-xxxxxxx"},
+    "BOTREF": {"name": "Code BotRef", "icon": "🤖", "fmt": "CAVOIXANH-BOTREF-xxxxxxxx"},
     "TICHLUY": {"name": "Code TOP / Tích Lũy", "icon": "🏆", "fmt": "CAVOIXANH-TICHLUY-xxxxxxx"},
     "DAYTHANG": {"name": "Code Top Dây Thắng", "icon": "🔥", "fmt": "CAVOIXANH-DAYTHANG-xxxxxxx", "hidden": True},
     "DAYTHUA":  {"name": "Code Top Dây Thua",  "icon": "😭", "fmt": "CAVOIXANH-DAYTHUA-xxxxxxx",  "hidden": True},
@@ -2756,6 +2777,12 @@ def gen_gift_code(ctype):
     while True:
         if ctype == "NAP":
             code = f"CAVOIXANH-{_rand(_DIGITS, 7)}-{_rand(_LETTERS, 7)}"
+        elif ctype == "BOTREF":
+            while True:
+                s = _rand(_ALNUM, 8)
+                if any(c.isdigit() for c in s) and any(c.isalpha() for c in s):
+                    break
+            code = f"CAVOIXANH-BOTREF-{s}"
         else:
             code = f"CAVOIXANH-{ctype}-{_rand(_ALNUM, 7)}"
         if not query("SELECT 1 FROM giftcodes WHERE code=%s", (code,)):
@@ -11989,7 +12016,7 @@ async def awp_api_gift_delete(request):
 # ---------- Code chưa sử dụng (toàn bộ loại code) ----------
 _AWP_CODE_LABEL = {
     "TANTHU": "CODETANTHU", "CODEMUA": "CODEMUA", "INTERACT": "CODETT", "GIOVANG": "CODEGIOVANG",
-    "NAP": "CODENAP", "TRIAN": "CODETRIAN", "TICHLUY": "CODETICHLUY",
+    "NAP": "CODENAP", "TRIAN": "CODETRIAN", "TICHLUY": "CODETICHLUY", "BOTREF": "CODEBOTREF",
     "DAYTHANG": "CODEDAYTHANG", "DAYTHUA": "CODEDAYTHUA",
 }
 
