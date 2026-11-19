@@ -1845,22 +1845,6 @@ def make_local_qr(amount: int, content: str, bank_id=None, account_no=None) -> B
     buf.seek(0)
     return buf
 
-def make_momo_qr(phone: str, name: str, amount: int, note: str) -> BytesIO:
-    """QR ví MoMo cá nhân kèm số tiền + nội dung (định dạng cộng đồng, không phải API chính thức)."""
-    import qrcode
-    clean = lambda t: str(t or "").replace("|", " ").strip()
-    payload = f"2|99|{clean(phone)}|{clean(name)}||0|0|{int(amount)}|{clean(note)}|transfer_myqr"
-    qr = qrcode.QRCode(box_size=10, border=4)
-    qr.add_data(payload)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").get_image().convert("RGB")
-    img = img.resize((600, 600))
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    buf.name = "momo_qr.png"
-    buf.seek(0)
-    return buf
-
 def _reencode_image(raw: bytes) -> BytesIO:
     """Mở ảnh bằng Pillow rồi lưu lại thành PNG RGB chuẩn để Telegram xử lý được."""
     from PIL import Image
@@ -5336,9 +5320,6 @@ async def payout_link_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not re.fullmatch(r"[0-9A-Za-z]{5,30}", compact):
             await msg.reply_text("Số tài khoản/số điện thoại không hợp lệ. Vui lòng nhập lại.")
             raise ApplicationHandlerStop
-        if state.get("method") == "MOMO" and not re.fullmatch(r"0\d{9}", compact):
-            await msg.reply_text("Số điện thoại MoMo không hợp lệ (10 số, bắt đầu bằng 0). Vui lòng nhập lại.")
-            raise ApplicationHandlerStop
         state["account_number"] = compact
         state["stage"] = "name"
         await msg.reply_text("Nhập chính xác tên chủ tài khoản/chủ ví:")
@@ -5376,41 +5357,13 @@ async def payout_link_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'{ce("✅")} <b>LIÊN KẾT TÀI KHOẢN THÀNH CÔNG</b>\n\n'
                 f'{ce("🏦")} Ngân hàng: <b>{html.escape(str(bank))}</b>\n'
                 f'{ce("🔢")} Số tài khoản: <code>{html.escape(number)}</code>\n'
-                f'{ce("👤")} Chủ tài khoản: <b>{html.escape(name)}</b>',
+                f'{ce("👤")} Chủ tài khoản: <b>{html.escape(name)}</b>\n'
+                f'{ce("ℹ️")} Không cần gửi ảnh QR đối với Banking.',
                 parse_mode=ParseMode.HTML
             )
             raise ApplicationHandlerStop
 
-        # MoMo: lưu ngay, bot tự tạo QR khi rút nên không cần ảnh QR của người dùng.
-        if state.get("method") == "MOMO":
-            uid = update.effective_user.id
-            number = state["account_number"]
-            name = state["account_name"]
-            if count_payout_accounts(uid, "MOMO") >= MAX_PAYOUT_PER_METHOD:
-                ctx.user_data.pop("payout_link", None)
-                await msg.reply_text(f'{ce("❌")} ' + payout_limit_text("MOMO"), parse_mode=ParseMode.HTML)
-                raise ApplicationHandlerStop
-            query("UPDATE user_payout_accounts SET is_default=FALSE WHERE user_id=%s", (uid,))
-            saved_account = query(
-                """INSERT INTO user_payout_accounts
-                   (user_id, method, bank_code, account_number, account_name, qr_file_id, is_default)
-                   VALUES (%s,'MOMO',%s,%s,%s,NULL,TRUE) RETURNING id""",
-                (uid, state.get("bank_code"), number, name)
-            )
-            if not saved_account:
-                await msg.reply_text("❌ Chưa lưu được tài khoản. Vui lòng thử lại hoặc liên hệ Admin.")
-                raise ApplicationHandlerStop
-            ctx.user_data.pop("payout_link", None)
-            await msg.reply_text(
-                f'{ce("✅")} <b>LIÊN KẾT TÀI KHOẢN THÀNH CÔNG</b>\n\n'
-                f'{ce("💳")} Phương thức: <b>MOMO</b>\n'
-                f'{ce("🔢")} Số điện thoại: <code>{html.escape(number)}</code>\n'
-                f'{ce("👤")} Chủ ví: <b>{html.escape(name)}</b>',
-                parse_mode=ParseMode.HTML
-            )
-            raise ApplicationHandlerStop
-
-        # ZaloPay vẫn yêu cầu ảnh QR.
+        # MoMo/ZaloPay vẫn yêu cầu ảnh QR.
         state["stage"] = "qr"
         await msg.reply_text(
             f'{ce("🖼")} <b>BƯỚC CUỐI: GỬI ẢNH QR</b>\n\n'
@@ -5627,7 +5580,7 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f'<i>QR là thông tin chuyển khoản để admin xử lý thủ công; vui lòng kiểm tra đúng người nhận trước khi chuyển.</i>'
                 )
                 # BANKING: luôn tạo QR VietQR động chứa đúng số tiền và nội dung.
-                # MOMO: bot tự tạo QR. ZALOPAY: dùng QR ví do người dùng tải lên khi liên kết;
+                # MOMO/ZALOPAY: dùng QR ví do người dùng tải lên khi liên kết;
                 # không tự nhúng số tiền/nội dung vào QR ví khi chưa có định dạng/API chính thức.
                 if str(method).upper() == "BANKING":
                     try:
@@ -5650,26 +5603,6 @@ async def rut(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             amount, transfer_memo, bank_id=qr_bank, account_no=stk
                         )
                         wd_track_msg(withdraw_id, _sent_m)
-                elif str(method).upper() == "MOMO":
-                    # MoMo: bot tự tạo QR từ SĐT đã lưu + đúng số tiền, không dùng ảnh QR của user.
-                    _momo_text = admin_text + (
-                        f'\n\n⚠️ <b>Chuyển ĐÚNG {fmt_money(amount)}đ</b> cho SĐT <code>{html.escape(str(stk))}</code>. '
-                        f'Nếu app hiện số tiền/tên khác thì KHÔNG chuyển.'
-                    )
-                    try:
-                        _sent_m = await ctx.bot.send_photo(
-                            chat_id=admin_id,
-                            photo=make_momo_qr(stk, name, amount, transfer_memo),
-                            caption=_momo_text, reply_markup=keyboard,
-                            parse_mode=ParseMode.HTML
-                        )
-                    except Exception as momo_error:
-                        print(f"Không tạo được QR MoMo: {momo_error}")
-                        _sent_m = await ctx.bot.send_message(
-                            chat_id=admin_id, text=_momo_text,
-                            reply_markup=keyboard, parse_mode=ParseMode.HTML
-                        )
-                    wd_track_msg(withdraw_id, _sent_m)
                 elif payout_qr_file_id:
                     _sent_m = await ctx.bot.send_photo(
                         chat_id=admin_id, photo=payout_qr_file_id,
