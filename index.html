@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-<title>XOCLO88 - ĐỔI THƯỞNG</title>
+<title>Cá Voi Xanh - Sẵn Hũ</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@600;800;900&display=swap" rel="stylesheet">
@@ -365,6 +365,13 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 #app #stage .ico.e.man{opacity:1}
 #app #stage .ico.e.auto{opacity:.45}
 #app #stage .ico.f.dk{filter:grayscale(.8) brightness(.65)}
+
+/* ===== chữ kim quang hoàng kim ===== */
+.kq{background:linear-gradient(105deg,#0000 38%,#fffdf0 50%,#0000 62%) 130% 0/260% 100% no-repeat,linear-gradient(180deg,#fffbe0 0%,#ffe36b 28%,#f2b21e 52%,#b86d08 68%,#ffd95a 86%,#fff3b0 100%);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:kq 2.8s ease-in-out infinite}
+@keyframes kq{0%{background-position:130% 0,0 0}60%,100%{background-position:-40% 0,0 0}}
+#rib b.kq{font-size:clamp(22px,7vw,30px);letter-spacing:1.5px;white-space:nowrap;font-weight:900;filter:drop-shadow(0 1px 0 #6b3a00) drop-shadow(0 2px 0 #3a1800) drop-shadow(0 0 9px #ffc83acc)}
+#rib small.kq{font-size:clamp(11px,3.4vw,14px);letter-spacing:4px;margin-top:4px;font-weight:900;filter:drop-shadow(0 1px 0 #5a2c00) drop-shadow(0 0 6px #ffc83a99)}
+#brand{width:min(88%,360px)}
 </style>
 </head>
 <body>
@@ -372,7 +379,7 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
  <svg width="0" height="0" style="position:absolute"><defs><linearGradient id="gg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff6c9"/><stop offset=".5" stop-color="#ffd45a"/><stop offset="1" stop-color="#d9921a"/></linearGradient></defs></svg>
  <div id="bg"></div><div id="girl"></div>
  <div id="top"><div id="bal"><i>$</i><span id="balv">0</span></div><div id="sid"></div><button class="ib" id="mus" data-ic="note" aria-label="Nhạc"></button></div>
- <div id="brand"><span class="cr" data-ic="crown"></span><div id="rib"><b class="gd">XOCLO88</b><small class="gd">ĐỔI THƯỞNG</small></div></div>
+ <div id="brand"><span class="cr" data-ic="crown"></span><div id="rib"><b class="kq">CÁ VOI XANH</b><small class="kq">★ SẴN HŨ ★</small></div></div>
  <div id="ttl"><b class="gd">TÀI XỈU</b><div id="jpbar"><span data-ic="crown"></span><b id="potv" class="gd">0</b><small id="potadd"></small></div></div>
  <div id="stage">
   <button class="ib ico a" data-md="top" data-ic="trophy" aria-label="Cao thủ"></button>
@@ -449,7 +456,9 @@ let bowlSt='none',handMode=0,bd={on:0,x:0,y:0,dx:0,dy:0};const bowl=$('#bowl');
 function updHand(){bowl.classList.toggle('can',handMode===1&&bowlSt==='on')}
 function armHand(){if(bowlSt!=='none'||!S||!S.dice)return;bowlSt='idle';startRoll()}
 function startRoll(){if(bowlSt!=='idle'||!S||!S.dice)return;bowlSt='rolling';handMode=1;updHand();hap('medium');shake()}
-function placeBowl(){if(bowlSt==='on'||bowlSt==='off')return;bowlSt='on';bowl.style.cssText='';bowl.className='drop';core.classList.add('cvr');updHand();setTimeout(()=>{if(bowlSt==='on')bowl.classList.remove('drop')},650);window.SFX&&SFX.thump();if(typeof autoOpen!=='undefined'&&autoOpen)setTimeout(()=>dropBowl(true),700)}
+function placeBowl(){if(bowlSt==='on'||bowlSt==='off')return;
+  if(autoOpen){bowlSt='off';bowl.style.cssText='';bowl.className='gone';core.classList.remove('cvr');updHand();reveal();return}
+  bowlSt='on';bowl.style.cssText='';bowl.className='drop';core.classList.add('cvr');updHand();setTimeout(()=>{if(bowlSt==='on')bowl.classList.remove('drop')},650);window.SFX&&SFX.thump();if(typeof autoOpen!=='undefined'&&autoOpen)setTimeout(()=>dropBowl(true),700)}
 function resetBowl(){bowlSt='none';handMode=0;bd.on=0;bowl.style.cssText='';bowl.className='';core.classList.remove('cvr','glowres');$('#dice').classList.remove('land','res');updHand()}
 function dropBowl(auto,dx,dy){if(bowlSt!=='on')return;bowlSt='off';bd.on=0;core.classList.remove('cvr');
  bowl.classList.remove('can','drag','drop');bowl.classList.add('gone');
@@ -468,7 +477,7 @@ const hnd=$('#hnd');
 function paintHnd(){hnd.classList.toggle('auto',autoOpen);hnd.classList.toggle('man',!autoOpen)}
 paintHnd();
 hnd.onclick=e=>{e.stopPropagation();autoOpen=!autoOpen;paintHnd();try{localStorage.setItem('aop',autoOpen?'1':'0')}catch(_){}hap('light');window.SFX&&SFX.click();
- if(autoOpen&&bowlSt==='on')setTimeout(()=>dropBowl(true),350)};
+ if(autoOpen&&bowlSt==='on'){bowlSt='off';bd.on=0;bowl.style.cssText='';bowl.className='gone';core.classList.remove('cvr');updHand();reveal()}};
 /* ===== nút bóng đèn: sáng / tối ===== */
 let dark=false;try{dark=localStorage.getItem('dk')==='1'}catch(e){}
 const lamp=$('#lamp');
@@ -569,7 +578,7 @@ function render(){
  const sec=secLeft(),R=s=>{const st=Object.values(s.my||{}).reduce((a,b)=>a+b,0);return `${s.dice.join(' - ')} = ${s.dice[0]+s.dice[1]+s.dice[2]}, ${s.jp?'NỔ HŨ':nm(s.dice)}. `+(!st?'':s.net>0?'Thắng +'+f(s.net+st):s.net<0?'Thua '+f(s.net):'Hoàn tiền')};
  if(S.mt&&S.phase==='bet'){$('#msg').textContent='Game đang bảo trì - tạm dừng đặt cược';return}
  $('#msg').textContent=S.phase==='bet'?(S.last&&Date.now()<hold.until?`Phiên #${S.last.id}: `+R(S.last):closed()?'Đã đóng cược - đang chờ mở kết quả':'Bấm CƯỢC ở bên Tài hoặc Xỉu để đặt tiền'):
-  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:(bowlSt==='on'?''+(autoOpen?'Bát tự mở':'Kéo bát ra khỏi đĩa để mở')+' · còn '+sec+'s':'Đang tung xúc xắc...')):''}
+  S.phase==='cover'?(opened?R(S)+` Phiên mới sau ${sec}s`:(bowlSt==='on'?''+'Kéo bát ra khỏi đĩa để mở'+' · còn '+sec+'s':'Đang tung xúc xắc...')):''}
 async function tick(){try{const r=await api('/api/state');if(!r.err){S=r;S._t=Date.now();render()}else $('#msg').textContent=r.msg||'Hãy mở từ nút trong bot Telegram'}catch(e){}}
 setInterval(tick,700);tick();
 setInterval(()=>{if(!S)return;if(S.phase==='cover'){if(bowlSt==='on'&&secLeft()<=AUTO)dropBowl(true)}const t=secLeft(),c=$('#core'),cd=$('#cd'),hot=S.phase==='bet'&&t>0&&t<=LOCK,p=n=>String(n).padStart(2,'0');
@@ -639,11 +648,14 @@ function burst(t,f,g,len){const s=ctx.createBufferSource(),b=ctx.createBiquadFil
  v.gain.setValueAtTime(g,t);v.gain.exponentialRampToValueAtTime(.0001,t+len);
  s.connect(b);b.connect(v);v.connect(sg);s.start(t,Math.random()*.8);s.stop(t+len+.02)}
 const ok=()=>ctx&&on;
-/* playlist: cưới Luân được không → Thuyền hoa → Sơn thùy trùng mây → Tương tư nàng ca sĩ → lặp lại
-   (file mp3 đặt trong thư mục music/ cạnh main_9.py; chưa có file thì dùng nhạc nền synth cũ) */
-const tracksP=fetch('/api/music').then(r=>r.json()).then(j=>(j&&j.tracks)||[]).catch(()=>[]);
+/* nhạc nền: bài Fiction, lặp lại liên tục (đặt fiction.mp3 trong thư mục music/ cạnh main_9.py; chưa có file thì dùng nhạc synth) */
+const FIC=['/music/fiction.mp3','/music/Fiction.mp3','music/fiction.mp3','/static/music/fiction.mp3','/fiction.mp3'];
+const isFic=u=>/fiction/i.test(decodeURIComponent(String(u)));
+const probe=u=>new Promise(r=>{const a=new Audio();a.preload='metadata';a.onloadedmetadata=()=>r(u);a.onerror=()=>r(null);a.src=u});
+const tracksP=fetch('/api/music').then(r=>r.json()).then(j=>((j&&j.tracks)||[]).map(t=>t.url||t).filter(isFic)).catch(()=>[])
+ .then(async l=>{if(l.length)return l.slice(0,1);for(const u of FIC){if(await probe(u))return[u]}return[]});
 function playNext(){pi=(pi+1)%PL.length;au.src=PL[pi];if(on)au.play().catch(()=>{})}
-function playFiles(tr){PL=tr;au=new Audio();au.preload='auto';au.volume=.6;au.onended=playNext;au.onerror=()=>{if(++errs<=PL.length*3)playNext()};au.src=PL[0];if(on)au.play().catch(()=>{})}
+function playFiles(tr){PL=tr;au=new Audio();au.preload='auto';au.volume=.6;au.loop=true;au.onended=playNext;au.onerror=()=>{if(++errs<=PL.length*3)playNext()};au.src=PL[0];if(on)au.play().catch(()=>{})}
 window.SFX={
  rattle(d){if(!ok())return;const t=ctx.currentTime,n=Math.floor(d*26);
   for(let i=0;i<n;i++){const tt=t+i*d/n+Math.random()*.02;burst(tt,2200+Math.random()*3500,.5,.045);if(i%3==0)burst(tt,500+Math.random()*400,.35,.05)}},
