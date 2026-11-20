@@ -3006,12 +3006,9 @@ async def mua_gift_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     code_lines = "\n".join(f'{i}. <code>{c}</code>' for i, c in enumerate(codes, 1))
     try:
-        buyer = update.effective_user
-        public_name = ("@" + buyer.username) if buyer and buyer.username else (buyer.full_name if buyer else "Thành viên")
         await ctx.bot.send_message(
             LOG_GROUP_ID,
             f"🛒 <b>CÓ NGƯỜI MUA GIFTCODE</b>\n"
-            f"👤 Người mua: {html.escape(public_name)}\n"
             f"🆔 ID: <code>{mask_user_id(uid)}</code>\n"
             f"🎟 Số lượng: <b>{len(codes)}</b> · Giá trị mỗi code: <b>{fmt_money(value)}đ</b>\n"
             f"💰 Tổng thanh toán: <b>{fmt_money(len(codes)*value + int(len(codes)*value*0.05))}đ</b>\n"
@@ -3705,14 +3702,10 @@ async def run_dice_game_cycle(bot, group_id: int, chat_id: int):
 
                 try:
                     new_stats_msg = await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
-                        [
-                            btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap'),
-                            btn('BOT CHƠI GAME', '🎮', url=f'https://t.me/{BOT_USERNAME}')
-                        ],
-                        [
-                            btn('CHƠI TÀI XỈU 3D NGAY', '🎮', url=f'https://t.me/{BOT_USERNAME}?start=tx3d'),
-                            btn('LỊCH SỬ PHIÊN', '📊', url=SESSION_HISTORY_URL)
-                        ]
+                        [btn('NẠP TIỀN TẠI ĐÂY', '💰', url=f'https://t.me/{BOT_USERNAME}?start=nap')],
+                        [btn('BOT CHƠI GAME', '🎮', url=f'https://t.me/{BOT_USERNAME}')],
+                        [btn('CHƠI TÀI XỈU MD5 NGAY', '🎮', url=f'https://t.me/{BOT_USERNAME}?start=tx3d')],
+                        [btn('LỊCH SỬ PHIÊN', '📊', url=SESSION_HISTORY_URL)]
                     ]))
                     stats_msg_id = new_stats_msg.message_id
                 except Exception as e:
@@ -6133,19 +6126,15 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if anon_cmd in anon_map:
             choice = anon_map[anon_cmd]
             arg = parts[1].lower()
-            if arg in ["max", "all"]:
-                amount = get_balance(uid)
-                if amount < 1000:
-                    return await update.effective_message.reply_text(
-                        f'{ce("❌")} Số dư không đủ (tối thiểu 1,000đ)!',
-                        parse_mode=ParseMode.HTML)
-            else:
-                try:
-                    amount = int(arg)
-                except ValueError:
-                    return await update.effective_message.reply_text(
-                        f'{ce("❌")} Số tiền không hợp lệ! VD: <code>T 5000</code> hoặc <code>t max</code>',
-                        parse_mode=ParseMode.HTML)
+            amount = parse_bet_amount(arg, uid)
+            if amount is None:
+                return await update.effective_message.reply_text(
+                    f'{ce("❌")} Số tiền không hợp lệ! VD: <code>T 5000</code>, <code>t 13k</code> hoặc <code>t max</code>',
+                    parse_mode=ParseMode.HTML)
+            if arg in ["max", "all"] and amount < 1000:
+                return await update.effective_message.reply_text(
+                    f'{ce("❌")} Số dư không đủ (tối thiểu 1,000đ)!',
+                    parse_mode=ParseMode.HTML)
 
             if not GROUP_IDS:
                 return await update.effective_message.reply_text(
@@ -6162,7 +6151,7 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.effective_message.text
         if text and not is_banned(uid):
             parts = text.strip().split()
-            if len(parts) >= 2:
+            if len(parts) in (2, 3):
                 cmd = parts[0].upper()
                 anon_map = {
                     "TT": "tai", "T": "tai",
@@ -6171,12 +6160,12 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "LL": "le", "L": "le",
                     "TL": "tl", "TC": "tc", "XL": "xl", "XC": "xc"
                 }
-                if cmd in anon_map:
+                if cmd in anon_map and len(parts) == 2:
                     choice = anon_map[cmd]
                     arg = parts[1].lower()
                     try:
-                        amount = get_balance(uid) if arg in ["max", "all"] else int(arg)
-                        if amount >= 1000:
+                        amount = parse_bet_amount(arg, uid)
+                        if amount is not None and amount >= 1000:
                             success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], choice, amount)
                             await reply_bet_notice(update.effective_message, msg, success, private=True)
                             return
@@ -6186,8 +6175,8 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     face = parts[1]
                     if face in "123456" and len(face) == 1:
                         try:
-                            amount = get_balance(uid) if parts[2].lower() in ["max", "all"] else int(parts[2])
-                            if amount >= 1000:
+                            amount = parse_bet_amount(parts[2], uid)
+                            if amount is not None and amount >= 1000:
                                 success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], f"d1_{face}", amount)
                                 await reply_bet_notice(update.effective_message, msg, success, private=True)
                                 return
@@ -6196,8 +6185,8 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     faces = parts[1]
                     if len(faces) == 2 and all(c in "123456" for c in faces):
                         try:
-                            amount = get_balance(uid) if parts[2].lower() in ["max", "all"] else int(parts[2])
-                            if amount >= 1000:
+                            amount = parse_bet_amount(parts[2], uid)
+                            if amount is not None and amount >= 1000:
                                 success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], f"d2_{faces}", amount)
                                 await reply_bet_notice(update.effective_message, msg, success, private=True)
                                 return
@@ -6206,8 +6195,8 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     try:
                         sum_val = int(parts[1])
                         if 3 <= sum_val <= 18:
-                            amount = get_balance(uid) if parts[2].lower() in ["max", "all"] else int(parts[2])
-                            if amount >= 1000:
+                            amount = parse_bet_amount(parts[2], uid)
+                            if amount is not None and amount >= 1000:
                                 success, msg = await place_anonymous_bet(ctx.bot, uid, GROUP_IDS[0], f"d3_{sum_val}", amount)
                                 await reply_bet_notice(update.effective_message, msg, success, private=True)
                                 return
@@ -6217,6 +6206,21 @@ async def main_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(f'{ce("⚡")} <b>HỆ THỐNG ĐANG BẢO TRÌ TOÀN BỘ</b>', parse_mode=ParseMode.HTML)
         return
     await handle(update, ctx)
+
+def parse_bet_amount(s, uid):
+    """Đọc số tiền cược: 13000 | 13.000 | 13k | 1.5k | 1m | all | max.
+    Trả None nếu sai cú pháp (có ký tự thừa)."""
+    s = (s or "").strip().lower()
+    if s in ("all", "max"):
+        return get_balance(uid)
+    m = re.fullmatch(r"(\d+(?:[.,]\d+)?)([km])", s)
+    if m:
+        num = float(m.group(1).replace(",", "."))
+        return int(round(num * (1000 if m.group(2) == "k" else 1000000)))
+    if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", s) or re.fullmatch(r"\d+", s):
+        return int(re.sub(r"[.,]", "", s))
+    return None
+
 
 class FakeCtx:
     def __init__(self, bot, args, user_data, chat_data, message):
@@ -6270,49 +6274,41 @@ async def handle_group_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "a1": "a1", "a2": "a2", "a3": "a3", "a4": "a4", "a5": "a5", "a6": "a6",
     }
 
-    def parse_amt(s):
-        s = s.lower().replace(",", "").replace(".", "")
-        if s in ["max", "all"]:
-            return get_balance(update.effective_user.id)
-        if s.endswith("k"):
-            return int(float(s[:-1]) * 1000)
-        if s.endswith("m"):
-            return int(float(s[:-1]) * 1000000)
-        return int(s)
+    uid_ = update.effective_user.id
 
+    # Cược thường: đúng 2 phần "<lệnh> <tiền>" (t 13k, x 1m, c all, tc max ...).
+    # Dính ký tự thừa / sai tiền -> bot im lặng, không phản hồi.
     if command in bet_commands:
-        choice = bet_commands[command]
-        await bet_group_handler(update, fake_ctx, choice)
+        if len(parts) != 2:
+            return
+        amt = parse_bet_amount(parts[1], uid_)
+        if amt is None:
+            return
+        await bet_group_handler(update, fake_ctx, bet_commands[command], amt)
         return
 
-    if command == "d1" and len(parts) >= 3:
-        face = parts[1]
-        if face in "123456" and len(face) == 1:
-            try:
-                amt = parse_amt(parts[2])
-                await bet_group_handler(update, fake_ctx, f"d1_{face}", amt)
-                return
-            except: pass
-
-    if command == "d2" and len(parts) >= 3:
-        faces = parts[1]
-        if len(faces) == 2 and all(c in "123456" for c in faces):
-            try:
-                amt = parse_amt(parts[2])
-                await bet_group_handler(update, fake_ctx, f"d2_{faces}", amt)
-                return
-            except: pass
-
-    if command == "d3" and len(parts) >= 3:
-        try:
-            sum_val = int(parts[1])
-            if 3 <= sum_val <= 18:
-                amt = parse_amt(parts[2])
-                await bet_group_handler(update, fake_ctx, f"d3_{sum_val}", amt)
-                return
-        except: pass
+    # D1 / D2 / D3: đúng 3 phần "<lệnh> <mặt|tổng> <tiền>". Đúng 2 phần vẫn để game Xúc Xắc Đơn xử lý như cũ.
+    if command in ("d1", "d2", "d3") and len(parts) != 2:
+        if len(parts) != 3:
+            return
+        amt = parse_bet_amount(parts[2], uid_)
+        if amt is None:
+            return
+        if command == "d1":
+            if len(parts[1]) == 1 and parts[1] in "123456":
+                await bet_group_handler(update, fake_ctx, f"d1_{parts[1]}", amt)
+            return
+        if command == "d2":
+            if len(parts[1]) == 2 and all(c in "123456" for c in parts[1]):
+                await bet_group_handler(update, fake_ctx, f"d2_{parts[1]}", amt)
+            return
+        if parts[1].isdigit() and 3 <= int(parts[1]) <= 18:
+            await bet_group_handler(update, fake_ctx, f"d3_{int(parts[1])}", amt)
+        return
 
     if command in ["tt", "xx", "cc", "ll"]:
+        if len(parts) != 2:
+            return
         await update.effective_message.reply_text(
             f'{ce("🥷")} <b>CƯỢC ẨN DANH</b>\n\n'
             f'Vui lòng <b>nhắn riêng cho bot</b> để đặt cược ẩn danh!\n'
@@ -10410,7 +10406,7 @@ async function openUser(id){
    +'<div class="row" style="margin-top:8px"><span>Hoạt động đầu: <b>'+esc(p.first_time||'—')+'</b></span><span>Check-in cuối: <b>'+esc(p.last_checkin||'—')+'</b></span><span>Rút gần nhất: <b>'+esc(p.last_withdraw||'—')+'</b></span><span>'+(p.refed?'Được người khác mời':'Tự đăng ký')+'</span></div>'
    +((p.banned_games.length||p.banned_features.length)?'<div class="row" style="margin-top:8px"><span>Bị cấm game: <b>'+esc(p.banned_games.join(', ')||'—')+'</b></span><span>Bị cấm tính năng: <b>'+esc(p.banned_features.join(', ')||'—')+'</b></span></div>':'')
    +(p.bonus?'<div class="row" style="margin-top:8px"><span>Khuyến mãi: <b>'+money(p.bonus.amount)+'</b></span><span>Vòng cược: <b>'+money(p.bonus.current)+' / '+money(p.bonus.required)+'</b></span></div>':'')
-   +(p.payouts.length?'<div style="margin-top:8px" class="mut">Tài khoản nhận tiền đã liên kết:</div>'+p.payouts.map(function(a){return '<div class="row" style="margin-top:4px"><span>'+esc(a.method)+(a.default?' (mặc định)':'')+'</span><span>'+esc(a.bank||'')+'</span><span><b>'+esc(a.number)+'</b></span><span>'+esc(a.name)+'</span></div>';}).join(''):'')
+   +(p.payouts.length?'<div style="margin-top:8px" class="mut">Tài khoản nhận tiền đã liên kết:</div>'+p.payouts.map(function(a){return '<div class="row" style="margin-top:4px;align-items:center"><input type="checkbox" data-pchk="'+esc(a.id)+'"><span>'+esc(a.method)+(a.default?' (mặc định)':'')+'</span><span>'+esc(a.bank||'')+'</span><span><b>'+esc(a.number)+'</b></span><span>'+esc(a.name)+'</span><button class="btn bad" data-pdel="'+esc(a.id)+'" data-id="'+esc(id)+'">🗑 Xoá</button></div>';}).join('')+'<div style="margin-top:8px"><button class="btn bad" data-pdelsel="1" data-id="'+esc(id)+'">🗑 Xoá các tài khoản đã chọn (tối đa 3)</button></div>':'')
    +'</div><div class="grid">'+cards.map(function(c){return card(c[0],c[1]);}).join('')+'</div>'
    +'<div class="item"><div class="row"><b>🎁 Danh sách code chưa sử dụng</b><span class="tag '+(p.pending_giftcodes&&p.pending_giftcodes.length?'pending':'success')+'">'+((p.pending_giftcodes||[]).length)+' mã</span></div>'
    +((p.pending_giftcodes||[]).length?'<div style="display:grid;gap:8px;margin-top:10px">'+p.pending_giftcodes.map(function(g){return '<div style="padding:10px;border:1px solid var(--line);border-radius:10px"><div class="row"><b>'+esc(g.type)+'</b><span class="tag '+(g.expired?'rejected':'pending')+'">'+(g.expired?'Đã hết hạn · chưa nhập':'Chưa nhập')+'</span></div><div style="margin-top:5px"><code>'+esc(g.code)+'</code></div><div class="mut" style="margin-top:4px">Giá trị: <b>'+money(g.reward)+'</b> · Hạn: '+esc(g.expiry||'Không giới hạn')+'</div></div>';}).join('')+'</div>':'<p class="mut" style="margin:8px 0 0">Tài khoản hiện không còn giftcode được cấp riêng nào chưa sử dụng.</p>')+'</div>'
@@ -10442,6 +10438,18 @@ async function loadSec(id,kind){
 view.addEventListener('click',async function(ev){
   var o=ev.target.closest('a[data-open]');if(o){ev.preventDefault();cur='user';nav();openUser(o.getAttribute('data-open')).catch(function(e){toast(e.message);});return;}
   var d=ev.target.closest('button[data-d]');if(d){openUser(d.getAttribute('data-d')).catch(function(e){toast(e.message);});return;}
+  var pd=ev.target.closest('button[data-pdel],button[data-pdelsel]');
+  if(pd){
+    var pid=pd.getAttribute('data-id'),ids=[];
+    if(pd.hasAttribute('data-pdel')){ids=[parseInt(pd.getAttribute('data-pdel'),10)];}
+    else{view.querySelectorAll('input[data-pchk]').forEach(function(c){if(c.checked)ids.push(parseInt(c.getAttribute('data-pchk'),10));});}
+    if(!ids.length){toast('Chưa chọn tài khoản nào');return;}
+    if(ids.length>3){toast('Chỉ xoá tối đa 3 tài khoản mỗi lần');return;}
+    if(!confirm('Xoá '+ids.length+' tài khoản rút tiền của ID '+pid+'?'))return;
+    pd.disabled=true;
+    try{var rr=await post('user/'+encodeURIComponent(pid)+'/delpayout',{ids:ids});toast(rr.msg||'Xong');openUser(pid);}catch(e){toast(e.message);pd.disabled=false;}
+    return;
+  }
   var b=ev.target.closest('button[data-u]');if(!b)return;
   var act=b.getAttribute('data-u'),id=b.getAttribute('data-id'),body={};
   if(act==='add'||act==='sub'){var inp=view.querySelector('input[data-amt="'+id+'"]');var amt=parseInt((inp.value||'').replace(/[^0-9]/g,''),10);
@@ -10896,6 +10904,46 @@ async def aw_api_user_act(request):
     return _aw_json({"ok": True, "msg": msg})
 
 
+async def aw_api_user_delpayout(request):
+    """Xoá từng tài khoản nhận tiền (Ngân hàng / MoMo / ZaloPay) của user: 1 hoặc tối đa 3 tài khoản mỗi lần."""
+    tok, s = await asyncio.to_thread(_aw_auth, request, True)
+    uid_s = request.match_info.get("uid", "")
+    if not uid_s.isdigit():
+        return _aw_json({"err": "ID không hợp lệ"}, 400)
+    uid = int(uid_s)
+    try:
+        body = await request.json()
+        ids = body.get("ids", [])
+        ids = sorted({int(x) for x in ids})
+    except Exception:
+        return _aw_json({"err": "Danh sách tài khoản không hợp lệ"}, 400)
+    if not ids:
+        return _aw_json({"err": "Chưa chọn tài khoản nào để xoá"}, 400)
+    if len(ids) > 3:
+        return _aw_json({"err": "Chỉ xoá tối đa 3 tài khoản mỗi lần"}, 400)
+
+    def _do():
+        rows = query("DELETE FROM user_payout_accounts WHERE user_id=%s AND id = ANY(%s) RETURNING method, account_number",
+                     (uid, ids)) or []
+        if not rows:
+            return rows
+        left = query("SELECT id FROM user_payout_accounts WHERE user_id=%s ORDER BY id DESC", (uid,)) or []
+        if left:
+            if not query("SELECT 1 FROM user_payout_accounts WHERE user_id=%s AND is_default=TRUE LIMIT 1", (uid,)):
+                query("UPDATE user_payout_accounts SET is_default=TRUE WHERE id=%s", (left[0][0],))
+        else:
+            # Không còn tài khoản nào -> gỡ luôn thông tin bank cũ trong bảng users để không còn tính là đã liên kết
+            query("UPDATE users SET bank=NULL, stk=NULL, name=NULL, bank_linked=0 WHERE user_id=%s", (uid,))
+        return rows
+
+    rows = await asyncio.to_thread(_do)
+    if not rows:
+        return _aw_json({"err": "Không tìm thấy tài khoản cần xoá (có thể đã bị xoá trước đó)"}, 404)
+    detail = ", ".join(f"{r[0]} {r[1]}" for r in rows)
+    await asyncio.to_thread(_aw_log, s["user"], "DEL_PAYOUT", f"ID {uid}: {detail}", _aw_ip(request))
+    return _aw_json({"ok": True, "msg": f"Đã xoá {len(rows)} tài khoản rút tiền"})
+
+
 async def aw_api_log(request):
     await asyncio.to_thread(_aw_auth, request)
     rows = await asyncio.to_thread(query, "SELECT time, username, action, detail, ip FROM admin_web_log ORDER BY id DESC LIMIT 100") or []
@@ -11043,7 +11091,7 @@ def _aw_user_full_sync(uid):
     bought = one("SELECT COUNT(*), COALESCE(SUM(reward),0), COALESCE(SUM(CASE WHEN COALESCE(used,0)=1 THEN 1 ELSE 0 END),0) "
                  "FROM giftcodes WHERE created_by=%s", (uid,))
     received = one("SELECT COUNT(*), COALESCE(SUM(reward),0) FROM giftcodes WHERE used_by=%s", (uid,))
-    payouts = query("SELECT method, bank_code, account_number, account_name, created_at, is_default "
+    payouts = query("SELECT method, bank_code, account_number, account_name, created_at, is_default, id "
                     "FROM user_payout_accounts WHERE user_id=%s ORDER BY id DESC", (uid,)) or []
     try:
         remaining = int(get_remaining_bet_required(uid) or 0)
@@ -11102,7 +11150,7 @@ def _aw_user_full_sync(uid):
         "wager_remaining": remaining, "dep_today": dep_today, "vip": vip,
         "bought_n": int(bought[0] or 0), "bought_sum": int(bought[1] or 0), "bought_used": int(bought[2] or 0),
         "received_n": int(received[0] or 0), "received_sum": int(received[1] or 0),
-        "payouts": [{"method": r[0], "bank": r[1], "number": r[2], "name": r[3], "at": _aw_jsafe(r[4]), "default": bool(r[5])} for r in payouts],
+        "payouts": [{"id": int(r[6]), "method": r[0], "bank": r[1], "number": r[2], "name": r[3], "at": _aw_jsafe(r[4]), "default": bool(r[5])} for r in payouts],
     }
 
 
@@ -11396,6 +11444,7 @@ def admin_web_register_routes(app):
     app.router.add_get("/admin/api/gifts", aw_api_gifts)
     # Route cụ thể phải đăng ký TRƯỚC route chung /{act}, nếu không aiohttp khớp /{act} trước
     # và trả "Yêu cầu không hợp lệ" (làm nút Cấm nhập code / Đặt tổng về 0 không dùng được).
+    app.router.add_post("/admin/api/user/{uid}/delpayout", aw_api_user_delpayout)
     app.router.add_post("/admin/api/user/{uid}/codeban", aw_api_user_codeban)
     app.router.add_post("/admin/api/user/{uid}/reset-stats", aw_api_user_reset_stats)
     app.router.add_post("/admin/api/user/{uid}/{act}", aw_api_user_act)
