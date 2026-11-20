@@ -29,7 +29,10 @@ from aiohttp import web
 # ============================================================
 # CẤU HÌNH CHUNG
 # ============================================================
-TOKEN = os.getenv("BOT_TOKEN", "")  # Đặt BOT_TOKEN trong biến môi trường; không lưu token trong mã nguồn
+TOKEN = os.getenv("BOT_TOKEN", "")  # Bot chính: tài khoản, tiền, cược và các chức năng hiện có
+DICE_BOT_TOKEN = os.getenv("DICE_BOT_TOKEN", "")  # Bot phụ chỉ đăng phiên/xúc xắc/kết quả trong nhóm
+NOTICE_BOT_TOKEN = os.getenv("NOTICE_BOT_TOKEN", "")  # Bot phụ chỉ gửi thông báo giao dịch vào nhóm
+STATS_BOT_TOKEN = os.getenv("STATS_BOT_TOKEN", "")  # Bot phụ chỉ phản hồi /top và /checktt trong nhóm
 DATABASE_URL = os.getenv("DATABASE_URL")
 SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")  # Bắt buộc cấu hình bằng biến môi trường; không hardcode khóa bí mật
 
@@ -13625,9 +13628,10 @@ async def checktt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     resent_ok = resent_fail = 0
     new_items = []
     try:
-        resent_ok, resent_fail = await _resend_undelivered(ctx.bot, user.id, group_id, claim_key)
+        reward_delivery_bot = application.bot  # Tin nhắn riêng/giftcode vẫn do bot chính gửi như trước
+        resent_ok, resent_fail = await _resend_undelivered(reward_delivery_bot, user.id, group_id, claim_key)
         if count >= INTERACTION_MILESTONES[0][0]:
-            new_items = await _issue_interaction_rewards(ctx.bot, user.id, group_id, count, claim_key, notify_group=False)
+            new_items = await _issue_interaction_rewards(reward_delivery_bot, user.id, group_id, count, claim_key, notify_group=False)
     except Exception as e:
         print(f"Lỗi phát code /checktt cho {user.id}: {e}")
         traceback.print_exc()
@@ -14073,19 +14077,35 @@ _ROOM_MUTE_ALLOW_NOTICES = ("RÚT TIỀN THÀNH CÔNG", "THÔNG BÁO NẠP TIỀ
 import contextvars as _contextvars
 _ROOM_MUTE_BYPASS = _contextvars.ContextVar("room_mute_bypass", default=False)
 
+_notice_bot = None
+
 async def send_group_notice(bot, *args, **kwargs):
-    """bot.send_message nhưng KHÔNG bị chặn bởi chế độ tắt room (dùng cho thông báo nạp/rút thành công)."""
+    """Chuyển thông báo nhóm giao dịch sang bot thông báo; không đổi logic giao dịch."""
     tok = _ROOM_MUTE_BYPASS.set(True)
     try:
-        return await bot.send_message(*args, **kwargs)
+        target_bot = _notice_bot or bot
+        if args:
+            chat_id = args[0]
+            text_value = args[1] if len(args) > 1 else kwargs.pop("text", None)
+        else:
+            chat_id = kwargs.pop("chat_id")
+            text_value = kwargs.pop("text", None)
+        return await target_bot.send_message(chat_id=chat_id, text=text_value, **kwargs)
     finally:
         _ROOM_MUTE_BYPASS.reset(tok)
 
 async def reply_group_notice(msg, *args, **kwargs):
-    """msg.reply_text nhưng KHÔNG bị chặn bởi chế độ tắt room (thông báo nhập code thành công)."""
+    """Gửi thông báo trả lời trong nhóm bằng bot thông báo phụ."""
     tok = _ROOM_MUTE_BYPASS.set(True)
     try:
-        return await msg.reply_text(*args, **kwargs)
+        target_bot = _notice_bot
+        if target_bot is None:
+            return await msg.reply_text(*args, **kwargs)
+        text_value = args[0] if args else kwargs.pop("text", None)
+        return await target_bot.send_message(
+            chat_id=msg.chat_id, text=text_value,
+            reply_to_message_id=msg.message_id, **kwargs
+        )
     finally:
         _ROOM_MUTE_BYPASS.reset(tok)
 
@@ -14226,6 +14246,44 @@ application = (
     .get_updates_request(_telegram_updates_request)
     .build()
 )
+
+class _DiceOutputBot:
+    """Đẩy mọi nội dung nhóm của vòng xúc xắc qua bot xúc xắc; DM vẫn do bot chính gửi."""
+    def __init__(self, main_bot, dice_bot):
+        self._main_bot = main_bot
+        self._dice_bot = dice_bot
+
+    @staticmethod
+    def _is_group(chat_id):
+        try:
+            return int(chat_id) < 0
+        except (TypeError, ValueError):
+            return False
+
+    async def send_message(self, *args, **kwargs):
+        chat_id = kwargs.get("chat_id", args[0] if args else None)
+        target = self._dice_bot if self._is_group(chat_id) else self._main_bot
+        return await target.send_message(*args, **kwargs)
+
+    async def send_dice(self, *args, **kwargs):
+        return await self._dice_bot.send_dice(*args, **kwargs)
+
+    async def delete_message(self, *args, **kwargs):
+        chat_id = kwargs.get("chat_id", args[0] if args else None)
+        target = self._dice_bot if self._is_group(chat_id) else self._main_bot
+        return await target.delete_message(*args, **kwargs)
+
+    async def set_chat_permissions(self, *args, **kwargs):
+        chat_id = kwargs.get("chat_id", args[0] if args else None)
+        target = self._dice_bot if self._is_group(chat_id) else self._main_bot
+        return await target.set_chat_permissions(*args, **kwargs)
+
+    async def pin_chat_message(self, *args, **kwargs):
+        chat_id = kwargs.get("chat_id", args[0] if args else None)
+        target = self._dice_bot if self._is_group(chat_id) else self._main_bot
+        return await target.pin_chat_message(*args, **kwargs)
+
+_stats_application = None
 
 # ============================================================
 # BỘ CÔNG CỤ ADMIN V2 — HỒ SƠ + LỊCH SỬ ĐẦY ĐỦ + XUẤT EXCEL
@@ -17819,10 +17877,7 @@ async def _kill_gate(update, ctx):
 application.add_handler(TypeHandler(Update, _kill_gate), group=-100)
 application.add_handler(CommandHandler("daythang", daythang_cmd), group=-3)
 application.add_handler(CommandHandler("daythua", daythua_cmd), group=-3)
-application.add_handler(CommandHandler("top", _early_top_cmd), group=-3)
-application.add_handler(CommandHandler("checktt", _early_checktt_cmd), group=-3)
-# /top và /checktt đã được đăng ký ở group=-3 qua wrapper bên dưới
-# để chỉ xử lý một lần trên bot @xoclo88dtbot.
+# /top và /checktt được chuyển sang bot thống kê phụ; bot chính không đăng ký hai lệnh này.
 application.add_handler(CommandHandler("topnap", topnap_cmd))
 application.add_handler(CommandHandler("topsodu", topsodu_cmd))
 application.add_handler(CommandHandler("resetsystem", reset_system_cmd))
@@ -17887,10 +17942,12 @@ async def _telegram_startup_call(label, callback, attempts=10):
 
 
 async def main():
-    global _bot_instance
+    global _bot_instance, _notice_bot, _stats_application
 
-    if not TOKEN:
-        raise RuntimeError("Thiếu biến môi trường BOT_TOKEN trên Railway.")
+    missing = [name for name, value in (("BOT_TOKEN", TOKEN), ("DICE_BOT_TOKEN", DICE_BOT_TOKEN),
+               ("NOTICE_BOT_TOKEN", NOTICE_BOT_TOKEN), ("STATS_BOT_TOKEN", STATS_BOT_TOKEN)) if not value]
+    if missing:
+        raise RuntimeError("Thiếu biến môi trường: " + ", ".join(missing) + ". Không hardcode token vào mã nguồn.")
 
     # Khởi tạo bot có retry: Telegram chậm tạm thời sẽ không làm bot dừng ngay.
     await _telegram_startup_call(
@@ -17906,15 +17963,37 @@ async def main():
             f"BOT_TOKEN không thuộc @{BOT_USERNAME}; token hiện tại thuộc @{_identity.username}. "
             "Đã dừng để không ghi đè danh sách lệnh của bot khác."
         )
+    dice_bot = Bot(token=DICE_BOT_TOKEN, request=HTTPXRequest(connection_pool_size=8))
+    _notice_bot = Bot(token=NOTICE_BOT_TOKEN, request=HTTPXRequest(connection_pool_size=8))
+    _stats_application = (ApplicationBuilder().token(STATS_BOT_TOKEN)
+                          .request(HTTPXRequest(connection_pool_size=8))
+                          .get_updates_request(HTTPXRequest(connection_pool_size=4)).build())
+    await _telegram_startup_call("dice bot initialize", dice_bot.initialize, attempts=10)
+    await _telegram_startup_call("notice bot initialize", _notice_bot.initialize, attempts=10)
+    await _telegram_startup_call("stats bot initialize", _stats_application.initialize, attempts=10)
+    dice_identity = await _telegram_startup_call("dice bot get_me", dice_bot.get_me, attempts=10)
+    notice_identity = await _telegram_startup_call("notice bot get_me", _notice_bot.get_me, attempts=10)
+    stats_identity = await _telegram_startup_call("stats bot get_me", _stats_application.bot.get_me, attempts=10)
+    print(f"🤖 Bot xúc xắc: @{dice_identity.username}; bot thông báo: @{notice_identity.username}; bot thống kê: @{stats_identity.username}")
+
+    # Bot thống kê chỉ nhận /top và /checktt trong nhóm; không có /start hay handler chat riêng.
+    _stats_application.add_handler(CommandHandler("top", _early_top_cmd, filters=filters.ChatType.GROUPS), group=-3)
+    _stats_application.add_handler(CommandHandler("checktt", _early_checktt_cmd, filters=filters.ChatType.GROUPS), group=-3)
+    try:
+        await _stats_application.bot.set_my_commands(
+            [BotCommand("top", "Top tương tác nhóm hôm nay"),
+             BotCommand("checktt", "Kiểm tra tương tác nhóm hôm nay")],
+            scope=BotCommandScopeAllGroupChats()
+        )
+    except Exception as e:
+        print(f"Không thể cập nhật lệnh bot thống kê: {e}")
     # Gợi ý lệnh khi người dùng gõ "/" trong nhóm; chỉ đưa các lệnh dùng cho thành viên.
     group_commands = [
         BotCommand("nap", "Nạp tiền"),
         BotCommand("rut", "Rút tiền"),
-        BotCommand("top", "Top tương tác nhóm hôm nay"),
         BotCommand("topnap", "Top nạp tiền"),
         BotCommand("topsodu", "Top số dư"),
         BotCommand("topcuoc", "Top cược"),
-        BotCommand("checktt", "Kiểm tra tương tác nhóm hôm nay"),
         BotCommand("xuctele", "Chơi Xúc Xắc Tele"),
         BotCommand("baucua", "Chơi Bầu Cua"),
         BotCommand("soloxd", "Tạo phòng Solo Xúc Xắc"),
@@ -17934,6 +18013,7 @@ async def main():
     except Exception as e:
         print(f"Không thể cập nhật gợi ý lệnh Telegram: {e}")
     await application.start()
+    await _stats_application.start()
     _bot_instance = application.bot
     
     _bg_tasks.append(asyncio.create_task(reward_settle_loop(application.bot)))
@@ -17946,15 +18026,17 @@ async def main():
     # Khởi động webhook server
     await start_webhook_server()
     
+    dice_output_bot = _DiceOutputBot(application.bot, dice_bot)
     for gid in GROUP_IDS:
         try:
             room_betting_enabled[gid] = True
-            asyncio.create_task(run_dice_game_cycle(application.bot, gid, gid))
-            print(f"✅ Đã khởi động game cho nhóm {gid}")
+            asyncio.create_task(run_dice_game_cycle(dice_output_bot, gid, gid))
+            print(f"✅ Đã khởi động game cho nhóm {gid} bằng bot xúc xắc")
         except Exception as e:
             print(f"Lỗi nhóm {gid}: {e}")
     await application.updater.start_polling(drop_pending_updates=True)
-    print("🤖 BOT ĐÃ ONLINE...")
+    await _stats_application.updater.start_polling(drop_pending_updates=True)
+    print("🤖 BOT CHÍNH VÀ 3 BOT PHỤ ĐÃ ONLINE...")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
