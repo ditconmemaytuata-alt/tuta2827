@@ -8862,8 +8862,8 @@ AMOUNT_BUTTONS = [("1k", 1000), ("5k", 5000), ("10k", 10000), ("20k", 20000), ("
                   ("100k", 100000), ("200k", 200000), ("500k", 500000), ("1m", 1000000)]
 
 GAMES = {
-    "room": {"name": "TÀI XỈU ROOM", "icon": "👑", "rows": None},
-    "tx3d": {"name": "TÀI XỈU 3D", "icon": "💎", "rows": None},
+    "room": {"name": "TÀI XỈU SĂN HŨ ( ROOM )", "icon": "👑", "rows": None},
+    "tx3d": {"name": "TÀI XỈU MD5", "icon": "💎", "rows": None},
     "xuctele": {"name": "XÚC XẮC TELE", "icon": "✈️", "rows": None},
     "baucua": {"name": "BẦU CUA", "icon": "🦀", "rows": None},
     "soloxd": {"name": "SOLO XÚC XẮC", "icon": "⚔️", "rows": None},
@@ -8872,12 +8872,12 @@ GAMES = {
 for _g, _c in TGDICE.items():
     GAMES[_g] = {"name": _c["name"], "icon": _c["icon"], "rows": _tg_rows(_c)}
 
-# Bố cục 2 cột: Tài Xỉu Room + Tài Xỉu 3D ở hàng đầu, sau đó là các game hoạt ảnh Telegram.
-GAME_ROWS = [["room", "tx3d"], ["xuctele", "baucua"], ["xxd", "pk"], ["soloxd", "solokbb"], ["pt", "br"], ["bd", "ll"], ["bl", "sl"]]
+# Bố cục: Tài Xỉu Săn Hũ (Room) và Tài Xỉu MD5 mỗi game 1 dòng ở đầu, sau đó là các game hoạt ảnh Telegram.
+GAME_ROWS = [["room"], ["tx3d"], ["xuctele", "baucua"], ["xxd", "pk"], ["soloxd", "solokbb"], ["pt", "br"], ["bd", "ll"], ["bl", "sl"]]
 
 GAME_RULES = {
     "room": (
-        f'{ce("🎲")} <b>TÀI XỈU ROOM</b>\n\n'
+        f'{ce("🎲")} <b>TÀI XỈU SĂN HŨ ( ROOM )</b>\n\n'
         f'{ce("🔗")} <b>Link vào phòng:</b>\n'
         f'<code>{ROOM_LINK}</code>\n\n'
         f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
@@ -8961,7 +8961,7 @@ GAME_RULES.update({
 })
 
 GAME_RULES["tx3d"] = (
-    f'{ce("🎲")} <b>TÀI XỈU 3D (MINIAPP)</b>\n\n'
+    f'{ce("🎲")} <b>TÀI XỈU MD5 (MINIAPP)</b>\n\n'
     f'{ce("🎯")} <b>LUẬT CHƠI:</b>\n'
     f'━━━━━━━━━━━━━━━━━━━━━\n'
     f'• Mỗi phiên lắc 3 viên xúc xắc, kéo bát để mở kết quả.\n'
@@ -8997,8 +8997,8 @@ GAME_LIST_TEXT = (
     f'{ce("🎮")} <b>TRUNG TÂM TRÒ CHƠI</b> {ce("✨")}\n'
     f'━━━━━━━━━━━━━━━━━━━━\n'
     f'{ce("👑")} <b>PHÒNG VIP</b>\n'
-    f'  {gi("room")} Tài Xỉu Room\n'
-    f'  {gi("tx3d")} Tài Xỉu 3D\n\n'
+    f'  {gi("room")} Tài Xỉu Săn Hũ ( Room )\n'
+    f'  {gi("tx3d")} Tài Xỉu MD5\n\n'
     f'{ce("🎲")} <b>XÚC XẮC &amp; BẦU CUA</b>\n'
     f'  {gi("xuctele")} Xúc Xắc Tele\n'
     f'  {gi("baucua")} Bầu Cua\n'
