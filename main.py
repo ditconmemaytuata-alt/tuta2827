@@ -17712,11 +17712,41 @@ async def unban_spam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _kill_gate(update, ctx):
     """TẮT HỆ THỐNG: bot im hoàn toàn — chặn mọi tin nhắn/lệnh/nút/giftcode/cược/game/tương tác nhóm của mọi người.
-    Đặt ở group -101 để chạy TRƯỚC spam_guard và các handler group -100 (mỗi group PTB chỉ chạy handler đầu tiên khớp)."""
+    Đặt ở group -102 để chạy TRƯỚC spam_guard và các handler group -100 (mỗi group PTB chỉ chạy handler đầu tiên khớp)."""
     if SYSTEM_KILLED:
         raise ApplicationHandlerStop
 
-application.add_handler(TypeHandler(Update, _kill_gate), group=-101)
+application.add_handler(TypeHandler(Update, _kill_gate), group=-102)   # mỗi group chỉ chạy 1 handler nên mỗi cổng 1 group riêng
+
+_MT_GATE_CACHE = [0.0, False]
+
+def _system_mt_cached():
+    import time as _t
+    now = _t.time()
+    if now - _MT_GATE_CACHE[0] > 2:
+        try:
+            _MT_GATE_CACHE[1] = bool(is_system_maintenance())
+        except Exception:
+            pass
+        _MT_GATE_CACHE[0] = now
+    return _MT_GATE_CACHE[1]
+
+async def _maintenance_gate(update, ctx):
+    """BẢO TRÌ TOÀN HỆ THỐNG: người dùng thường không làm được gì (giftcode, cược room, game, menu, nạp/rút...),
+    tin nhắn trong nhóm không được ghi nhận tương tác. Room/phiên game vẫn chạy bình thường. Admin không bị chặn."""
+    user = update.effective_user
+    if not user or user.id in ADMIN_IDS or not _system_mt_cached():
+        return
+    try:
+        if update.callback_query:
+            await update.callback_query.answer("🛠 Hệ thống đang bảo trì, vui lòng quay lại sau.", show_alert=True)
+        elif update.effective_chat and update.effective_chat.type == "private" and update.effective_message:
+            await update.effective_message.reply_text("🛠 Hệ thống đang bảo trì, vui lòng quay lại sau.")
+    except Exception:
+        pass
+    raise ApplicationHandlerStop
+
+application.add_handler(TypeHandler(Update, _maintenance_gate), group=-101)
 application.add_handler(MessageHandler(filters.ALL, spam_guard), group=-100)
 application.add_handler(CallbackQueryHandler(spam_guard), group=-100)
 application.add_handler(CommandHandler("unbanspam", unban_spam_cmd), group=-99)
