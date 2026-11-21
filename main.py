@@ -4096,6 +4096,21 @@ def _room_session_settle(group_id, game, dice, total, result, total_win):
         print(f"[room-audit] Không lưu được kết quả phiên: {exc}")
 
 
+_D3_MULT = {9: 7, 10: 7, 11: 7, 12: 7, 8: 9, 13: 9, 7: 12, 14: 12, 6: 15, 15: 15, 5: 18, 16: 18, 4: 25, 17: 25, 3: 30, 18: 30}
+
+def est_win_amount(choice, amount):
+    """Tiền dự định thắng (tổng nhận về) cho RIÊNG lần cược này — khớp công thức trả thưởng lúc kết phiên."""
+    try:
+        if choice.startswith("d1_"): m = 5
+        elif choice.startswith("d2_"): m = 10
+        elif choice.startswith("d3_"): m = _D3_MULT.get(int(choice.split("_")[1]), 7)
+        elif choice in ("tl", "tc", "xl", "xc"): m = 3
+        elif choice.startswith("a"): m = 150
+        else: m = 1.97
+        return int(amount * m)
+    except Exception:
+        return int(amount * 1.97)
+
 async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""):
     if check_mt('mt_taixiu_room') and user_id not in ADMIN_IDS:
         return False, f'{ce("⚙️")} Game Tài Xỉu Room đang bảo trì!'
@@ -4163,8 +4178,9 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
     msg = (
         f'{ce("✅")} Đặt thành công — Phiên #{session_id}\n\n'
         f'{ce("🥷")} Công khai\n'
-        f'{ce("🎯")} {choice_display_map} · {fmt_money(game["bets"][bet_key]["amount"])}\n'
-        f'{ce("💵")} Tỷ lệ x{multiplier}'
+        f'{ce("🎯")} {choice_display_map} · {fmt_money(amount)}\n'
+        f'{ce("💵")} Tỷ lệ x{multiplier}\n'
+        f'{ce("💰")} Dự định thắng: {fmt_money(est_win_amount(choice, amount))}'
     )
     return True, msg
 
@@ -4223,7 +4239,8 @@ async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
 
     group_notification = (
         f'{ce("💬")} Ẩn danh cược phiên #{session_id}\n'
-        f'{ce("💬")} {short_choice} - {fmt_money(amount)}'
+        f'{ce("💬")} {short_choice} - {fmt_money(amount)}\n'
+        f'{ce("💰")} Dự định thắng: {fmt_money(est_win_amount(choice, amount))}'
     )
     try:
         await bot.send_message(group_id, group_notification, parse_mode=ParseMode.HTML)
@@ -4233,7 +4250,8 @@ async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
     msg = (
         f'{ce("✅")} Đặt ẩn danh thành công — Phiên #{session_id}\n\n'
         f'{ce("🥷")} Ẩn Danh\n'
-        f'{ce("🎯")} {short_choice} · {fmt_money(game["bets"][bet_key]["amount"])}\n'
+        f'{ce("🎯")} {short_choice} · {fmt_money(amount)}\n'
+        f'{ce("💰")} Dự định thắng: {fmt_money(est_win_amount(choice, amount))}\n'
         f'{bal_block(user_id)}'
     )
     return True, msg
@@ -7452,7 +7470,7 @@ def tx3d_play_kb(private=True):
 
 async def reply_bet_notice(msg_obj, text, success=True, private=True):
     """Trả lời thông báo đặt cược, kèm nút vào miniapp (nếu lỗi nút vẫn gửi tin như cũ)."""
-    kb = tx3d_play_kb(private) if success else None
+    kb = None   # bỏ nút "CHƠI TÀI XỈU 3D NGAY" khỏi thông báo đặt cược
     try:
         return await msg_obj.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
@@ -7463,7 +7481,7 @@ async def reply_bet_notice(msg_obj, text, success=True, private=True):
 
 
 async def send_bet_notice(bot, chat_id, text):
-    kb = tx3d_play_kb(True)
+    kb = None   # bỏ nút "CHƠI TÀI XỈU 3D NGAY"
     try:
         return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
