@@ -4178,8 +4178,8 @@ async def place_bet_in_group(bot, user_id, group_id, choice, amount, username=""
     msg = (
         f'{ce("✅")} Đặt thành công — Phiên #{session_id}\n\n'
         f'{ce("🥷")} Công khai\n'
-        f'{ce("🎯")} {choice_display_map} · {fmt_money(amount)}\n'
-        f'{ce("💵")} Tỷ lệ x{multiplier}\n'
+        f'{ce("📌")} {choice_display_map} · {fmt_money(amount)}\n'
+        f'{ce("📈")} Tỷ lệ x{multiplier}\n'
         f'{ce("💰")} Dự định thắng: {fmt_money(est_win_amount(choice, amount))}'
     )
     return True, msg
@@ -4250,7 +4250,7 @@ async def place_anonymous_bet(bot, user_id, group_id, choice, amount):
     msg = (
         f'{ce("✅")} Đặt ẩn danh thành công — Phiên #{session_id}\n\n'
         f'{ce("🥷")} Ẩn Danh\n'
-        f'{ce("🎯")} {short_choice} · {fmt_money(amount)}\n'
+        f'{ce("📌")} {short_choice} · {fmt_money(amount)}\n'
         f'{ce("💰")} Dự định thắng: {fmt_money(est_win_amount(choice, amount))}\n'
         f'{bal_block(user_id)}'
     )
@@ -12971,7 +12971,6 @@ async function udetail(g){
 async function vCtl(){
   var d=await api('control');
   var h='<div class="item" style="border:1px solid #ff4d4d"><b>⏻ Tắt hệ thống</b><p class="mut" style="margin:4px 0 8px">Khi TẮT: bot như chết hẳn — không nhận lệnh, không gửi tin, không chạy game, không tính tương tác ở nhóm. Cược phiên đang mở được hoàn lại. Web admin vẫn hoạt động để bật lại.</p><div class="acts">'+(d.killed?'<button class="btn ok" data-x="mt" data-key="system_killed" data-v="0" data-cf="Bật lại toàn bộ hệ thống bot?">🟢 BẬT LẠI HỆ THỐNG (đang TẮT)</button>':'<button class="btn bad" data-x="mt" data-key="system_killed" data-v="1" data-cf="TẮT TOÀN BỘ hệ thống bot? Bot sẽ như chết hoàn toàn cho tới khi bật lại.">🔴 TẮT HỆ THỐNG (đang chạy)</button>')+'</div></div>';
-  h+='<div class="item"><b>🛠 Bảo trì</b><p class="mut" style="margin:4px 0 8px">Xanh = hoạt động · đỏ = đang bảo trì (admin vẫn chơi được). Bấm để đổi.</p><div class="acts">'+sw('Toàn hệ thống','system_maintenance',d.system)+sw('Toàn bộ (kể cả menu)','mt_tongbao',d.total)+'</div></div>';
   h+='<div class="item"><b>🎮 Game</b><div class="acts">'+d.games.map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div><div class="acts"><button class="btn bad" data-x="mtall" data-v="1" data-scope="games" data-cf="Bảo trì TẤT CẢ game?">Bảo trì tất cả game</button><button class="btn ok" data-x="mtall" data-v="0" data-scope="games">Mở tất cả game</button></div></div>';
   h+='<div class="item"><b>💳 Nạp / Rút tổng</b><div class="acts">'+d.features.filter(function(g){return g.key==='mt_nap'||g.key==='mt_rut';}).map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div></div>';
   h+='<div class="item"><b>🏧 Bảo trì riêng từng cổng rút</b><p class="mut">Tắt một cổng không ảnh hưởng các cổng còn lại.</p><div class="acts">'+d.payout_channels.map(function(g){return sw(g.name,g.key,g.mt);}).join('')+'</div></div>';
@@ -17710,6 +17709,13 @@ async def unban_spam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _SPAM_LAST_ALBUM.pop(uid, None)
     await update.effective_message.reply_text(f"Đã gỡ khóa chống spam cho user {uid}.")
 
+async def _kill_gate(update, ctx):
+    """TẮT HỆ THỐNG: bot im hoàn toàn — chặn mọi tin nhắn/lệnh/nút/giftcode/cược/game/tương tác nhóm của mọi người.
+    Đặt ở group -101 để chạy TRƯỚC spam_guard và các handler group -100 (mỗi group PTB chỉ chạy handler đầu tiên khớp)."""
+    if SYSTEM_KILLED:
+        raise ApplicationHandlerStop
+
+application.add_handler(TypeHandler(Update, _kill_gate), group=-101)
 application.add_handler(MessageHandler(filters.ALL, spam_guard), group=-100)
 application.add_handler(CallbackQueryHandler(spam_guard), group=-100)
 application.add_handler(CommandHandler("unbanspam", unban_spam_cmd), group=-99)
@@ -17888,11 +17894,6 @@ async def _early_checktt_cmd(update, ctx):
         await update.effective_message.reply_text("Không tải được thống kê tương tác. Vui lòng thử lại.")
     raise ApplicationHandlerStop
 
-async def _kill_gate(update, ctx):
-    if SYSTEM_KILLED:
-        raise ApplicationHandlerStop
-
-application.add_handler(TypeHandler(Update, _kill_gate), group=-100)
 application.add_handler(CommandHandler("daythang", daythang_cmd), group=-3)
 application.add_handler(CommandHandler("daythua", daythua_cmd), group=-3)
 # /top và /checktt được chuyển sang bot thống kê phụ; bot chính không đăng ký hai lệnh này.
